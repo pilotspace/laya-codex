@@ -1,0 +1,457 @@
+//! [`MoonStore`]: `laya_core::Store` over Moon.
+
+use std::collections::{HashMap, HashSet};
+
+use laya_core::{Chunk, Error, Lang, Result, Store, ident};
+use redis::{RedisResult, Value};
+
+use crate::breaker::BreakerState;
+use crate::config::StoreConfig;
+use crate::conn::{Executor, OpKind};
+use crate::keys;
+use crate::query::{fuse_scores, is_benign_term_error, parse_search_reply, prepare_terms};
+
+/// Separator for identifier lists inside hashes. Identifiers never contain a newline, while
+/// some languages allow `,`-bearing names (`operator,`).
+const IDENT_SEP: char = '\n';
+
+/// Moon-backed store. Cheap to share (`Arc<MoonStore>`); all methods take `&self`.
+///
+/// Construction does no IO: a dead sidecar surfaces as `Error::StoreUnavailable` on use, so
+/// callers can fail open.
+pub struct MoonStore {
+    exec: Executor,
+}
+
+impl MoonStore {
+    pub fn new(cfg: StoreConfig) -> Result<Self> {
+        Ok(Self {
+            exec: Executor::new(cfg)?,
+        })
+    }
+
+    #[must_use]
+    pub fn config(&self) -> &StoreConfig {
+        self.exec.config()
+    }
+
+    #[must_use]
+    pub fn breaker_state(&self) -> BreakerState {
+        self.exec.breaker_state()
+    }
+
+    /// Read `chunks` and `defines` of a file record.
+    fn file_record(&self, repo: &str, path: &str) -> Result<(Vec<String>, Vec<String>)> {
+        let key = keys::file(repo, path);
+        let (chunks, defs): (Option<String>, Option<String>) =
+            self.exec.run(OpKind::Bulk, |c| {
+                redis::cmd("HMGET")
+                    .arg(&key)
+                    .arg("chunks")
+                    .arg("defines")
+                    .query(c)
+            })?;
+        let chunks = chunks
+            .as_deref()
+            .map(|s| keys::split_list(s).map(str::to_string).collect())
+            .unwrap_or_default();
+        let defs = defs.as_deref().map(split_idents).unwrap_or_default();
+        Ok((chunks, defs))
+    }
+
+    /// Queue removal of chunks from a pipeline. Moon's `DEL` does not remove a hash from its text
+    /// index (see MOON_NOTES.md), so the indexed field is blanked first: the `HSET` re-index drops
+    /// the postings, then `DEL` removes the data.
+    fn queue_chunk_removal(
+        pipe: &mut redis::Pipeline,
+        repo: &str,
+        ids: &[&str],
+        old_defs: &[String],
+    ) {
+        for id in ids {
+            let k = keys::chunk(repo, id);
+            pipe.cmd("HSET").arg(&k).arg("terms").arg("").ignore();
+            pipe.cmd("DEL").arg(&k).ignore();
+        }
+        if !ids.is_empty() {
+            for d in old_defs {
+                pipe.cmd("SREM")
+                    .arg(keys::defines(repo, d))
+                    .arg(ids)
+                    .ignore();
+            }
+        }
+    }
+}
+
+fn split_idents(s: &str) -> Vec<String> {
+    s.split(IDENT_SEP)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn lang_from_str(s: &str) -> Lang {
+    match s {
+        "rust" => Lang::Rust,
+        "python" => Lang::Python,
+        "typescript" => Lang::TypeScript,
+        "tsx" => Lang::Tsx,
+        "javascript" => Lang::JavaScript,
+        "go" => Lang::Go,
+        "java" => Lang::Java,
+        "c" => Lang::C,
+        "cpp" => Lang::Cpp,
+        "csharp" => Lang::CSharp,
+        "ruby" => Lang::Ruby,
+        "php" => Lang::Php,
+        "kotlin" => Lang::Kotlin,
+        "swift" => Lang::Swift,
+        _ => Lang::Text,
+    }
+}
+
+/// Indexed text of a chunk: normalized terms of path + symbol + body, space-joined, with
+/// repetitions kept so term frequency counts.
+fn index_terms(c: &Chunk) -> String {
+    let mut s = String::with_capacity(c.text.len());
+    for src in [c.path.as_str(), c.symbol.as_str(), c.text.as_str()] {
+        for t in ident::terms(src) {
+            if !s.is_empty() {
+                s.push(' ');
+            }
+            s.push_str(&t);
+        }
+    }
+    s
+}
+
+fn chunk_from_hash(mut h: HashMap<String, String>) -> Option<Chunk> {
+    let mut take = |k: &str| h.remove(k);
+    Some(Chunk {
+        path: take("path")?,
+        start_line: take("start")?.parse().ok()?,
+        end_line: take("end")?.parse().ok()?,
+        lang: lang_from_str(&take("lang").unwrap_or_default()),
+        symbol: take("symbol").unwrap_or_default(),
+        kind: take("kind").unwrap_or_default(),
+        defines: take("defines")
+            .as_deref()
+            .map(split_idents)
+            .unwrap_or_default(),
+        text: take("text").unwrap_or_default(),
+    })
+}
+
+fn server_error_msg(v: &Value) -> Option<String> {
+    match v {
+        Value::ServerError(e) => Some(format!("{} {}", e.code(), e.details().unwrap_or_default())),
+        _ => None,
+    }
+}
+
+impl Store for MoonStore {
+    fn ensure_index(&self, repo_id: &str) -> Result<()> {
+        let (idx, prefix) = (keys::index(repo_id), keys::chunk_prefix(repo_id));
+        self.exec.run(OpKind::Query, |c| {
+            let r: RedisResult<()> = redis::cmd("FT.CREATE")
+                .arg(&idx)
+                .arg(&["ON", "HASH", "PREFIX", "1"])
+                .arg(&prefix)
+                .arg(&["SCHEMA", "terms", "TEXT"])
+                .query(c);
+            match r {
+                Err(e)
+                    if e.to_string()
+                        .to_ascii_lowercase()
+                        .contains("already exists") =>
+                {
+                    Ok(())
+                }
+                other => other,
+            }
+        })
+    }
+
+    fn put_file(&self, repo_id: &str, path: &str, file_hash: &str, chunks: &[Chunk]) -> Result<()> {
+        let (old_ids, old_defs) = self.file_record(repo_id, path)?;
+
+        let mut new_ids: Vec<String> = Vec::with_capacity(chunks.len());
+        let mut seen = HashSet::new();
+        let mut new_chunks = Vec::with_capacity(chunks.len());
+        for c in chunks {
+            let id = c.id();
+            if seen.insert(id.clone()) {
+                new_ids.push(id);
+                new_chunks.push(c);
+            }
+        }
+        let removed: Vec<&str> = old_ids
+            .iter()
+            .map(String::as_str)
+            .filter(|id| !seen.contains(*id))
+            .collect();
+
+        let mut pipe = redis::pipe();
+        // 1. Drop chunks that disappeared, and all old definition memberships (re-added below).
+        Self::queue_chunk_removal(&mut pipe, repo_id, &removed, &[]);
+        if !old_ids.is_empty() {
+            for d in &old_defs {
+                pipe.cmd("SREM")
+                    .arg(keys::defines(repo_id, d))
+                    .arg(&old_ids)
+                    .ignore();
+            }
+        }
+        // 2. Write the new chunks (content-addressed: an unchanged chunk is rewritten in place).
+        let mut file_defs: Vec<&str> = Vec::new();
+        let mut def_seen = HashSet::new();
+        for (id, c) in new_ids.iter().zip(&new_chunks) {
+            let defs: Vec<&str> = c
+                .defines
+                .iter()
+                .map(String::as_str)
+                .filter(|d| !d.is_empty() && !d.contains(IDENT_SEP))
+                .collect();
+            pipe.cmd("HSET")
+                .arg(keys::chunk(repo_id, id))
+                .arg("path")
+                .arg(&c.path)
+                .arg("start")
+                .arg(c.start_line)
+                .arg("end")
+                .arg(c.end_line)
+                .arg("lang")
+                .arg(c.lang.as_str())
+                .arg("symbol")
+                .arg(&c.symbol)
+                .arg("kind")
+                .arg(&c.kind)
+                .arg("defines")
+                .arg(defs.join("\n"))
+                .arg("terms")
+                .arg(index_terms(c))
+                .arg("text")
+                .arg(&c.text)
+                .ignore();
+            for d in defs {
+                pipe.cmd("SADD")
+                    .arg(keys::defines(repo_id, d))
+                    .arg(id)
+                    .ignore();
+                if def_seen.insert(d) {
+                    file_defs.push(d);
+                }
+            }
+        }
+        // 3. File record last: if anything above fails, the stale hash makes the indexer retry.
+        pipe.cmd("HSET")
+            .arg(keys::file(repo_id, path))
+            .arg("hash")
+            .arg(file_hash)
+            .arg("chunks")
+            .arg(new_ids.join(","))
+            .arg("defines")
+            .arg(file_defs.join("\n"))
+            .ignore();
+        pipe.cmd("SADD")
+            .arg(keys::files(repo_id))
+            .arg(path)
+            .ignore();
+
+        // Every command is idempotent, so a retried pipeline converges to the same state.
+        self.exec.run(OpKind::Bulk, |c| pipe.query::<()>(c))
+    }
+
+    fn delete_file(&self, repo_id: &str, path: &str) -> Result<()> {
+        let (old_ids, old_defs) = self.file_record(repo_id, path)?;
+        let ids: Vec<&str> = old_ids.iter().map(String::as_str).collect();
+        let mut pipe = redis::pipe();
+        Self::queue_chunk_removal(&mut pipe, repo_id, &ids, &old_defs);
+        pipe.cmd("DEL").arg(keys::file(repo_id, path)).ignore();
+        pipe.cmd("SREM")
+            .arg(keys::files(repo_id))
+            .arg(path)
+            .ignore();
+        self.exec.run(OpKind::Bulk, |c| pipe.query::<()>(c))
+    }
+
+    fn file_hash(&self, repo_id: &str, path: &str) -> Result<Option<String>> {
+        let key = keys::file(repo_id, path);
+        self.exec.run(OpKind::Query, |c| {
+            redis::cmd("HGET").arg(&key).arg("hash").query(c)
+        })
+    }
+
+    fn list_files(&self, repo_id: &str) -> Result<Vec<String>> {
+        let key = keys::files(repo_id);
+        let mut v: Vec<String> = self
+            .exec
+            .run(OpKind::Query, |c| redis::cmd("SMEMBERS").arg(&key).query(c))?;
+        v.sort_unstable();
+        Ok(v)
+    }
+
+    fn bm25(&self, repo_id: &str, terms: &[String], limit: usize) -> Result<Vec<(String, f32)>> {
+        let cfg = self.exec.config();
+        let terms = prepare_terms(terms, cfg.max_terms);
+        if terms.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let per_term = limit.max(cfg.per_term_limit);
+        let idx = keys::index(repo_id);
+        let mut pipe = redis::pipe();
+        pipe.ignore_errors();
+        for t in &terms {
+            pipe.cmd("FT.SEARCH")
+                .arg(&idx)
+                .arg(t)
+                .arg("NOCONTENT")
+                .arg("LIMIT")
+                .arg(0)
+                .arg(per_term);
+        }
+        let replies: Vec<Value> = self.exec.run(OpKind::Query, |c| pipe.query(c))?;
+
+        let prefix = keys::chunk_prefix(repo_id);
+        let mut per_term_hits = Vec::with_capacity(replies.len());
+        let mut hard_errors = Vec::new();
+        for (t, v) in terms.iter().zip(&replies) {
+            if let Some(msg) = server_error_msg(v) {
+                if !is_benign_term_error(&msg) {
+                    tracing::warn!(term = %t, error = %msg, "FT.SEARCH term failed");
+                    hard_errors.push(msg);
+                }
+                continue;
+            }
+            let hits = parse_search_reply(v).map_err(Error::Store)?;
+            per_term_hits.push(
+                hits.into_iter()
+                    .filter_map(|(k, s)| k.strip_prefix(&prefix).map(|id| (id.to_string(), s)))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        if per_term_hits.is_empty()
+            && let Some(first) = hard_errors.into_iter().next()
+        {
+            return Err(Error::Store(first));
+        }
+        Ok(fuse_scores(&per_term_hits, limit))
+    }
+
+    fn chunks_defining(
+        &self,
+        repo_id: &str,
+        idents: &[String],
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let mut seen = HashSet::new();
+        let idents: Vec<&String> = idents
+            .iter()
+            .filter(|i| !i.is_empty() && seen.insert(i.as_str()))
+            .collect();
+        if idents.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut pipe = redis::pipe();
+        for i in &idents {
+            pipe.cmd("SMEMBERS").arg(keys::defines(repo_id, i));
+        }
+        let sets: Vec<Vec<String>> = self.exec.run(OpKind::Query, |c| pipe.query(c))?;
+
+        // Rank by how many requested identifiers a chunk defines, then first appearance, then id.
+        let mut acc: HashMap<String, (usize, usize)> = HashMap::new();
+        for (order, set) in sets.into_iter().enumerate() {
+            for id in set {
+                acc.entry(id).and_modify(|e| e.0 += 1).or_insert((1, order));
+            }
+        }
+        let mut out: Vec<(String, (usize, usize))> = acc.into_iter().collect();
+        out.sort_by(|a, b| {
+            b.1.0
+                .cmp(&a.1.0)
+                .then(a.1.1.cmp(&b.1.1))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        Ok(out.into_iter().take(limit).map(|(id, _)| id).collect())
+    }
+
+    fn get_chunks(&self, repo_id: &str, ids: &[String]) -> Result<Vec<Chunk>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut pipe = redis::pipe();
+        for id in ids {
+            pipe.cmd("HGETALL").arg(keys::chunk(repo_id, id));
+        }
+        let maps: Vec<HashMap<String, String>> = self.exec.run(OpKind::Query, |c| pipe.query(c))?;
+        Ok(maps
+            .into_iter()
+            .zip(ids)
+            .filter(|(m, _)| !m.is_empty())
+            .filter_map(|(m, id)| {
+                let c = chunk_from_hash(m);
+                if c.is_none() {
+                    tracing::warn!(chunk = %id, "skipping malformed chunk hash");
+                }
+                c
+            })
+            .collect())
+    }
+
+    fn memo_get(&self, key: &str) -> Result<Option<String>> {
+        let key = keys::memo(key);
+        self.exec
+            .run(OpKind::Query, |c| redis::cmd("GET").arg(&key).query(c))
+    }
+
+    fn memo_put(&self, key: &str, value: &str, ttl_secs: u64) -> Result<()> {
+        let key = keys::memo(key);
+        self.exec.run(OpKind::Query, |c| {
+            let mut cmd = redis::cmd("SET");
+            cmd.arg(&key).arg(value);
+            if ttl_secs > 0 {
+                cmd.arg("EX").arg(ttl_secs);
+            }
+            cmd.query(c)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn index_terms_cover_path_symbol_and_text_with_tf() {
+        let c = Chunk {
+            path: "src/wal_writer.rs".into(),
+            start_line: 1,
+            end_line: 1,
+            lang: Lang::Rust,
+            symbol: "impl WalWriter".into(),
+            kind: "impl_item".into(),
+            defines: vec![],
+            text: "flush flush".into(),
+        };
+        let t = index_terms(&c);
+        assert!(t.contains("wal_writer") && t.contains("walwriter"));
+        assert_eq!(t.matches("flush").count(), 2);
+    }
+
+    #[test]
+    fn lang_roundtrips_through_as_str() {
+        for l in [Lang::Rust, Lang::Tsx, Lang::CSharp, Lang::Text, Lang::Swift] {
+            assert_eq!(lang_from_str(l.as_str()), l);
+        }
+    }
+
+    #[test]
+    fn malformed_hash_is_rejected() {
+        let mut h = HashMap::new();
+        h.insert("path".to_string(), "a".to_string());
+        h.insert("start".to_string(), "x".to_string());
+        h.insert("end".to_string(), "1".to_string());
+        assert!(chunk_from_hash(h).is_none());
+    }
+}

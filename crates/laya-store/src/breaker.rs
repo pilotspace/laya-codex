@@ -16,10 +16,16 @@ pub enum BreakerState {
 
 #[derive(Debug)]
 enum Inner {
-    Closed { failures: u32 },
-    Open { until: Instant },
+    Closed {
+        failures: u32,
+    },
+    Open {
+        until: Instant,
+    },
     /// One probe is in flight; `since` lets a lost probe (panicked caller) be replaced.
-    HalfOpen { since: Instant },
+    HalfOpen {
+        since: Instant,
+    },
 }
 
 #[derive(Debug)]
@@ -32,12 +38,18 @@ pub struct CircuitBreaker {
 impl CircuitBreaker {
     #[must_use]
     pub fn new(threshold: u32, cooldown: Duration) -> Self {
-        Self { threshold: threshold.max(1), cooldown, inner: Mutex::new(Inner::Closed { failures: 0 }) }
+        Self {
+            threshold: threshold.max(1),
+            cooldown,
+            inner: Mutex::new(Inner::Closed { failures: 0 }),
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         // The critical sections cannot leave `Inner` half-updated, so a poisoned lock is safe to reuse.
-        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// May a call proceed now? Transitions open -> half-open once the cooldown elapsed,
@@ -75,8 +87,12 @@ impl CircuitBreaker {
     pub(crate) fn on_failure_at(&self, now: Instant) {
         let mut g = self.lock();
         *g = match *g {
-            Inner::Closed { failures } if failures + 1 < self.threshold => Inner::Closed { failures: failures + 1 },
-            _ => Inner::Open { until: now + self.cooldown },
+            Inner::Closed { failures } if failures + 1 < self.threshold => Inner::Closed {
+                failures: failures + 1,
+            },
+            _ => Inner::Open {
+                until: now + self.cooldown,
+            },
         };
     }
 
@@ -130,7 +146,10 @@ mod tests {
         let later = t + CD;
         assert!(b.try_acquire_at(later));
         assert_eq!(b.state(), BreakerState::HalfOpen);
-        assert!(!b.try_acquire_at(later), "second caller must fail fast while probing");
+        assert!(
+            !b.try_acquire_at(later),
+            "second caller must fail fast while probing"
+        );
         b.on_success();
         assert_eq!(b.state(), BreakerState::Closed);
         assert!(b.try_acquire_at(later));

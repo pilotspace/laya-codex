@@ -3,7 +3,7 @@
 //! Moon's `FT.SEARCH` is AND-only. BM25 is a sum of per-term contributions, so OR semantics
 //! are emulated by running one single-term search per term and summing per document. Verified
 //! against Moon: for a doc containing `parse` and `beta`, the AND query scored 4.928537 and the
-//! per-term scores were 2.464268 + 2.464268 (see `MOON_NOTES.md` and the `bm25_sum_matches_and`
+//! per-term scores were 2.464268 + 2.464268 (see `MOON_NOTES.md` and the `bm25_ranks_docs_matching_more_terms_first_and_sums_like_and`
 //! integration test).
 
 use redis::Value;
@@ -53,7 +53,8 @@ pub fn parse_search_reply(v: &Value) -> Result<Vec<(String, f32)>, String> {
     let mut out = Vec::new();
     let mut it = items.iter().skip(1).peekable();
     while let Some(item) = it.next() {
-        let key = value_str(item).ok_or_else(|| format!("unexpected key in FT.SEARCH reply: {item:?}"))?;
+        let key = value_str(item)
+            .ok_or_else(|| format!("unexpected key in FT.SEARCH reply: {item:?}"))?;
         let mut score = 0.0f32;
         if let Some(Value::Array(fields)) = it.peek() {
             for pair in fields.chunks(2) {
@@ -117,7 +118,10 @@ mod tests {
 
     #[test]
     fn prepare_dedupes_lowercases_and_sanitizes() {
-        let got = prepare_terms(&s(&["Parse", "parse", "a", "@x", "foo-bar", "ok_1", ""]), 24);
+        let got = prepare_terms(
+            &s(&["Parse", "parse", "a", "@x", "foo-bar", "ok_1", ""]),
+            24,
+        );
         assert_eq!(got, s(&["parse", "ok_1"]));
     }
 
@@ -141,17 +145,31 @@ mod tests {
             bulk("lc:r:c:a"),
             Value::Array(vec![bulk("__bm25_score"), bulk("2.5")]),
             bulk("lc:r:c:b"),
-            Value::Array(vec![bulk("path"), bulk("x"), bulk("__bm25_score"), bulk("1.25")]),
+            Value::Array(vec![
+                bulk("path"),
+                bulk("x"),
+                bulk("__bm25_score"),
+                bulk("1.25"),
+            ]),
         ]);
         let got = parse_search_reply(&v).expect("parse");
-        assert_eq!(got, vec![("lc:r:c:a".into(), 2.5), ("lc:r:c:b".into(), 1.25)]);
+        assert_eq!(
+            got,
+            vec![("lc:r:c:a".into(), 2.5), ("lc:r:c:b".into(), 1.25)]
+        );
     }
 
     #[test]
     fn parses_reply_without_field_arrays() {
         let v = Value::Array(vec![Value::Int(1), bulk("k1")]);
-        assert_eq!(parse_search_reply(&v).expect("parse"), vec![("k1".into(), 0.0)]);
-        assert_eq!(parse_search_reply(&Value::Array(vec![Value::Int(0)])).expect("parse"), vec![]);
+        assert_eq!(
+            parse_search_reply(&v).expect("parse"),
+            vec![("k1".into(), 0.0)]
+        );
+        assert_eq!(
+            parse_search_reply(&Value::Array(vec![Value::Int(0)])).expect("parse"),
+            vec![]
+        );
         assert!(parse_search_reply(&Value::Nil).is_err());
     }
 
@@ -166,7 +184,10 @@ mod tests {
     #[test]
     fn fuse_ties_break_by_id() {
         let a = vec![("b".to_string(), 1.0), ("a".to_string(), 1.0)];
-        assert_eq!(fuse_scores(&[a], 10), vec![("a".into(), 1.0), ("b".into(), 1.0)]);
+        assert_eq!(
+            fuse_scores(&[a], 10),
+            vec![("a".into(), 1.0), ("b".into(), 1.0)]
+        );
     }
 
     #[test]

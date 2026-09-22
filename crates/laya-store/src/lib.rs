@@ -8,8 +8,13 @@
 //! See `MOON_NOTES.md` for Moon behaviours this crate works around.
 
 pub mod breaker;
+mod config;
+mod conn;
 pub mod keys;
 pub mod query;
+mod store;
 
 pub use breaker::{BreakerState, CircuitBreaker};
+pub use config::StoreConfig;
 pub use keys::repo_id;
+pub use store::MoonStore;
