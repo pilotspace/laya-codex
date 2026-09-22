@@ -13,8 +13,10 @@ mod conn;
 pub mod keys;
 pub mod query;
 mod store;
+mod supervisor;
 
 pub use breaker::{BreakerState, CircuitBreaker};
 pub use config::StoreConfig;
 pub use keys::repo_id;
 pub use store::MoonStore;
+pub use supervisor::{MoonSupervisor, SupervisorStatus};
