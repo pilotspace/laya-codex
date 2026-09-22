@@ -1,0 +1,7 @@
+== min=10 max=50
+L1-28 | class_declaration | class KeyStore | MAX_KEYS,Key,KeyStore,get,set,empty,Registry,norm
+== min=4 max=12
+L1-7 | package_header |  | MAX_KEYS,Key
+L9-17 | function_declaration | class KeyStore | KeyStore,get,set
+L19-22 | companion_object | class KeyStore > companion object | empty
+L24-28 | object_declaration | object Registry | Registry,norm

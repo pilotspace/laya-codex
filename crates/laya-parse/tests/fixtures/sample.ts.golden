@@ -1,0 +1,6 @@
+== min=10 max=50
+L1-34 | class_declaration |  | Shape,area,Id,MAX_SIZE,Circle,constructor,scale,makeCircle,double,Color
+== min=4 max=12
+L1-9 | interface_declaration |  | Shape,area,Id,MAX_SIZE
+L11-22 | method_definition | class Circle | Circle,constructor,area,scale
+L23-34 | enum_declaration |  | makeCircle,double,Color

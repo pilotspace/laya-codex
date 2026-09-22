@@ -1,0 +1,7 @@
+== min=10 max=50
+L1-31 | class_declaration |  | fs,RETRIES,loadConfig,Cache,constructor,get,set,handler
+== min=4 max=12
+L1-9 | function_declaration | function loadConfig | fs,RETRIES,loadConfig
+L11-18 | method_definition | class Cache | Cache,constructor,get
+L20-24 | method_definition | class Cache > set | set
+L26-31 | lexical_declaration | handler | handler

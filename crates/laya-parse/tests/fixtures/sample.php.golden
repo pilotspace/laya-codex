@@ -1,0 +1,7 @@
+== min=10 max=50
+L1-34 | class_declaration |  | App\Store,VERSION,KeyStore,get,set,Loggable,log,helper
+== min=4 max=12
+L1-5 | php_tag |  | App\Store,VERSION
+L7-15 | method_declaration | class KeyStore | KeyStore,get
+L17-21 | method_declaration | class KeyStore > function set | set
+L23-34 | trait_declaration | trait Loggable | Loggable,log,helper

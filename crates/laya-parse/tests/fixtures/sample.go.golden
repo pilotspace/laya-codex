@@ -1,0 +1,7 @@
+== min=10 max=50
+L1-33 | method_declaration |  | MaxKeys,Store,Get,New
+== min=4 max=12
+L1-11 | import_declaration |  | MaxKeys
+L13-17 | type_declaration | type Store | Store
+L19-28 | method_declaration | func Get | Get
+L30-33 | function_declaration | func New | New

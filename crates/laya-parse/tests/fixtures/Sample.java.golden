@@ -1,0 +1,7 @@
+== min=10 max=50
+L1-31 | class_declaration | class Sample | Sample,get,toString,Keyed,key
+== min=4 max=12
+L1-4 | package_declaration |  |
+L6-12 | constructor_declaration | class Sample | Sample
+L14-21 | method_declaration | class Sample > get | get
+L23-31 | method_declaration | class Sample | toString,Keyed,key

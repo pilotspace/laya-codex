@@ -1,0 +1,7 @@
+== min=10 max=50
+L1-34 | class_declaration |  | maxKeys,Keyed,key,KeyStore,get,set,Point,norm
+== min=4 max=12
+L1-8 | protocol_declaration |  | maxKeys,Keyed,key
+L10-20 | init_declaration | class KeyStore | KeyStore,get
+L22-25 | function_declaration | class KeyStore > func set | set
+L27-34 | class_declaration | struct Point | Point,norm

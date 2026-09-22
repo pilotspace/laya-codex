@@ -1,0 +1,7 @@
+== min=10 max=50
+L1-31 | impl_item |  | MoonStore,MAX_KEYS,Store,get,helper
+== min=4 max=12
+L1-9 | struct_item |  | MoonStore,MAX_KEYS
+L11-13 | trait_item | trait Store | Store,get
+L15-26 | function_item | impl Store for MoonStore > fn get | get
+L27-31 | function_item | fn helper | helper

@@ -1,0 +1,6 @@
+== min=10 max=50
+L1-26 | module | module Config | Config,DEFAULTS,Loader,initialize,load,default,helper
+== min=4 max=12
+L1-11 | method | module Config | Config,DEFAULTS,Loader,initialize
+L13-22 | method | module Config > class Loader | load,default
+L24-26 | method | def helper | helper

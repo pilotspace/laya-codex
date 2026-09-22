@@ -1,0 +1,7 @@
+== min=10 max=50
+L1-27 | class_declaration |  | Props,Greeting,Counter,increment,render,App
+== min=4 max=12
+L1-3 | import_statement |  | Props
+L5-13 | function_declaration | function Greeting | Greeting
+L15-25 | class_declaration | class Counter | Counter,increment,render
+L27-27 | lexical_declaration | App | App
