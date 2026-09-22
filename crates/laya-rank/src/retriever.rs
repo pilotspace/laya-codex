@@ -3,6 +3,7 @@
 //! `spike/laya_spike.py` for the fusion this ports (BM25⊕Laya RRF: MRR 0.591 vs BM25 0.480).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -17,14 +18,23 @@ use crate::span::{Scored, shape_spans};
 /// Turns a prompt into ranked, shaped code spans over a `Store` (candidate generation) and an
 /// optional `Scorer` (the Laya decision gate). Both are trait objects so `laya-rank` never
 /// depends on the concrete Moon store or candle model — only their contracts in `laya-core`.
+///
+/// `store` is borrowed (candidate generation is synchronous, on the caller's thread), but
+/// `scorer` is `Arc`-owned: the Laya gate bounds the scorer call with a detached worker thread
+/// (see `call_scorer_bounded`) that must be free to outlive a timed-out `query()` call. Cloning
+/// the `Arc` into that thread makes abandoning a hung scorer sound without any lifetime tricks.
 pub struct Retriever<'a> {
     store: &'a dyn Store,
-    scorer: Option<&'a dyn Scorer>,
+    scorer: Option<Arc<dyn Scorer>>,
     cfg: RetrieverConfig,
 }
 
 impl<'a> Retriever<'a> {
-    pub fn new(store: &'a dyn Store, scorer: Option<&'a dyn Scorer>, cfg: RetrieverConfig) -> Self {
+    pub fn new(
+        store: &'a dyn Store,
+        scorer: Option<Arc<dyn Scorer>>,
+        cfg: RetrieverConfig,
+    ) -> Self {
         Self { store, scorer, cfg }
     }
 
@@ -150,7 +160,7 @@ impl<'a> Retriever<'a> {
                 .collect()
         };
 
-        let Some(scorer) = self.scorer.filter(|_| self.cfg.use_laya) else {
+        let Some(scorer) = self.scorer.clone().filter(|_| self.cfg.use_laya) else {
             return (to_lexical(candidates), RankMode::Lexical);
         };
 
@@ -239,34 +249,19 @@ fn elapsed_ms(start: Instant) -> u64 {
 /// `None` on timeout, a channel error, or the scorer itself returning `Err`. A late result (the
 /// thread finishes after `budget` elapses) is simply dropped — the send on a disconnected
 /// receiver fails silently and the thread exits.
+///
+/// `scorer` is an owned `Arc`, so the detached thread (which must be free to keep running after
+/// `budget` elapses and this function has returned — that's the whole point of "abandon, don't
+/// block") holds its own strong reference. Abandoning a hung scorer this way is sound: nothing
+/// this function's caller does afterward (including dropping its own clone of the `Arc`) can
+/// invalidate the data the thread is still reading, no `unsafe` lifetime extension required.
 fn call_scorer_bounded(
-    scorer: &dyn Scorer,
+    scorer: Arc<dyn Scorer>,
     task: String,
     chunks: Vec<Chunk>,
     budget: Duration,
 ) -> Option<Vec<f32>> {
     let (tx, rx) = mpsc::channel::<Result<Vec<f32>>>();
-
-    // SAFETY: this extends `scorer`'s borrow to `'static` so it can be moved into a genuinely
-    // detached `thread::spawn` (required so a slow/hung scorer can be *abandoned*, not just
-    // raced, past `budget` — see the module doc and `docs/architecture.md` §3.4's "fail-open,
-    // never block" rule). Why it's sound for the two paths that actually use `scorer` after this
-    // point:
-    //   * On the success path (`rx.recv_timeout` returns `Ok(..)`), the channel `send` in the
-    //     worker thread happens-after its call to `scorer.score(..)` completes (program order
-    //     within the thread) and happens-before our `recv` returns (channel synchronizes-with).
-    //     So every use of `scorer` is already finished by the time this function's caller
-    //     (`Retriever::query`, borrowed for `'a`) observes the result and could go on to drop
-    //     anything `scorer` might have borrowed.
-    //   * On the timeout path, the worker thread may still be inside `scorer.score(..)`. We do
-    //     not wait for it. This is sound only under the invariant documented on `Retriever::new`:
-    //     the `Scorer` passed in must outlive any query that could time out against it — true by
-    //     construction for the intended deployment (`layad` loads the model once and keeps the
-    //     `Scorer` alive for the whole daemon process). A `Scorer` dropped while a timed-out
-    //     background thread might still be running is undefined behavior; callers that cannot
-    //     make that guarantee must not pass `use_laya: true` with a short-lived scorer.
-    let scorer: &'static dyn Scorer =
-        unsafe { std::mem::transmute::<&dyn Scorer, &'static dyn Scorer>(scorer) };
 
     thread::spawn(move || {
         let refs: Vec<&Chunk> = chunks.iter().collect();
@@ -404,8 +399,8 @@ mod tests {
         probs.insert(ids[1].clone(), 0.95); // circuit.rs
         probs.insert(ids[2].clone(), 0.1); // format.rs
         let store = FakeStore::new(chunks);
-        let scorer = ProbScorer::new(probs);
-        let r = Retriever::new(&store, Some(&scorer), RetrieverConfig::default());
+        let scorer: Arc<dyn Scorer> = Arc::new(ProbScorer::new(probs));
+        let r = Retriever::new(&store, Some(scorer), RetrieverConfig::default());
         let out = r
             .query(
                 "repo",
@@ -422,14 +417,13 @@ mod tests {
     fn scorer_timeout_falls_back_to_lexical_mode() {
         let chunks = sample_chunks();
         let store = FakeStore::new(chunks);
-        let scorer = SleepyScorer {
+        // The background thread outlives this test's budget on purpose (that's the scenario
+        // under test); the `Arc` means it can keep running after `query()` returns without any
+        // lifetime hazard.
+        let scorer: Arc<dyn Scorer> = Arc::new(SleepyScorer {
             sleep: Duration::from_millis(200),
             inner: ProbScorer::new(StdHashMap::new()),
-        };
-        // Leak to get a `'static` scorer: the background thread outlives this test's budget on
-        // purpose (that's the scenario under test), so per the safety contract on
-        // `call_scorer_bounded` the scorer must not be dropped while it might still be running.
-        let scorer: &'static SleepyScorer = Box::leak(Box::new(scorer));
+        });
         let cfg = RetrieverConfig {
             laya_budget: Duration::from_millis(20),
             ..RetrieverConfig::default()
@@ -445,8 +439,8 @@ mod tests {
     #[test]
     fn scorer_error_falls_back_to_lexical_mode() {
         let store = FakeStore::new(sample_chunks());
-        let scorer = FailingScorer;
-        let r = Retriever::new(&store, Some(&scorer), RetrieverConfig::default());
+        let scorer: Arc<dyn Scorer> = Arc::new(FailingScorer);
+        let r = Retriever::new(&store, Some(scorer), RetrieverConfig::default());
         let out = r
             .query("repo", "investigate retry circuit backoff format")
             .unwrap();
@@ -456,8 +450,8 @@ mod tests {
     #[test]
     fn scorer_returning_wrong_length_falls_back_to_lexical_mode() {
         let store = FakeStore::new(sample_chunks());
-        let scorer = WrongLengthScorer;
-        let r = Retriever::new(&store, Some(&scorer), RetrieverConfig::default());
+        let scorer: Arc<dyn Scorer> = Arc::new(WrongLengthScorer);
+        let r = Retriever::new(&store, Some(scorer), RetrieverConfig::default());
         let out = r
             .query("repo", "investigate retry circuit backoff format")
             .unwrap();
@@ -467,12 +461,12 @@ mod tests {
     #[test]
     fn use_laya_false_skips_scorer_even_when_present() {
         let store = FakeStore::new(sample_chunks());
-        let scorer = ProbScorer::new(StdHashMap::new());
+        let scorer = Arc::new(ProbScorer::new(StdHashMap::new()));
         let cfg = RetrieverConfig {
             use_laya: false,
             ..RetrieverConfig::default()
         };
-        let r = Retriever::new(&store, Some(&scorer), cfg);
+        let r = Retriever::new(&store, Some(scorer.clone()), cfg);
         let out = r
             .query("repo", "investigate retry circuit backoff format")
             .unwrap();
@@ -489,13 +483,13 @@ mod tests {
         probs.insert(ids[1].clone(), 0.1); // dropped
         probs.insert(ids[2].clone(), 0.05); // dropped
         let store = FakeStore::new(chunks);
-        let scorer = ProbScorer::new(probs);
+        let scorer: Arc<dyn Scorer> = Arc::new(ProbScorer::new(probs));
         // low enough that the threshold actually bites
         let cfg = RetrieverConfig {
             min_keep: 1,
             ..RetrieverConfig::default()
         };
-        let r = Retriever::new(&store, Some(&scorer), cfg);
+        let r = Retriever::new(&store, Some(scorer), cfg);
         let out = r
             .query("repo", "investigate retry circuit backoff format")
             .unwrap();
@@ -513,12 +507,12 @@ mod tests {
         probs.insert(ids[1].clone(), 0.04);
         probs.insert(ids[2].clone(), 0.03);
         let store = FakeStore::new(chunks);
-        let scorer = ProbScorer::new(probs);
+        let scorer: Arc<dyn Scorer> = Arc::new(ProbScorer::new(probs));
         let cfg = RetrieverConfig {
             min_keep: 3,
             ..RetrieverConfig::default()
         };
-        let r = Retriever::new(&store, Some(&scorer), cfg);
+        let r = Retriever::new(&store, Some(scorer), cfg);
         let out = r
             .query("repo", "investigate retry circuit backoff format")
             .unwrap();
