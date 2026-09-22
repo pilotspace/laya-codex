@@ -2,7 +2,7 @@
 //! spans, using only [`laya_core::Store`] and [`laya_core::Scorer`] — the concrete Moon store
 //! and Laya model live in other crates and are wired in by the caller (`layad`/`laya-cli`).
 //!
-//! Pipeline (`docs/architecture.md` §3.2–3.3):
+//! Pipeline (`docs/architecture.md` §3.2–3.5):
 //! 1. [`signals::extract_signals`] pulls BM25 terms, explicit identifiers and file-path
 //!    mentions out of the prompt.
 //! 2. [`Retriever::query`] fans those out to `Store::bm25` / `chunks_defining` / a path-boosted
@@ -14,11 +14,13 @@
 //! 4. `span::shape_spans` merges adjacent/overlapping same-file chunks, keeps the top-N, and
 //!    enforces a total-line budget.
 //!
-//! `render_context`/`read_narrowing` (next commit) turn a [`laya_core::QueryResult`] into what
-//! the hooks/MCP layer sends to Claude Code.
+//! [`render_context`] and [`read_narrowing`] turn a [`laya_core::QueryResult`] into what the
+//! hooks/MCP layer actually sends to Claude Code.
 
 mod config;
 mod fusion;
+mod read_narrow;
+mod render;
 mod retriever;
 mod signals;
 mod span;
@@ -27,5 +29,7 @@ mod span;
 pub(crate) mod fakes;
 
 pub use config::RetrieverConfig;
+pub use read_narrow::{ReadPolicy, read_narrowing};
+pub use render::render_context;
 pub use retriever::Retriever;
 pub use signals::{PromptSignals, extract_signals};
