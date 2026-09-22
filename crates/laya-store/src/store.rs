@@ -24,6 +24,10 @@ const IDENT_SEP: char = '\n';
 ///
 /// Construction does no IO: a dead sidecar surfaces as `Error::StoreUnavailable` on use, so
 /// callers can fail open.
+///
+/// Concurrency: every method is safe to call from many threads. Writes to *different* paths may
+/// run concurrently; `put_file`/`delete_file` for the *same* path must be serialized by the
+/// caller (read-modify-write of the file record, no server-side transaction, see MOON_NOTES #7).
 pub struct MoonStore {
     exec: Executor,
 }

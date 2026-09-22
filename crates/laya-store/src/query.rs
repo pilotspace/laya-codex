@@ -47,6 +47,9 @@ pub fn prepare_terms(terms: &[String], cap: usize) -> Vec<String> {
 /// Moon scores a term in O(df²) (see MOON_NOTES.md), and high-df terms carry little BM25 weight
 /// anyway (low idf). So: drop terms that match nothing, order by ascending df (rarest first,
 /// ties keep input order), and take terms while `Σ df² <= budget` and at most `max_terms`.
+///
+/// `df` is counted per raw term while Moon matches stems, so a term whose stem is shared by
+/// other indexed words (`parsing` vs `parse`) can cost somewhat more than its df suggests.
 #[must_use]
 pub fn select_terms(
     terms: &[String],
