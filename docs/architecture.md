@@ -114,7 +114,24 @@ can be rebuilt from source, so it's never the source of truth.
   ("narrowed by laya: lines a–b; Read again for the full file"). **Escape hatch**: a
   second Read of the same file passes through untouched. Every rewrite is logged, so the
   benchmark can measure how often the agent needed the full file.
+- **PreToolUse(Agent|Task) span handoff**: append the current top spans (≤5, compact
+  `path:a-b` + 1-line why) to the subagent's prompt via `updatedInput`, so subagents
+  don't re-explore what the parent already ranked.
+- **PostToolUse(Edit|Write|MultiEdit)**: incrementally re-index the touched file (content
+  hash → re-chunk) and invalidate its memo entries. Re-scoring is capped at the chunks of
+  that file; the hook never blocks.
+- **Compaction survival** (real hooks only; there is no `session.compact` hook and
+  `PreCompact` cannot replace the summarizer): `PreCompact` snapshots the session's working
+  set (spans that were injected or read, with their scores) to the store; after compaction,
+  `SessionStart(source=compact)` re-injects the top of that working set as `additionalContext`.
+- **Local skip rules** (before any model call): slash commands, `#` memory lines, prompts
+  shorter than 3 characters, and prompts with no code intent (a cheap Laya `noul` question, memoized).
+- **Fail-open everywhere**: any error, timeout or breaker-open state → empty output, exit 0.
 - Packaged as a Claude Code plugin (hooks + MCP + install script).
+- Prior art: the claude-jev family (TypeSafe Jev, a hosted typed-judgment API) uses the same
+  hook pattern for routing and rule-judging; we don't call Jev. It's a network dependency on
+  an unverified vendor, and local Laya covers the same `choice`/`score`/`noul` primitives
+  (see `docs/research/research-jev.md`).
 
 ### 3.6 Rust workspace
 ```
@@ -135,6 +152,7 @@ cargo-pgo on the index and query paths; no `target-cpu=native` for distributed b
 | D3 | Integration | **UserPromptSubmit injection + MCP + guarded PreToolUse(Read) rewrite** | Biggest token lever; guarded by thresholds and escape hatch (§3.5) |
 | D4 | Embeddings | **None in v1** (BM25 + graph + Laya) | Revisit only if the benchmark shows recall misses on vague prompts |
 | D5 | Languages | **Core static grammars + line-window fallback** | WASM long tail in v2 |
+| D7 | Extra hooks (from claude-jev review) | **Agent/Task span handoff, PostToolUse re-index, PreCompact + SessionStart(compact) re-inject, local skip rules** | No Jev dependency; no summarizer replacement |
 | D6 | Platforms | **macOS Metal + Linux CPU** | CI matrix: macos-14 arm64, ubuntu x86_64 |
 
 ## 5. Phasing
