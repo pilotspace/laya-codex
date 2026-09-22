@@ -42,6 +42,40 @@ pub fn prepare_terms(terms: &[String], cap: usize) -> Vec<String> {
     out
 }
 
+/// Choose which terms to search given their document frequencies (`None` = never indexed).
+///
+/// Moon scores a term in O(df²) (see MOON_NOTES.md), and high-df terms carry little BM25 weight
+/// anyway (low idf). So: drop terms that match nothing, order by ascending df (rarest first,
+/// ties keep input order), and take terms while `Σ df² <= budget` and at most `max_terms`.
+#[must_use]
+pub fn select_terms(
+    terms: &[String],
+    df: &[Option<i64>],
+    max_terms: usize,
+    budget: u64,
+) -> Vec<String> {
+    let mut known: Vec<(u64, &String)> = terms
+        .iter()
+        .zip(df)
+        .filter_map(|(t, d)| match d {
+            Some(d) if *d > 0 => Some((*d as u64, t)),
+            _ => None,
+        })
+        .collect();
+    known.sort_by_key(|(d, _)| *d); // stable: ties keep input order
+    let mut cost = 0u64;
+    let mut out = Vec::new();
+    for (d, t) in known {
+        let c = cost.saturating_add(d.saturating_mul(d));
+        if out.len() >= max_terms || c > budget {
+            break; // ascending df: every later term costs at least as much
+        }
+        cost = c;
+        out.push(t.clone());
+    }
+    out
+}
+
 /// Parse a RESP2 `FT.SEARCH` reply into `(key, score)` pairs.
 ///
 /// Moon replies `[count, key, [field, value, ...], key, [...], ...]` and always includes
@@ -130,6 +164,27 @@ mod tests {
         let got = prepare_terms(&s(&["id", "configuration", "fn", "loader", "xy"]), 3);
         // Keeps the 3 longest ({configuration, loader} + first 2-char tie `id`), in input order.
         assert_eq!(got, s(&["id", "configuration", "loader"]));
+    }
+
+    #[test]
+    fn select_prefers_rarest_and_skips_unindexed() {
+        let t = s(&["common", "rare", "absent", "mid"]);
+        let df = [Some(900), Some(3), None, Some(40)];
+        assert_eq!(
+            select_terms(&t, &df, 24, u64::MAX),
+            s(&["rare", "mid", "common"])
+        );
+        assert_eq!(select_terms(&t, &df, 2, u64::MAX), s(&["rare", "mid"]));
+    }
+
+    #[test]
+    fn select_respects_quadratic_cost_budget() {
+        let t = s(&["a1", "b1", "c1"]);
+        let df = [Some(10), Some(100), Some(1000)];
+        // 10^2 + 100^2 = 10_100 fits; adding 1000^2 does not.
+        assert_eq!(select_terms(&t, &df, 24, 10_100), s(&["a1", "b1"]));
+        assert!(select_terms(&t, &[Some(0), Some(-2), None], 24, u64::MAX).is_empty());
+        assert!(select_terms(&t, &[Some(5000), Some(6000), Some(7000)], 24, 1000).is_empty());
     }
 
     #[test]

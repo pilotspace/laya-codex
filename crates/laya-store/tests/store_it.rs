@@ -515,3 +515,87 @@ fn index_and_data_survive_moon_restart() {
     );
     assert_eq!(s.get_chunks(R, &[a.id()]).expect("get"), vec![a]);
 }
+
+fn df(m: &common::TestMoon, term: &str) -> i64 {
+    let mut con = m.raw();
+    let v: Option<i64> = redis::cmd("HGET")
+        .arg(format!("lc:{R}:df"))
+        .arg(term)
+        .query(&mut con)
+        .expect("hget df");
+    v.unwrap_or(0)
+}
+
+#[test]
+fn document_frequencies_track_puts_replacements_and_deletes() {
+    let m = require_moon!();
+    let s = store(&m);
+    let a = chunk(
+        "d.rs",
+        1,
+        "",
+        &[],
+        "fn shared_tok() { only_a_tok(); only_a_tok() }",
+    );
+    let b = chunk("d.rs", 5, "", &[], "fn shared_tok() {}");
+    s.put_file(R, "d.rs", "h1", &[a.clone(), b.clone()])
+        .expect("put");
+    assert_eq!(df(&m, "shared_tok"), 2, "df counts chunks, not occurrences");
+    assert_eq!(df(&m, "only_a_tok"), 1);
+
+    // Same content again: unchanged chunks must not be double counted.
+    s.put_file(R, "d.rs", "h1", &[a.clone(), b.clone()])
+        .expect("re-put");
+    assert_eq!(df(&m, "shared_tok"), 2);
+
+    let a2 = chunk("d.rs", 1, "", &[], "fn replaced_tok() {}");
+    s.put_file(R, "d.rs", "h2", &[a2, b]).expect("replace a");
+    assert_eq!(df(&m, "shared_tok"), 1);
+    assert_eq!(df(&m, "only_a_tok"), 0);
+    assert_eq!(df(&m, "replaced_tok"), 1);
+
+    s.delete_file(R, "d.rs").expect("delete");
+    assert_eq!(df(&m, "shared_tok"), 0);
+    assert_eq!(df(&m, "replaced_tok"), 0);
+}
+
+#[test]
+fn bm25_skips_frequent_terms_beyond_the_cost_budget_and_prefers_rarest() {
+    let m = require_moon!();
+    let cfg = StoreConfig {
+        df_sq_budget: 10,
+        ..StoreConfig::local(m.port)
+    };
+    let s = MoonStore::new(cfg).expect("store");
+    s.ensure_index(R).expect("index");
+    for i in 0..5 {
+        let c = chunk(&format!("c{i}.rs"), 1, "", &[], "fn everywhere_tok() {}");
+        s.put_file(R, &c.path, "h", std::slice::from_ref(&c))
+            .expect("put");
+    }
+    let needle = chunk("n.rs", 1, "", &[], "fn needle_tok() {}");
+    s.put_file(R, "n.rs", "h", std::slice::from_ref(&needle))
+        .expect("put");
+    let q = terms(&["everywhere_tok", "needle_tok"]);
+
+    // needle: df 1 (cost 1) fits; everywhere: df 5 (cost 25) would exceed the budget of 10.
+    assert_eq!(ids(&s.bm25(R, &q, 10).expect("bm25")), vec![needle.id()]);
+
+    // With the default budget both terms are searched.
+    assert_eq!(store(&m).bm25(R, &q, 10).expect("bm25").len(), 6);
+
+    // max_terms = 1 keeps the rarest term.
+    let one = MoonStore::new(StoreConfig {
+        max_terms: 1,
+        ..StoreConfig::local(m.port)
+    })
+    .expect("store");
+    assert_eq!(ids(&one.bm25(R, &q, 10).expect("bm25")), vec![needle.id()]);
+
+    // Terms never indexed cost no search and do not break the query.
+    assert!(
+        s.bm25(R, &terms(&["never_seen_tok"]), 10)
+            .expect("bm25")
+            .is_empty()
+    );
+}

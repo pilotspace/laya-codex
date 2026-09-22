@@ -30,6 +30,14 @@ pub struct StoreConfig {
     /// Hits fetched per term before summation (at least the caller's `limit`). Larger is more
     /// exact for docs matching many common terms; smaller is faster.
     pub per_term_limit: usize,
+    /// Query cost budget in `Σ df²` over the searched terms. Moon scores a term in O(df²), so
+    /// this bounds bm25 latency: ~1.9 ns per unit on an M4 Pro, i.e. the default 2e7 ≈ 40 ms
+    /// server time. Rarest terms are chosen first; frequent terms beyond the budget are skipped.
+    pub df_sq_budget: u64,
+    /// Max occurrences of one term indexed per chunk (0 = unlimited). Moon re-scans a term's
+    /// whole posting list for every *repeated* occurrence in a document, so indexing cost grows
+    /// with tf x df; capping tf trades a little BM25 tf signal for much faster indexing.
+    pub max_tf: u32,
 }
 
 impl StoreConfig {
@@ -49,6 +57,8 @@ impl StoreConfig {
             pool_size: 4,
             max_terms: 24,
             per_term_limit: 200,
+            df_sq_budget: 20_000_000,
+            max_tf: 2,
         }
     }
 

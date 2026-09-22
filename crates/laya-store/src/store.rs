@@ -9,7 +9,12 @@ use crate::breaker::BreakerState;
 use crate::config::StoreConfig;
 use crate::conn::{Executor, OpKind};
 use crate::keys;
-use crate::query::{fuse_scores, is_benign_term_error, parse_search_reply, prepare_terms};
+use crate::query::{
+    fuse_scores, is_benign_term_error, parse_search_reply, prepare_terms, select_terms,
+};
+
+/// Candidate terms considered per bm25 call before document-frequency selection.
+const MAX_CANDIDATE_TERMS: usize = 256;
 
 /// Separator for identifier lists inside hashes. Identifiers never contain a newline, while
 /// some languages allow `,`-bearing names (`operator,`).
@@ -59,6 +64,18 @@ impl MoonStore {
         Ok((chunks, defs))
     }
 
+    /// Indexed `terms` of stored chunks (`None` for missing ones), for df bookkeeping.
+    fn stored_terms(&self, repo: &str, ids: &[&str]) -> Result<Vec<Option<String>>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut pipe = redis::pipe();
+        for id in ids {
+            pipe.cmd("HGET").arg(keys::chunk(repo, id)).arg("terms");
+        }
+        self.exec.run(OpKind::Bulk, |c| pipe.query(c))
+    }
+
     /// Queue removal of chunks from a pipeline. Moon's `DEL` does not remove a hash from its text
     /// index (see MOON_NOTES.md), so the indexed field is blanked first: the `HSET` re-index drops
     /// the postings, then `DEL` removes the data.
@@ -80,6 +97,24 @@ impl MoonStore {
                     .arg(ids)
                     .ignore();
             }
+        }
+    }
+}
+
+/// Add `sign` to the document frequency of every distinct term of one chunk.
+fn count_terms(deltas: &mut HashMap<String, i64>, terms: &str, sign: i64) {
+    let distinct: HashSet<&str> = terms.split_ascii_whitespace().collect();
+    for t in distinct {
+        *deltas.entry(t.to_string()).or_insert(0) += sign;
+    }
+}
+
+/// Queue net document-frequency changes (zero deltas are skipped).
+fn queue_df_deltas(pipe: &mut redis::Pipeline, repo: &str, deltas: &HashMap<String, i64>) {
+    let key = keys::df(repo);
+    for (t, d) in deltas {
+        if *d != 0 {
+            pipe.cmd("HINCRBY").arg(&key).arg(t).arg(*d).ignore();
         }
     }
 }
@@ -112,11 +147,19 @@ fn lang_from_str(s: &str) -> Lang {
 }
 
 /// Indexed text of a chunk: normalized terms of path + symbol + body, space-joined, with
-/// repetitions kept so term frequency counts.
-fn index_terms(c: &Chunk) -> String {
+/// repetitions kept (up to `max_tf` per term, 0 = unlimited) so term frequency counts.
+fn index_terms(c: &Chunk, max_tf: u32) -> String {
     let mut s = String::with_capacity(c.text.len());
+    let mut tf: HashMap<String, u32> = HashMap::new();
     for src in [c.path.as_str(), c.symbol.as_str(), c.text.as_str()] {
         for t in ident::terms(src) {
+            if max_tf > 0 {
+                let n = tf.entry(t.clone()).or_insert(0);
+                if *n >= max_tf {
+                    continue;
+                }
+                *n += 1;
+            }
             if !s.is_empty() {
                 s.push(' ');
             }
@@ -192,6 +235,23 @@ impl Store for MoonStore {
             .filter(|id| !seen.contains(*id))
             .collect();
 
+        // Document frequencies change only for chunks that appear or disappear; content-addressed
+        // ids make unchanged chunks cancel out.
+        let old_set: HashSet<&str> = old_ids.iter().map(String::as_str).collect();
+        let new_terms: Vec<String> = new_chunks
+            .iter()
+            .map(|c| index_terms(c, self.exec.config().max_tf))
+            .collect();
+        let mut deltas: HashMap<String, i64> = HashMap::new();
+        for t in self.stored_terms(repo_id, &removed)?.iter().flatten() {
+            count_terms(&mut deltas, t, -1);
+        }
+        for (id, t) in new_ids.iter().zip(&new_terms) {
+            if !old_set.contains(id.as_str()) {
+                count_terms(&mut deltas, t, 1);
+            }
+        }
+
         let mut pipe = redis::pipe();
         // 1. Drop chunks that disappeared, and all old definition memberships (re-added below).
         Self::queue_chunk_removal(&mut pipe, repo_id, &removed, &[]);
@@ -206,7 +266,7 @@ impl Store for MoonStore {
         // 2. Write the new chunks (content-addressed: an unchanged chunk is rewritten in place).
         let mut file_defs: Vec<&str> = Vec::new();
         let mut def_seen = HashSet::new();
-        for (id, c) in new_ids.iter().zip(&new_chunks) {
+        for ((id, c), terms) in new_ids.iter().zip(&new_chunks).zip(&new_terms) {
             let defs: Vec<&str> = c
                 .defines
                 .iter()
@@ -230,7 +290,7 @@ impl Store for MoonStore {
                 .arg("defines")
                 .arg(defs.join("\n"))
                 .arg("terms")
-                .arg(index_terms(c))
+                .arg(terms)
                 .arg("text")
                 .arg(&c.text)
                 .ignore();
@@ -244,6 +304,7 @@ impl Store for MoonStore {
                 }
             }
         }
+        queue_df_deltas(&mut pipe, repo_id, &deltas);
         // 3. File record last: if anything above fails, the stale hash makes the indexer retry.
         pipe.cmd("HSET")
             .arg(keys::file(repo_id, path))
@@ -259,15 +320,21 @@ impl Store for MoonStore {
             .arg(path)
             .ignore();
 
-        // Every command is idempotent, so a retried pipeline converges to the same state.
+        // Every command except HINCRBY is idempotent, so a retried pipeline converges to the same
+        // state; a replayed HINCRBY only skews query planning (df), never stored data or scores.
         self.exec.run(OpKind::Bulk, |c| pipe.query::<()>(c))
     }
 
     fn delete_file(&self, repo_id: &str, path: &str) -> Result<()> {
         let (old_ids, old_defs) = self.file_record(repo_id, path)?;
         let ids: Vec<&str> = old_ids.iter().map(String::as_str).collect();
+        let mut deltas: HashMap<String, i64> = HashMap::new();
+        for t in self.stored_terms(repo_id, &ids)?.iter().flatten() {
+            count_terms(&mut deltas, t, -1);
+        }
         let mut pipe = redis::pipe();
         Self::queue_chunk_removal(&mut pipe, repo_id, &ids, &old_defs);
+        queue_df_deltas(&mut pipe, repo_id, &deltas);
         pipe.cmd("DEL").arg(keys::file(repo_id, path)).ignore();
         pipe.cmd("SREM")
             .arg(keys::files(repo_id))
@@ -294,8 +361,19 @@ impl Store for MoonStore {
 
     fn bm25(&self, repo_id: &str, terms: &[String], limit: usize) -> Result<Vec<(String, f32)>> {
         let cfg = self.exec.config();
-        let terms = prepare_terms(terms, cfg.max_terms);
-        if terms.is_empty() || limit == 0 {
+        let candidates = prepare_terms(terms, MAX_CANDIDATE_TERMS);
+        if candidates.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        // Plan: one HMGET of document frequencies, then search only the rarest terms that fit
+        // the cost budget. Terms never indexed are dropped without a search.
+        let df_key = keys::df(repo_id);
+        let dfs: Vec<Option<i64>> = self.exec.run(OpKind::Query, |c| {
+            redis::cmd("HMGET").arg(&df_key).arg(&candidates).query(c)
+        })?;
+        let terms = select_terms(&candidates, &dfs, cfg.max_terms, cfg.df_sq_budget);
+        if terms.is_empty() {
+            tracing::debug!(candidates = candidates.len(), "bm25: no term within budget");
             return Ok(Vec::new());
         }
         let per_term = limit.max(cfg.per_term_limit);
@@ -434,9 +512,30 @@ mod tests {
             defines: vec![],
             text: "flush flush".into(),
         };
-        let t = index_terms(&c);
+        let t = index_terms(&c, 0);
         assert!(t.contains("wal_writer") && t.contains("walwriter"));
         assert_eq!(t.matches("flush").count(), 2);
+    }
+
+    #[test]
+    fn index_terms_caps_term_frequency() {
+        let c = Chunk {
+            path: "a.rs".into(),
+            start_line: 1,
+            end_line: 1,
+            lang: Lang::Rust,
+            symbol: String::new(),
+            kind: String::new(),
+            defines: vec![],
+            text: "flush flush flush flush other".into(),
+        };
+        assert_eq!(index_terms(&c, 2), "rs flush flush other");
+        assert_eq!(index_terms(&c, 1), "rs flush other");
+        assert_eq!(
+            index_terms(&c, 0).matches("flush").count(),
+            4,
+            "0 = unlimited"
+        );
     }
 
     #[test]
