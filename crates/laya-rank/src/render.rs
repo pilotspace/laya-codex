@@ -34,6 +34,53 @@ pub fn render_context(result: &QueryResult, budget_tokens: usize) -> String {
     out
 }
 
+const COMPACT_HEADER: &str = "<!-- laya-codex: code located for this task by static analysis \
+(tree-sitter chunks + BM25 + Laya relevance model). -->\n";
+
+const COMPACT_FOOTER: &str = "Use the code above directly. Search or Read further only for what is \
+still missing, and prefer Read with offset/limit around the listed lines.\n";
+
+/// Compact injection: a ranked file map (every span as `path:lines — symbol`, grouped per file)
+/// plus the full code of only the first `full_spans` spans. Roughly half the tokens of
+/// [`render_context`] for the same ranking; the map lets the agent jump straight to ranges.
+pub fn render_compact(result: &QueryResult, full_spans: usize, budget_tokens: usize) -> String {
+    let mut out = String::from(COMPACT_HEADER);
+    out.push_str("\nRanked locations:\n");
+    let mut files: Vec<(&str, Vec<&RankedSpan>)> = Vec::new();
+    for s in &result.spans {
+        match files.iter_mut().find(|(p, _)| *p == s.path) {
+            Some((_, v)) => v.push(s),
+            None => files.push((&s.path, vec![s])),
+        }
+    }
+    for (i, (path, spans)) in files.iter().enumerate() {
+        let parts: Vec<String> = spans
+            .iter()
+            .map(|s| {
+                if s.symbol.is_empty() {
+                    format!("{}-{}", s.start_line, s.end_line)
+                } else {
+                    format!("{}-{} {}", s.start_line, s.end_line, s.symbol)
+                }
+            })
+            .collect();
+        out.push_str(&format!("{}. {} — {}\n", i + 1, path, parts.join("; ")));
+    }
+    out.push('\n');
+    let mut used = estimate_tokens(&out) + estimate_tokens(COMPACT_FOOTER);
+    for span in result.spans.iter().take(full_spans) {
+        let block = render_span(span);
+        let t = estimate_tokens(&block);
+        if used + t > budget_tokens {
+            break;
+        }
+        out.push_str(&block);
+        used += t;
+    }
+    out.push_str(COMPACT_FOOTER);
+    out
+}
+
 fn render_span(span: &RankedSpan) -> String {
     let mut heading = format!("### {}:{}-{}", span.path, span.start_line, span.end_line);
     if !span.symbol.is_empty() {
@@ -67,6 +114,37 @@ fn lang_tag(path: &str) -> &'static str {
         "kt" | "kts" => "kotlin",
         "swift" => "swift",
         _ => "",
+    }
+}
+
+#[cfg(test)]
+mod compact_tests {
+    use super::*;
+    use laya_core::RankMode;
+
+    fn sp(path: &str, a: u32, sym: &str) -> RankedSpan {
+        RankedSpan { path: path.into(), start_line: a, end_line: a + 20, symbol: sym.into(), p_relevant: Some(0.4),
+            score: 1.0, text: "x".repeat(400) }
+    }
+
+    #[test]
+    fn compact_lists_all_spans_grouped_by_file_and_inlines_only_top_k() {
+        let r = QueryResult { spans: vec![sp("a.rs", 1, "fn a"), sp("b.rs", 5, ""), sp("a.rs", 40, "fn c")],
+            mode: RankMode::Laya, elapsed_ms: 1, candidates: 3 };
+        let out = render_compact(&r, 1, 10_000);
+        assert!(out.contains("1. a.rs — 1-21 fn a; 40-60 fn c"));
+        assert!(out.contains("2. b.rs — 5-25"));
+        assert_eq!(out.matches("```").count(), 2, "exactly one fenced block");
+        assert!(out.len() < render_context(&r, 10_000).len());
+    }
+
+    #[test]
+    fn compact_respects_budget_for_code_blocks() {
+        let r = QueryResult { spans: vec![sp("a.rs", 1, "fn a"), sp("b.rs", 5, "fn b")], mode: RankMode::Laya,
+            elapsed_ms: 1, candidates: 2 };
+        let out = render_compact(&r, 2, 150);
+        assert!(out.contains("2. b.rs"));
+        assert!(out.matches("```").count() <= 2);
     }
 }
 

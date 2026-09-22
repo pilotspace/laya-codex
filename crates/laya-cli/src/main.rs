@@ -167,7 +167,8 @@ fn cmd_hook(cfg: &Config) {
     let root = repo_root(&cwd);
     let client = Client::new(&cfg.socket_path(), Duration::from_millis(cfg.budget_ms + 1500), true);
     let ctx = HookCtx { api: &client, repo: laya_store::repo_id(&root), root, budget_ms: cfg.budget_ms, inject_tokens: INJECT_TOKENS,
-        read_p: std::env::var("LAYA_READ_P").ok().and_then(|v| v.parse().ok()).unwrap_or(0.7) };
+        read_p: std::env::var("LAYA_READ_P").ok().and_then(|v| v.parse().ok()).unwrap_or(0.7),
+        compact: std::env::var("LAYA_RENDER").map(|v| v == "compact").unwrap_or(false) };
     let outcome = hook::handle(&input, &ctx);
     if let Some(out) = &outcome.output {
         println!("{out}");

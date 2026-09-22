@@ -28,6 +28,8 @@ pub struct HookCtx<'a> {
     pub inject_tokens: usize,
     /// Minimum Laya P for a span to justify narrowing a Read (depends on the model's calibration).
     pub read_p: f32,
+    /// Inject the compact format (ranked map + top spans) instead of every span's full code.
+    pub compact: bool,
 }
 
 /// What a handler did, for the optional JSONL hook log.
@@ -86,7 +88,11 @@ fn user_prompt(prompt: &str, session: &str, ctx: &HookCtx) -> Outcome {
     if result.spans.is_empty() {
         return Outcome::skip("no_spans");
     }
-    let text = laya_rank::render_context(&result, ctx.inject_tokens);
+    let text = if ctx.compact {
+        laya_rank::render_compact(&result, 3, ctx.inject_tokens)
+    } else {
+        laya_rank::render_context(&result, ctx.inject_tokens)
+    };
     Outcome {
         injected_chars: text.len(),
         output: Some(json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}})),
@@ -230,7 +236,7 @@ mod tests {
     }
 
     fn ctx<'a>(api: &'a dyn DaemonApi) -> HookCtx<'a> {
-        HookCtx { api, root: root(), repo: "r".into(), budget_ms: 500, inject_tokens: 4000, read_p: 0.7 }
+        HookCtx { api, root: root(), repo: "r".into(), budget_ms: 500, inject_tokens: 4000, read_p: 0.7, compact: false }
     }
 
     fn res(spans: Vec<RankedSpan>) -> QueryResult {
