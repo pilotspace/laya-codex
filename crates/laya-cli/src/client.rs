@@ -60,11 +60,16 @@ impl DaemonApi for Client {
 /// Start `laya daemon` detached from the calling process (stdio to /dev/null; it logs itself).
 pub fn spawn_daemon() -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
+    let log = crate::config::Config::from_env().daemon_log();
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let err = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
     Command::new(exe)
         .arg("daemon")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(err))
         .spawn()
         .context("spawn laya daemon")?;
     Ok(())

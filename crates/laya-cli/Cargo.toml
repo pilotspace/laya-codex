@@ -11,7 +11,17 @@ path = "src/main.rs"
 [dependencies]
 laya-core.workspace = true
 laya-rank.workspace = true
+laya-parse.workspace = true
+laya-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 blake3.workspace = true
+clap = { version = "4", features = ["derive"] }
+mimalloc = { version = "0.1", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+laya-model = { workspace = true, features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+laya-model.workspace = true
