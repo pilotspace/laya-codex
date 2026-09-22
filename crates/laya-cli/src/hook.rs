@@ -23,7 +23,6 @@ pub trait DaemonApi {
 pub struct HookCtx<'a> {
     pub api: &'a dyn DaemonApi,
     pub root: PathBuf,
-    pub repo: String,
     pub budget_ms: u64,
     pub inject_tokens: usize,
     /// Minimum Laya P for a span to justify narrowing a Read (depends on the model's calibration).
@@ -45,8 +44,6 @@ impl Outcome {
         Outcome { output: None, action, injected_chars: 0 }
     }
 }
-
-pub const HEADER_MARK: &str = "laya-codex: pre-ranked";
 
 pub fn handle(input: &Value, ctx: &HookCtx) -> Outcome {
     let event = input["hook_event_name"].as_str().unwrap_or_default();
@@ -236,7 +233,7 @@ mod tests {
     }
 
     fn ctx<'a>(api: &'a dyn DaemonApi) -> HookCtx<'a> {
-        HookCtx { api, root: root(), repo: "r".into(), budget_ms: 500, inject_tokens: 4000, read_p: 0.7, compact: false }
+        HookCtx { api, root: root(), budget_ms: 500, inject_tokens: 4000, read_p: 0.7, compact: false }
     }
 
     fn res(spans: Vec<RankedSpan>) -> QueryResult {

@@ -24,7 +24,7 @@ is implemented before reading files; then Read only the returned ranges (offset/
     }]})
 }
 
-pub fn handle_message(msg: &Value, api: &dyn DaemonApi, root: &PathBuf, inject_tokens: usize, budget_ms: u64) -> Option<Value> {
+pub fn handle_message(msg: &Value, api: &dyn DaemonApi, root: &std::path::Path, inject_tokens: usize, budget_ms: u64) -> Option<Value> {
     let id = msg.get("id").cloned();
     let method = msg["method"].as_str().unwrap_or_default();
     let result = match method {
@@ -46,7 +46,7 @@ pub fn handle_message(msg: &Value, api: &dyn DaemonApi, root: &PathBuf, inject_t
     })
 }
 
-fn call_tool(params: &Value, api: &dyn DaemonApi, root: &PathBuf, inject_tokens: usize, budget_ms: u64) -> Value {
+fn call_tool(params: &Value, api: &dyn DaemonApi, root: &std::path::Path, inject_tokens: usize, budget_ms: u64) -> Value {
     let text_result = |text: String, is_error: bool| json!({"content": [{"type": "text", "text": text}], "isError": is_error});
     if params["name"] != "laya_search" {
         return text_result(format!("unknown tool {}", params["name"]), true);

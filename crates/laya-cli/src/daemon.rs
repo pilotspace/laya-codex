@@ -127,10 +127,8 @@ impl Daemon {
                 let retriever = Retriever::new(self.store.as_ref(), scorer, cfg);
                 match retriever.query(&id, &prompt) {
                     Ok(result) => {
-                        if let Some(s) = session {
-                            if let Ok(mut sessions) = self.sessions.lock() {
-                                sessions.record_query(&s, &result);
-                            }
+                        if let (Some(s), Ok(mut sessions)) = (session, self.sessions.lock()) {
+                            sessions.record_query(&s, &result);
                         }
                         Response::Query { result }
                     }
@@ -217,46 +215,50 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     let sup = laya_store::MoonSupervisor::new(&cfg.moon_bin, cfg.moon_port, cfg.moon_dir());
     sup.ensure_running().map_err(|e| anyhow::anyhow!("moon: {e}"))?;
     let store: Arc<dyn Store> = Arc::new(laya_store::MoonStore::new(laya_store::StoreConfig::local(cfg.moon_port))?);
-    let mut base = RetrieverConfig::default();
-    base.laya_budget = Duration::from_millis(cfg.budget_ms);
-    base.use_laya = cfg.use_model;
-    // Tuning knobs (read once at daemon start; see bench/eval_retrieval.py).
+    // Defaults are the configuration that won the paired benchmark (bench/results/claude-v2):
+    // weighted fusion w=0.5, no probability gate, 128 state tokens. Env vars override them
+    // (read once at daemon start; see bench/sweep.py). LAYA_WEIGHT=rrf selects rank fusion.
+    let mut base = RetrieverConfig {
+        laya_budget: Duration::from_millis(cfg.budget_ms),
+        use_laya: cfg.use_model,
+        laya_weight: match std::env::var("LAYA_WEIGHT").as_deref() {
+            Ok("rrf") => None,
+            Ok(v) => v.parse().ok().or(Some(0.5)),
+            Err(_) => Some(0.5),
+        },
+        p_threshold: env_num::<f32>("LAYA_P_THRESHOLD").unwrap_or(0.0),
+        ..RetrieverConfig::default()
+    };
     if let Some(k) = env_num::<usize>("LAYA_K") {
         base.k_candidates = k;
-    }
-    if let Some(p) = env_num::<f32>("LAYA_P_THRESHOLD") {
-        base.p_threshold = p;
     }
     if let Some(m) = env_num::<usize>("LAYA_MIN_KEEP") {
         base.min_keep = m;
     }
-    base.laya_weight = env_num::<f32>("LAYA_WEIGHT");
-    let state_tokens = env_num::<usize>("LAYA_STATE_TOKENS").unwrap_or(laya_model::DEFAULT_MAX_STATE_TOKENS);
+    let state_tokens = env_num::<usize>("LAYA_STATE_TOKENS").unwrap_or(128);
     eprintln!("[laya] retriever config {base:?} state_tokens={state_tokens}");
     let daemon = Daemon::new(Arc::clone(&store), base);
 
-    if cfg.use_model {
-        if let Some(dir) = cfg.model_dir.clone() {
-            let d = Arc::clone(&daemon);
-            std::thread::spawn(move || {
-                let t0 = std::time::Instant::now();
-                match laya_model::LayaModel::load(&dir, laya_model::DeviceKind::Auto) {
-                    Ok(model) => {
-                        let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        let tag = format!("{name}-s{state_tokens}");
-                        let mut scorer = laya_model::LayaScorer::new(model);
-                        scorer.max_state_tokens = state_tokens;
-                        let inner: Arc<dyn Scorer> = Arc::new(scorer);
-                        let memo: Arc<dyn Scorer> = Arc::new(MemoScorer::new(inner, Arc::clone(&d.store), &tag));
-                        if let Ok(mut s) = d.scorer.write() {
-                            *s = Some(memo);
-                        }
-                        eprintln!("[laya] model {} ready in {:?}", dir.display(), t0.elapsed());
+    if let (true, Some(dir)) = (cfg.use_model, cfg.model_dir.clone()) {
+        let d = Arc::clone(&daemon);
+        std::thread::spawn(move || {
+            let t0 = std::time::Instant::now();
+            match laya_model::LayaModel::load(&dir, laya_model::DeviceKind::Auto) {
+                Ok(model) => {
+                    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let tag = format!("{name}-s{state_tokens}");
+                    let mut scorer = laya_model::LayaScorer::new(model);
+                    scorer.max_state_tokens = state_tokens;
+                    let inner: Arc<dyn Scorer> = Arc::new(scorer);
+                    let memo: Arc<dyn Scorer> = Arc::new(MemoScorer::new(inner, Arc::clone(&d.store), &tag));
+                    if let Ok(mut s) = d.scorer.write() {
+                        *s = Some(memo);
                     }
-                    Err(e) => eprintln!("[laya] model load failed ({e}); serving lexical ranking"),
+                    eprintln!("[laya] model {} ready in {:?}", dir.display(), t0.elapsed());
                 }
-            });
-        }
+                Err(e) => eprintln!("[laya] model load failed ({e}); serving lexical ranking"),
+            }
+        });
     }
     eprintln!("[laya] daemon listening on {}", cfg.socket_path().display());
     for stream in listener.incoming() {

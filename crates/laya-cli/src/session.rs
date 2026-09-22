@@ -26,10 +26,10 @@ pub struct Sessions {
 
 impl Sessions {
     fn get(&mut self, id: &str) -> &mut Session {
-        if !self.map.contains_key(id) && self.map.len() >= MAX_SESSIONS {
-            if let Some(oldest) = self.map.iter().min_by_key(|(_, s)| s.touched).map(|(k, _)| k.clone()) {
-                self.map.remove(&oldest);
-            }
+        if !self.map.contains_key(id) && self.map.len() >= MAX_SESSIONS
+            && let Some(oldest) = self.map.iter().min_by_key(|(_, s)| s.touched).map(|(k, _)| k.clone())
+        {
+            self.map.remove(&oldest);
         }
         let s = self.map.entry(id.to_string()).or_default();
         s.touched = Some(Instant::now());

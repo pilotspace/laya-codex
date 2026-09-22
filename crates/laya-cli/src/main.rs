@@ -105,10 +105,10 @@ fn cmd_index(cfg: &Config, path: Option<PathBuf>) -> anyhow::Result<()> {
 fn wait_ready(c: &Client, want_model: bool, timeout: Duration) -> bool {
     let t0 = Instant::now();
     while t0.elapsed() < timeout {
-        if let Ok(Response::Pong { model_ready, .. }) = c.call(Request::Ping) {
-            if model_ready || !want_model {
-                return true;
-            }
+        if let Ok(Response::Pong { model_ready, .. }) = c.call(Request::Ping)
+            && (model_ready || !want_model)
+        {
+            return true;
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -166,9 +166,10 @@ fn cmd_hook(cfg: &Config) {
     let cwd = input["cwd"].as_str().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     let root = repo_root(&cwd);
     let client = Client::new(&cfg.socket_path(), Duration::from_millis(cfg.budget_ms + 1500), true);
-    let ctx = HookCtx { api: &client, repo: laya_store::repo_id(&root), root, budget_ms: cfg.budget_ms, inject_tokens: INJECT_TOKENS,
-        read_p: std::env::var("LAYA_READ_P").ok().and_then(|v| v.parse().ok()).unwrap_or(0.7),
-        compact: std::env::var("LAYA_RENDER").map(|v| v == "compact").unwrap_or(false) };
+    let ctx = HookCtx { api: &client, root, budget_ms: cfg.budget_ms, inject_tokens: INJECT_TOKENS,
+        // Defaults match the benchmarked configuration (calibrated laya-code, compact injection).
+        read_p: std::env::var("LAYA_READ_P").ok().and_then(|v| v.parse().ok()).unwrap_or(0.4),
+        compact: std::env::var("LAYA_RENDER").map(|v| v != "full").unwrap_or(true) };
     let outcome = hook::handle(&input, &ctx);
     if let Some(out) = &outcome.output {
         println!("{out}");

@@ -87,11 +87,6 @@ pub fn repo_root(start: &Path) -> PathBuf {
         .unwrap_or(start)
 }
 
-/// Stable store namespace for a repo root: first 12 hex chars of blake3(canonical path).
-pub fn repo_id(root: &Path) -> String {
-    blake3::hash(root.to_string_lossy().as_bytes()).to_hex()[..12].to_string()
-}
-
 /// Repo-relative `/`-separated path for `p` (absolute or relative to `root`); `None` if outside.
 pub fn rel_path(root: &Path, p: &str) -> Option<String> {
     let path = Path::new(p);
@@ -110,14 +105,6 @@ mod tests {
         let root = repo_root(here);
         assert!(root.join("Cargo.toml").exists());
         assert!(here.canonicalize().unwrap().starts_with(&root));
-    }
-
-    #[test]
-    fn repo_id_is_stable_and_short() {
-        let a = repo_id(Path::new("/x/y"));
-        assert_eq!(a.len(), 12);
-        assert_eq!(a, repo_id(Path::new("/x/y")));
-        assert_ne!(a, repo_id(Path::new("/x/z")));
     }
 
     #[test]
