@@ -104,6 +104,7 @@ impl<'a> Retriever<'a> {
         if candidates.is_empty() {
             return Ok(empty_result(start));
         }
+        let candidates = demote_non_code(candidates, prompt);
         let n_candidates = candidates.len();
 
         let (scored, mode) = self.laya_gate(prompt, candidates);
@@ -222,6 +223,28 @@ impl<'a> Retriever<'a> {
     }
 }
 
+/// Words that signal the task is about prose/config files rather than code.
+const NON_CODE_INTENT: &[&str] = &[
+    "readme", "doc", "docs", "documentation", "guide", "markdown", "changelog", "config", "configuration", "toml",
+    "yaml", "yml", "json", "dockerfile", "makefile", "ci", "workflow",
+];
+
+/// Unless the prompt is about docs/config, line-window (`Lang::Text`) chunks halve their fused
+/// score and move behind code chunks (stable). Prose matches the task's words without being the
+/// code the agent must read, and was 17% of returned spans on the moon dev set.
+pub(crate) fn demote_non_code(mut candidates: Vec<Candidate>, prompt: &str) -> Vec<Candidate> {
+    let lower = prompt.to_ascii_lowercase();
+    let words: Vec<&str> = lower.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+    if NON_CODE_INTENT.iter().any(|w| words.contains(w)) {
+        return candidates;
+    }
+    for c in candidates.iter_mut().filter(|c| c.chunk.lang == laya_core::Lang::Text) {
+        c.fused *= 0.5;
+    }
+    candidates.sort_by_key(|c| c.chunk.lang == laya_core::Lang::Text);
+    candidates
+}
+
 fn path_matches(file: &str, mention: &str) -> bool {
     if file == mention || file.ends_with(&format!("/{mention}")) {
         return true;
@@ -284,6 +307,22 @@ mod tests {
     };
     use laya_core::Lang;
     use std::collections::HashMap as StdHashMap;
+
+    fn cand(path: &str, lang: Lang, fused: f32) -> Candidate {
+        let mut c = chunk(path, 1, 10, &[], "x");
+        c.lang = lang;
+        Candidate { chunk_id: c.id(), chunk: c, bm25: fused, fused }
+    }
+
+    #[test]
+    fn non_code_chunks_are_demoted_unless_prompt_is_about_docs() {
+        let cands = vec![cand("README.md", Lang::Text, 0.9), cand("src/a.rs", Lang::Rust, 0.5)];
+        let out = demote_non_code(cands.clone(), "fix the mmap budget review issues");
+        assert_eq!(out[0].chunk.path, "src/a.rs");
+        assert!((out[1].fused - 0.45).abs() < 1e-6);
+        let docs = demote_non_code(cands, "update the README install docs");
+        assert_eq!(docs[0].chunk.path, "README.md");
+    }
 
     fn chunk(path: &str, start: u32, end: u32, defines: &[&str], text: &str) -> Chunk {
         Chunk {

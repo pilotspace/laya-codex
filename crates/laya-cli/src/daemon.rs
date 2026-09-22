@@ -116,6 +116,9 @@ impl Daemon {
                 let mut cfg = self.base_cfg.clone();
                 if let Some(b) = budget_ms {
                     cfg.laya_budget = Duration::from_millis(b);
+                    if b == 0 {
+                        cfg.use_laya = false; // lexical-only request (used by the ablation arm)
+                    }
                 }
                 if let Some(n) = top_n {
                     cfg.top_n = n;

@@ -1,0 +1,2 @@
+{"tag": "lex-v0", "budget_ms": 0, "n": 60, "P@10": 0.34, "Hit@10": 0.85, "MRR": 0.6436, "R@10": 0.6694, "mean_lines_returned": 309.4, "non_code_share": 0.1683, "modes": {"lexical": 60}, "elapsed_ms_p50": 25.0, "elapsed_ms_p95": 85}
+{"tag": "lex-v1-noncode", "budget_ms": 0, "n": 60, "P@10": 0.3735, "Hit@10": 0.8667, "MRR": 0.7001, "R@10": 0.7, "mean_lines_returned": 319.2, "non_code_share": 0.025, "modes": {"lexical": 60}, "elapsed_ms_p50": 13.0, "elapsed_ms_p95": 36}

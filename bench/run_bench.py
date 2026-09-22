@@ -56,17 +56,44 @@ def make_tasks(args):
     print("wrote %d tasks to %s" % (len(tasks), args.out))
 
 
+def render_configs(out_dir):
+    """Materialize bench/config/*.json templates with the absolute laya binary path."""
+    laya_bin = os.environ.get("LAYA_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya"))
+    if not os.path.exists(laya_bin):
+        sys.exit("laya binary not found at %s (build with cargo build --release -p laya-cli or set LAYA_BIN)" % laya_bin)
+    dst = os.path.join(out_dir, "config")
+    os.makedirs(dst, exist_ok=True)
+    for name in os.listdir(os.path.join(HERE, "config")):
+        src = open(os.path.join(HERE, "config", name)).read().replace("@LAYA_BIN@", laya_bin)
+        open(os.path.join(dst, name), "w").write(src)
+    return dst
+
+
 def arm_flags(arm, cfg_dir):
-    base = ["--setting-sources", "project", "--strict-mcp-config", "--tools", "Read,Grep,Glob",
-            "--permission-mode", "bypassPermissions"]
+    # --tools also takes effect for MCP tools only through --mcp-config; list them explicitly.
+    base = ["--setting-sources", "project", "--strict-mcp-config", "--permission-mode", "bypassPermissions"]
     if arm == "baseline":
-        return base
-    settings = os.path.join(cfg_dir, "laya-settings.%s.json" % arm)
-    mcp = os.path.join(cfg_dir, "laya-mcp.json")
-    flags = base + ["--settings", settings]
+        return base + ["--tools", "Read,Grep,Glob"]
+    flags = base + ["--tools", "Read,Grep,Glob", "--settings", os.path.join(cfg_dir, "laya-settings.%s.json" % arm)]
+    mcp = os.path.join(cfg_dir, "laya-mcp.%s.json" % arm)
     if os.path.exists(mcp):
         flags += ["--mcp-config", mcp]
     return flags
+
+
+def read_hook_log(path):
+    out = {"injected_tokens": 0, "hook_actions": {}}
+    if not os.path.exists(path):
+        return out
+    for line in open(path):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        out["injected_tokens"] += tok_estimate("x" * int(e.get("injected_chars") or 0))
+        a = e.get("action", "?")
+        out["hook_actions"][a] = out["hook_actions"].get(a, 0) + 1
+    return out
 
 
 def tok_estimate(text):
@@ -100,10 +127,6 @@ def parse_stream(lines):
                         out["read_bytes"] += len(text)
         elif t == "system" and "hook" in str(e.get("subtype", "")):
             out["hook_events"] += 1
-            blob = json.dumps(e)
-            m = re.search(r"laya-codex: pre-ranked", blob)
-            if m and e.get("subtype") in ("hook_response", "hook_completed", "hook_result"):
-                out["injected_tokens"] += tok_estimate(json.loads(blob).get("output", "") or blob)
         elif t == "result":
             out["result"] = e.get("result", "") or ""
             out["usage"] = e.get("usage", {}) or {}
@@ -127,20 +150,27 @@ def run_one(arm, task, args, cfg_dir):
     cmd = ["claude", "-p", PROMPT.format(task=task["task"]), "--model", args.model, "--output-format", "stream-json",
            "--verbose", "--include-hook-events", "--no-session-persistence", "--max-budget-usd", str(args.max_usd)]
     cmd += arm_flags(arm, cfg_dir)
+    hook_log = os.path.join(args.out, "hooklogs", "%s_%s.jsonl" % (task["id"], arm))
+    os.makedirs(os.path.dirname(hook_log), exist_ok=True)
+    if os.path.exists(hook_log):
+        os.remove(hook_log)
+    env = dict(os.environ, LAYA_HOOK_LOG=hook_log)
     t0 = time.time()
     try:
-        p = subprocess.run(cmd, cwd=args.repo, capture_output=True, text=True, timeout=args.timeout)
+        p = subprocess.run(cmd, cwd=args.repo, capture_output=True, text=True, timeout=args.timeout, env=env)
         lines, rc = p.stdout.splitlines(), p.returncode
     except subprocess.TimeoutExpired as ex:
         lines, rc = (ex.stdout or b"").decode(errors="ignore").splitlines() if isinstance(ex.stdout, bytes) else (ex.stdout or "").splitlines(), "timeout"
     wall = time.time() - t0
     r = parse_stream(lines)
+    r.update(read_hook_log(hook_log))
     u = r["usage"]
     total_in = (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
     row = {"arm": arm, "task_id": task["id"], "wall_s": round(wall, 2), "rc": rc, "total_input_tokens": total_in,
            "output_tokens": u.get("output_tokens"), "reading_tokens": r["reading_tokens"],
            "injected_tokens": r["injected_tokens"], "cost_usd": r["cost_usd"], "num_turns": r["num_turns"],
-           "api_ms": r["api_ms"], "tool_calls": r["tool_calls"], "hook_events": r["hook_events"], "is_error": r["is_error"]}
+           "api_ms": r["api_ms"], "tool_calls": r["tool_calls"], "hook_events": r["hook_events"],
+           "hook_actions": r["hook_actions"], "is_error": r["is_error"]}
     row.update(grade(r["result"], task["gold"]))
     return row, lines
 
@@ -153,12 +183,13 @@ def run(args):
     done = set()
     if os.path.exists(res_path):
         done = {(r["arm"], r["task_id"]) for r in map(json.loads, open(res_path))}
+    cfg_dir = render_configs(args.out)
     rng = random.Random(7)
     plan = [(a, t) for t in tasks for a in rng.sample(arms, len(arms))]  # interleave arms per task, random order
     for i, (arm, task) in enumerate(plan):
         if (arm, task["id"]) in done:
             continue
-        row, lines = run_one(arm, task, args, os.path.join(HERE, "config"))
+        row, lines = run_one(arm, task, args, cfg_dir)
         with open(os.path.join(args.out, "raw", "%s_%s.jsonl" % (task["id"], arm)), "w") as f:
             f.write("\n".join(lines))
         with open(res_path, "a") as f:

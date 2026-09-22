@@ -1,0 +1,8 @@
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "@LAYA_BIN@ hook", "timeout": 5}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "@LAYA_BIN@ hook", "timeout": 8}]}],
+    "PreToolUse": [{"matcher": "Read|Agent|Task", "hooks": [{"type": "command", "command": "@LAYA_BIN@ hook", "timeout": 5}]}],
+    "PostToolUse": [{"matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": "@LAYA_BIN@ hook", "timeout": 5}]}]
+  }
+}
