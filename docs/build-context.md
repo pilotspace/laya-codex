@@ -42,6 +42,15 @@ server. Goal: −50% codebase-reading tokens, −30% task time, no drop in task 
   TAG filter: `@field:{value}` (single value only). Moon's analyzer lowercases, stems and drops
   stop words; we pre-normalize terms with `laya_core::ident::terms` on both sides.
 
+## Claude Code hook facts (verified empirically with claude 2.1.280, `bench/probe_hook.py`)
+- stdin common: `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `permission_mode`, `prompt_id`.
+- UserPromptSubmit: `prompt`. Output `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"..."}}` → reaches the model.
+- SessionStart: `source` (`startup`, `resume`, `clear`, `compact`).
+- PreToolUse: `tool_name`, `tool_input`, `tool_use_id`. `updatedInput` **replaces** the whole input
+  (a partial object fails validation) → send the full original input plus changes. With
+  `permissionDecision: "allow"`, a Read rewritten to `offset`/`limit` returned only those lines, and
+  PreToolUse `additionalContext` reached the model.
+
 ## Contracts (crate `laya-core`, already committed — do not change without the lead)
 `Chunk`, `Candidate`, `RankedSpan`, `QueryResult`, `RankMode`, `Error`, traits `Store`, `Scorer`,
 `ident::terms`. See `crates/laya-core/src/lib.rs`.
