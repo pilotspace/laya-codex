@@ -16,7 +16,7 @@ server. Goal: −50% codebase-reading tokens, −30% task time, no drop in task 
 - Rust 1.94 stable, macOS arm64 (M4 Pro, 24 GB). Edition 2024 workspace at repo root.
 - Crate versions on crates.io today: tree-sitter 0.27.0, candle-core/candle-nn/candle-transformers
   0.11.0, tokenizers 1.0.0-rc.2 (0.2x stable also exists), redis 1.7.0, rmcp 3.4.0.
-- **Laya model** files: `~/.cache/laya-codex/models/laya-base/` (`model.safetensors` bf16 843 MB,
+- **Laya model** files: `~/.cache/laya-codex/models/laya-base/` (`model.safetensors` F16 843 MB,
   `encoder/config.json` ModernBERT-large: 28 layers, hidden 1024, 16 heads, intermediate 2624,
   global attention every 3rd layer (rope θ 160000), local sliding window 128 (rope θ 10000),
   `tokenizer/tokenizer.json`, `rl_agent_config.json`, reference Python `rl_agent_api.py` +

@@ -187,10 +187,12 @@ impl<'a> Retriever<'a> {
             .map(|&i| candidates[i].chunk_id.clone())
             .collect();
 
-        let final_scores: HashMap<String, f32> =
-            fuse_ranked_lists(&[&lexical_ids, &laya_ids], self.cfg.rrf_k)
+        let final_scores: HashMap<String, f32> = match self.cfg.laya_weight {
+            None => fuse_ranked_lists(&[&lexical_ids, &laya_ids], self.cfg.rrf_k)
                 .into_iter()
-                .collect();
+                .collect(),
+            Some(w) => weighted_scores(&lexical_ids, &probs, w),
+        };
 
         let mut scored: Vec<Scored> = candidates
             .into_iter()
@@ -221,6 +223,16 @@ impl<'a> Retriever<'a> {
 
         (scored, RankMode::Laya)
     }
+}
+
+/// `(1-w)·(1 - rank/n) + w·p` per candidate, where `rank` is the lexical (fused) position.
+pub(crate) fn weighted_scores(lexical_ids: &[String], probs: &[f32], w: f32) -> HashMap<String, f32> {
+    let n = lexical_ids.len().max(1) as f32;
+    lexical_ids
+        .iter()
+        .enumerate()
+        .map(|(rank, id)| (id.clone(), (1.0 - w) * (1.0 - rank as f32 / n) + w * probs[rank]))
+        .collect()
 }
 
 /// Words that signal the task is about prose/config files rather than code.
@@ -312,6 +324,15 @@ mod tests {
         let mut c = chunk(path, 1, 10, &[], "x");
         c.lang = lang;
         Candidate { chunk_id: c.id(), chunk: c, bm25: fused, fused }
+    }
+
+    #[test]
+    fn weighted_scores_blend_lexical_rank_and_probability() {
+        let ids = vec!["a".to_string(), "b".to_string()];
+        let s = weighted_scores(&ids, &[0.1, 0.9], 0.5);
+        assert!((s["a"] - (0.5 * 1.0 + 0.05)).abs() < 1e-6);
+        assert!((s["b"] - (0.5 * 0.5 + 0.45)).abs() < 1e-6);
+        assert!(s["b"] > s["a"], "a confident Laya answer should overtake one lexical rank");
     }
 
     #[test]

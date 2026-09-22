@@ -57,7 +57,7 @@ pub struct Chunk {
     pub start_line: u32,
     pub end_line: u32,
     pub lang: Lang,
-    /// Enclosing symbol path, e.g. `impl Store::get` or `class Foo.bar`; empty if top-level.
+    /// Enclosing symbol path, e.g. `impl Store for MoonStore > fn get` or `class Foo > def bar`; empty if top-level.
     pub symbol: String,
     /// Syntax kind of the dominant node, e.g. `function_item`, `class_definition`, `window`.
     pub kind: String,

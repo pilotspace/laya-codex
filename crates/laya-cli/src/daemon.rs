@@ -172,6 +172,10 @@ impl Daemon {
     }
 }
 
+fn env_num<T: std::str::FromStr>(key: &str) -> Option<T> {
+    std::env::var(key).ok()?.parse().ok()
+}
+
 fn serve_conn(daemon: Arc<Daemon>, stream: UnixStream) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let mut writer = match stream.try_clone() {
@@ -216,6 +220,19 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     let mut base = RetrieverConfig::default();
     base.laya_budget = Duration::from_millis(cfg.budget_ms);
     base.use_laya = cfg.use_model;
+    // Tuning knobs (read once at daemon start; see bench/eval_retrieval.py).
+    if let Some(k) = env_num::<usize>("LAYA_K") {
+        base.k_candidates = k;
+    }
+    if let Some(p) = env_num::<f32>("LAYA_P_THRESHOLD") {
+        base.p_threshold = p;
+    }
+    if let Some(m) = env_num::<usize>("LAYA_MIN_KEEP") {
+        base.min_keep = m;
+    }
+    base.laya_weight = env_num::<f32>("LAYA_WEIGHT");
+    let state_tokens = env_num::<usize>("LAYA_STATE_TOKENS").unwrap_or(laya_model::DEFAULT_MAX_STATE_TOKENS);
+    eprintln!("[laya] retriever config {base:?} state_tokens={state_tokens}");
     let daemon = Daemon::new(Arc::clone(&store), base);
 
     if cfg.use_model {
@@ -225,8 +242,11 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
                 let t0 = std::time::Instant::now();
                 match laya_model::LayaModel::load(&dir, laya_model::DeviceKind::Auto) {
                     Ok(model) => {
-                        let tag = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        let inner: Arc<dyn Scorer> = Arc::new(laya_model::LayaScorer::new(model));
+                        let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        let tag = format!("{name}-s{state_tokens}");
+                        let mut scorer = laya_model::LayaScorer::new(model);
+                        scorer.max_state_tokens = state_tokens;
+                        let inner: Arc<dyn Scorer> = Arc::new(scorer);
                         let memo: Arc<dyn Scorer> = Arc::new(MemoScorer::new(inner, Arc::clone(&d.store), &tag));
                         if let Ok(mut s) = d.scorer.write() {
                             *s = Some(memo);

@@ -26,6 +26,8 @@ pub struct HookCtx<'a> {
     pub repo: String,
     pub budget_ms: u64,
     pub inject_tokens: usize,
+    /// Minimum Laya P for a span to justify narrowing a Read (depends on the model's calibration).
+    pub read_p: f32,
 }
 
 /// What a handler did, for the optional JSONL hook log.
@@ -112,7 +114,7 @@ fn pre_read(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
     }
     let Some(last) = session_view(session, ctx).and_then(|v| v.last) else { return Outcome::skip("no_ranking") };
     let Some(total) = count_lines(&ctx.root.join(&rel)) else { return Outcome::skip("unreadable") };
-    let Some((offset, limit)) = laya_rank::read_narrowing(&last, &rel, total, &laya_rank::ReadPolicy::default()) else {
+    let Some((offset, limit)) = laya_rank::read_narrowing(&last, &rel, total, &laya_rank::ReadPolicy { p_threshold: ctx.read_p, ..Default::default() }) else {
         return Outcome::skip("not_narrowed");
     };
     let mut updated = tool_input.clone();
@@ -228,7 +230,7 @@ mod tests {
     }
 
     fn ctx<'a>(api: &'a dyn DaemonApi) -> HookCtx<'a> {
-        HookCtx { api, root: root(), repo: "r".into(), budget_ms: 500, inject_tokens: 4000 }
+        HookCtx { api, root: root(), repo: "r".into(), budget_ms: 500, inject_tokens: 4000, read_p: 0.7 }
     }
 
     fn res(spans: Vec<RankedSpan>) -> QueryResult {

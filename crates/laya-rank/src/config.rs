@@ -69,6 +69,11 @@ pub struct RetrieverConfig {
     /// If `false`, skip the Laya gate entirely and return the lexical (RRF) ranking.
     #[serde(default = "default_use_laya")]
     pub use_laya: bool,
+    /// Weight of Laya's P(relevant) in the final score. `None` = rank-level RRF of lexical and
+    /// Laya orders; `Some(w)` = `(1-w)·lexical_rank_score + w·P`, which uses the calibrated
+    /// probability magnitudes instead of only their order.
+    #[serde(default)]
+    pub laya_weight: Option<f32>,
 }
 
 impl Default for RetrieverConfig {
@@ -82,6 +87,7 @@ impl Default for RetrieverConfig {
             max_total_lines: default_max_total_lines(),
             rrf_k: default_rrf_k(),
             use_laya: default_use_laya(),
+            laya_weight: None,
         }
     }
 }
