@@ -2,17 +2,30 @@
 //! spans, using only [`laya_core::Store`] and [`laya_core::Scorer`] — the concrete Moon store
 //! and Laya model live in other crates and are wired in by the caller (`layad`/`laya-cli`).
 //!
-//! This module builds up in stages (see `docs/build-context.md` for the commit-per-step rule):
-//! 1. [`config::RetrieverConfig`] — tunables, with defaults.
-//! 2. [`signals::extract_signals`] — BM25 terms, explicit identifiers and file-path mentions
-//!    pulled out of a prompt.
-//! 3. [`fusion::fuse_ranked_lists`] — the Reciprocal Rank Fusion primitive the spike found best
-//!    (`spike/laya_spike.py`: BM25⊕Laya RRF, MRR 0.591 vs BM25 0.480), reused for both candidate
-//!    generation and the Laya gate.
+//! Pipeline (`docs/architecture.md` §3.2–3.3):
+//! 1. [`signals::extract_signals`] pulls BM25 terms, explicit identifiers and file-path
+//!    mentions out of the prompt.
+//! 2. [`Retriever::query`] fans those out to `Store::bm25` / `chunks_defining` / a path-boosted
+//!    BM25 call, fuses the three ranked lists with Reciprocal Rank Fusion
+//!    (`fusion::fuse_ranked_lists`), and materializes the top candidates.
+//! 3. If a `Scorer` is configured, a budget-bounded Laya gate reranks the candidates (RRF of the
+//!    lexical and Laya ranks, then a probability threshold with a `min_keep` floor); on
+//!    timeout/error it degrades to `RankMode::Lexical`.
+//! 4. `span::shape_spans` merges adjacent/overlapping same-file chunks, keeps the top-N, and
+//!    enforces a total-line budget.
+//!
+//! `render_context`/`read_narrowing` (next commit) turn a [`laya_core::QueryResult`] into what
+//! the hooks/MCP layer sends to Claude Code.
 
 mod config;
 mod fusion;
+mod retriever;
 mod signals;
+mod span;
+
+#[cfg(test)]
+pub(crate) mod fakes;
 
 pub use config::RetrieverConfig;
+pub use retriever::Retriever;
 pub use signals::{PromptSignals, extract_signals};

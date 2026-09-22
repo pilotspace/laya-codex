@@ -1,0 +1,529 @@
+//! The retrieval brain: prompt -> signals -> candidates (BM25 ⊕ defining ⊕ path, RRF-fused) ->
+//! Laya gate (budget-bounded) -> shaped spans. See `docs/architecture.md` §3.2–3.3 and
+//! `spike/laya_spike.py` for the fusion this ports (BM25⊕Laya RRF: MRR 0.591 vs BM25 0.480).
+
+use std::collections::HashMap;
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use laya_core::{Candidate, Chunk, QueryResult, RankMode, Result, Scorer, Store};
+
+use crate::config::RetrieverConfig;
+use crate::fusion::fuse_ranked_lists;
+use crate::signals::extract_signals;
+use crate::span::{Scored, shape_spans};
+
+/// Turns a prompt into ranked, shaped code spans over a `Store` (candidate generation) and an
+/// optional `Scorer` (the Laya decision gate). Both are trait objects so `laya-rank` never
+/// depends on the concrete Moon store or candle model — only their contracts in `laya-core`.
+pub struct Retriever<'a> {
+    store: &'a dyn Store,
+    scorer: Option<&'a dyn Scorer>,
+    cfg: RetrieverConfig,
+}
+
+impl<'a> Retriever<'a> {
+    pub fn new(store: &'a dyn Store, scorer: Option<&'a dyn Scorer>, cfg: RetrieverConfig) -> Self {
+        Self { store, scorer, cfg }
+    }
+
+    /// Rank `prompt` against `repo_id`'s index and return the top spans.
+    ///
+    /// # Panics
+    /// Never panics on scorer failure or timeout — those degrade to `RankMode::Lexical`. Can
+    /// return `Err` only for `Store` failures (index/BM25/get_chunks), matching the "design for
+    /// failure" rule: callers decide the fail-open policy (e.g. an empty hook response).
+    pub fn query(&self, repo_id: &str, prompt: &str) -> Result<QueryResult> {
+        let start = Instant::now();
+        let signals = extract_signals(prompt);
+
+        if signals.terms.is_empty() && signals.identifiers.is_empty() && signals.paths.is_empty() {
+            return Ok(empty_result(start));
+        }
+
+        self.store.ensure_index(repo_id)?;
+
+        let bm25_limit = self.cfg.k_candidates.saturating_mul(2).max(1);
+
+        let bm25_hits = self.store.bm25(repo_id, &signals.terms, bm25_limit)?;
+        let bm25_ids: Vec<String> = bm25_hits.iter().map(|(id, _)| id.clone()).collect();
+        let bm25_scores: HashMap<String, f32> = bm25_hits.into_iter().collect();
+
+        let defining_ids: Vec<String> = if signals.identifiers.is_empty() {
+            Vec::new()
+        } else {
+            self.store
+                .chunks_defining(repo_id, &signals.identifiers, bm25_limit)?
+        };
+
+        let path_ids: Vec<String> = if signals.paths.is_empty() {
+            Vec::new()
+        } else {
+            self.path_signal(repo_id, &signals.paths, bm25_limit)?
+        };
+
+        let fused = fuse_ranked_lists(&[&bm25_ids, &defining_ids, &path_ids], self.cfg.rrf_k);
+        if fused.is_empty() {
+            return Ok(empty_result(start));
+        }
+        let fused_scores: HashMap<String, f32> = fused.iter().cloned().collect();
+        let top_ids: Vec<String> = fused
+            .into_iter()
+            .take(self.cfg.k_candidates)
+            .map(|(id, _)| id)
+            .collect();
+
+        let fetched = self.store.get_chunks(repo_id, &top_ids)?;
+        let mut by_id: HashMap<String, Chunk> = fetched.into_iter().map(|c| (c.id(), c)).collect();
+
+        // Preserve fused rank order; silently skip ids the store failed to materialize.
+        let candidates: Vec<Candidate> = top_ids
+            .iter()
+            .filter_map(|id| {
+                let chunk = by_id.remove(id)?;
+                Some(Candidate {
+                    chunk_id: id.clone(),
+                    bm25: bm25_scores.get(id).copied().unwrap_or(0.0),
+                    fused: fused_scores.get(id).copied().unwrap_or(0.0),
+                    chunk,
+                })
+            })
+            .collect();
+
+        if candidates.is_empty() {
+            return Ok(empty_result(start));
+        }
+        let n_candidates = candidates.len();
+
+        let (scored, mode) = self.laya_gate(prompt, candidates);
+        let spans = shape_spans(scored, self.cfg.top_n, self.cfg.max_total_lines);
+
+        Ok(QueryResult {
+            spans,
+            mode,
+            elapsed_ms: elapsed_ms(start),
+            candidates: n_candidates,
+        })
+    }
+
+    /// Resolve path mentions against the index (`list_files`, suffix match, cached in this one
+    /// call) and use the resolved paths as extra BM25 terms — chunks whose indexed path tokens
+    /// match get boosted, without needing a "chunks for path" method on `Store`.
+    fn path_signal(&self, repo_id: &str, mentions: &[String], limit: usize) -> Result<Vec<String>> {
+        let files = self.store.list_files(repo_id)?;
+        let mut resolved: Vec<String> = Vec::new();
+        for mention in mentions {
+            for f in &files {
+                if path_matches(f, mention) && !resolved.contains(f) {
+                    resolved.push(f.clone());
+                }
+            }
+        }
+        if resolved.is_empty() {
+            return Ok(Vec::new());
+        }
+        let terms: Vec<String> = resolved
+            .iter()
+            .flat_map(|p| laya_core::ident::terms(p))
+            .collect();
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let hits = self.store.bm25(repo_id, &terms, limit)?;
+        Ok(hits.into_iter().map(|(id, _)| id).collect())
+    }
+
+    /// Laya decision gate: budget-bounded rerank of `candidates` (already in lexical/RRF order).
+    /// Never blocks past `cfg.laya_budget`; any timeout, error, disabled scorer, or malformed
+    /// response degrades to the lexical order with `RankMode::Lexical`.
+    fn laya_gate(&self, prompt: &str, candidates: Vec<Candidate>) -> (Vec<Scored>, RankMode) {
+        let lexical_ids: Vec<String> = candidates.iter().map(|c| c.chunk_id.clone()).collect();
+        let to_lexical = |cands: Vec<Candidate>| -> Vec<Scored> {
+            cands
+                .into_iter()
+                .map(|c| Scored {
+                    chunk: c.chunk,
+                    score: c.fused,
+                    p_relevant: None,
+                })
+                .collect()
+        };
+
+        let Some(scorer) = self.scorer.filter(|_| self.cfg.use_laya) else {
+            return (to_lexical(candidates), RankMode::Lexical);
+        };
+
+        let owned_chunks: Vec<Chunk> = candidates.iter().map(|c| c.chunk.clone()).collect();
+        let probs = match call_scorer_bounded(
+            scorer,
+            prompt.to_string(),
+            owned_chunks,
+            self.cfg.laya_budget,
+        ) {
+            Some(p) if p.len() == candidates.len() => p,
+            _ => return (to_lexical(candidates), RankMode::Lexical),
+        };
+
+        let mut laya_order: Vec<usize> = (0..candidates.len()).collect();
+        laya_order.sort_by(|&a, &b| {
+            probs[b]
+                .partial_cmp(&probs[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let laya_ids: Vec<String> = laya_order
+            .iter()
+            .map(|&i| candidates[i].chunk_id.clone())
+            .collect();
+
+        let final_scores: HashMap<String, f32> =
+            fuse_ranked_lists(&[&lexical_ids, &laya_ids], self.cfg.rrf_k)
+                .into_iter()
+                .collect();
+
+        let mut scored: Vec<Scored> = candidates
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| Scored {
+                score: final_scores.get(&c.chunk_id).copied().unwrap_or(0.0),
+                p_relevant: Some(probs[i]),
+                chunk: c.chunk,
+            })
+            .collect();
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let passing = scored
+            .iter()
+            .filter(|s| s.p_relevant.unwrap_or(0.0) >= self.cfg.p_threshold)
+            .count();
+        if passing < self.cfg.min_keep {
+            // Not enough candidates clear the bar: keep the top `min_keep` by fused score anyway
+            // rather than starving the caller of context.
+            scored.truncate(self.cfg.min_keep.min(scored.len()));
+        } else {
+            scored.retain(|s| s.p_relevant.unwrap_or(0.0) >= self.cfg.p_threshold);
+        }
+
+        (scored, RankMode::Laya)
+    }
+}
+
+fn path_matches(file: &str, mention: &str) -> bool {
+    if file == mention || file.ends_with(&format!("/{mention}")) {
+        return true;
+    }
+    if !mention.contains('/') {
+        return file.rsplit('/').next() == Some(mention);
+    }
+    false
+}
+
+fn empty_result(start: Instant) -> QueryResult {
+    QueryResult {
+        spans: Vec::new(),
+        mode: RankMode::Lexical,
+        elapsed_ms: elapsed_ms(start),
+        candidates: 0,
+    }
+}
+
+fn elapsed_ms(start: Instant) -> u64 {
+    start.elapsed().as_millis() as u64
+}
+
+/// Run `scorer.score(task, chunks)` on a detached worker thread, bounded by `budget`. Returns
+/// `None` on timeout, a channel error, or the scorer itself returning `Err`. A late result (the
+/// thread finishes after `budget` elapses) is simply dropped — the send on a disconnected
+/// receiver fails silently and the thread exits.
+fn call_scorer_bounded(
+    scorer: &dyn Scorer,
+    task: String,
+    chunks: Vec<Chunk>,
+    budget: Duration,
+) -> Option<Vec<f32>> {
+    let (tx, rx) = mpsc::channel::<Result<Vec<f32>>>();
+
+    // SAFETY: this extends `scorer`'s borrow to `'static` so it can be moved into a genuinely
+    // detached `thread::spawn` (required so a slow/hung scorer can be *abandoned*, not just
+    // raced, past `budget` — see the module doc and `docs/architecture.md` §3.4's "fail-open,
+    // never block" rule). Why it's sound for the two paths that actually use `scorer` after this
+    // point:
+    //   * On the success path (`rx.recv_timeout` returns `Ok(..)`), the channel `send` in the
+    //     worker thread happens-after its call to `scorer.score(..)` completes (program order
+    //     within the thread) and happens-before our `recv` returns (channel synchronizes-with).
+    //     So every use of `scorer` is already finished by the time this function's caller
+    //     (`Retriever::query`, borrowed for `'a`) observes the result and could go on to drop
+    //     anything `scorer` might have borrowed.
+    //   * On the timeout path, the worker thread may still be inside `scorer.score(..)`. We do
+    //     not wait for it. This is sound only under the invariant documented on `Retriever::new`:
+    //     the `Scorer` passed in must outlive any query that could time out against it — true by
+    //     construction for the intended deployment (`layad` loads the model once and keeps the
+    //     `Scorer` alive for the whole daemon process). A `Scorer` dropped while a timed-out
+    //     background thread might still be running is undefined behavior; callers that cannot
+    //     make that guarantee must not pass `use_laya: true` with a short-lived scorer.
+    let scorer: &'static dyn Scorer =
+        unsafe { std::mem::transmute::<&dyn Scorer, &'static dyn Scorer>(scorer) };
+
+    thread::spawn(move || {
+        let refs: Vec<&Chunk> = chunks.iter().collect();
+        let result = scorer.score(&task, &refs);
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(budget) {
+        Ok(Ok(probs)) => Some(probs),
+        Ok(Err(_)) => None,
+        Err(_timeout_or_disconnected) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fakes::{
+        FailingScorer, FailingStore, FakeStore, ProbScorer, SleepyScorer, WrongLengthScorer,
+    };
+    use laya_core::Lang;
+    use std::collections::HashMap as StdHashMap;
+
+    fn chunk(path: &str, start: u32, end: u32, defines: &[&str], text: &str) -> Chunk {
+        Chunk {
+            path: path.to_string(),
+            start_line: start,
+            end_line: end,
+            lang: Lang::Rust,
+            symbol: String::new(),
+            kind: "function_item".to_string(),
+            defines: defines.iter().map(|s| s.to_string()).collect(),
+            text: text.to_string(),
+        }
+    }
+
+    fn sample_chunks() -> Vec<Chunk> {
+        vec![
+            chunk(
+                "src/store/retry.rs",
+                1,
+                20,
+                &["retry_with_backoff"],
+                "fn retry_with_backoff() {}",
+            ),
+            chunk(
+                "src/store/circuit.rs",
+                1,
+                20,
+                &["CircuitBreaker"],
+                "struct CircuitBreaker;",
+            ),
+            chunk(
+                "src/util/format.rs",
+                1,
+                20,
+                &["format_bytes"],
+                "fn format_bytes() {}",
+            ),
+        ]
+    }
+
+    #[test]
+    fn empty_prompt_returns_empty_lexical_result() {
+        let store = FakeStore::new(sample_chunks());
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        let out = r.query("repo", "").unwrap();
+        assert!(out.spans.is_empty());
+        assert_eq!(out.mode, RankMode::Lexical);
+        assert_eq!(out.candidates, 0);
+    }
+
+    #[test]
+    fn stopword_only_prompt_with_no_hits_returns_empty_result() {
+        let store = FakeStore::new(sample_chunks());
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        let out = r.query("repo", "the a of").unwrap();
+        assert!(out.spans.is_empty());
+        assert_eq!(out.mode, RankMode::Lexical);
+    }
+
+    #[test]
+    fn bm25_signal_finds_relevant_chunk_without_scorer() {
+        let store = FakeStore::new(sample_chunks());
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        let out = r.query("repo", "add retry with backoff").unwrap();
+        assert_eq!(out.mode, RankMode::Lexical);
+        assert!(out.spans.iter().any(|s| s.path == "src/store/retry.rs"));
+    }
+
+    #[test]
+    fn identifier_mention_uses_chunks_defining() {
+        let store = FakeStore::new(sample_chunks());
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        // "CircuitBreaker" is an explicit (mixed-case) identifier -> chunks_defining signal.
+        let out = r
+            .query("repo", "why does CircuitBreaker never half-open")
+            .unwrap();
+        assert!(out.spans.iter().any(|s| s.path == "src/store/circuit.rs"));
+    }
+
+    #[test]
+    fn path_mention_boosts_matching_file_via_list_files() {
+        let store = FakeStore::new(sample_chunks());
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        let out = r.query("repo", "something is off in format.rs").unwrap();
+        assert!(out.spans.iter().any(|s| s.path == "src/util/format.rs"));
+        assert_eq!(
+            store
+                .list_files_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[test]
+    fn store_error_propagates() {
+        let store = FailingStore;
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        assert!(r.query("repo", "anything at all").is_err());
+    }
+
+    #[test]
+    fn laya_scores_and_reranks_within_budget() {
+        let chunks = sample_chunks();
+        let ids: Vec<String> = chunks.iter().map(|c| c.id()).collect();
+        let mut probs: StdHashMap<String, f32> = StdHashMap::new();
+        // circuit.rs is already the strongest lexical candidate (identifier match +
+        // bm25 on "circuit"/"breaker") *and* the clear Laya favorite, so the fused result is
+        // unambiguous. (RRF is rank-based: a signal disagreement that merely swaps two items'
+        // adjacent ranks between two equally-weighted lists ties by construction — see
+        // `fusion::tests::agreement_across_signals_wins` for the "signals agree" case this
+        // exercises at the `Retriever` level.)
+        probs.insert(ids[0].clone(), 0.2); // retry.rs
+        probs.insert(ids[1].clone(), 0.95); // circuit.rs
+        probs.insert(ids[2].clone(), 0.1); // format.rs
+        let store = FakeStore::new(chunks);
+        let scorer = ProbScorer::new(probs);
+        let r = Retriever::new(&store, Some(&scorer), RetrieverConfig::default());
+        let out = r
+            .query(
+                "repo",
+                "why does CircuitBreaker never back off during retry check format too",
+            )
+            .unwrap();
+        assert_eq!(out.mode, RankMode::Laya);
+        assert!(!out.spans.is_empty());
+        assert_eq!(out.spans[0].path, "src/store/circuit.rs");
+        assert_eq!(out.spans[0].p_relevant, Some(0.95));
+    }
+
+    #[test]
+    fn scorer_timeout_falls_back_to_lexical_mode() {
+        let chunks = sample_chunks();
+        let store = FakeStore::new(chunks);
+        let scorer = SleepyScorer {
+            sleep: Duration::from_millis(200),
+            inner: ProbScorer::new(StdHashMap::new()),
+        };
+        // Leak to get a `'static` scorer: the background thread outlives this test's budget on
+        // purpose (that's the scenario under test), so per the safety contract on
+        // `call_scorer_bounded` the scorer must not be dropped while it might still be running.
+        let scorer: &'static SleepyScorer = Box::leak(Box::new(scorer));
+        let cfg = RetrieverConfig {
+            laya_budget: Duration::from_millis(20),
+            ..RetrieverConfig::default()
+        };
+        let r = Retriever::new(&store, Some(scorer), cfg);
+        let out = r
+            .query("repo", "investigate retry circuit backoff format")
+            .unwrap();
+        assert_eq!(out.mode, RankMode::Lexical);
+        assert!(out.spans.iter().all(|s| s.p_relevant.is_none()));
+    }
+
+    #[test]
+    fn scorer_error_falls_back_to_lexical_mode() {
+        let store = FakeStore::new(sample_chunks());
+        let scorer = FailingScorer;
+        let r = Retriever::new(&store, Some(&scorer), RetrieverConfig::default());
+        let out = r
+            .query("repo", "investigate retry circuit backoff format")
+            .unwrap();
+        assert_eq!(out.mode, RankMode::Lexical);
+    }
+
+    #[test]
+    fn scorer_returning_wrong_length_falls_back_to_lexical_mode() {
+        let store = FakeStore::new(sample_chunks());
+        let scorer = WrongLengthScorer;
+        let r = Retriever::new(&store, Some(&scorer), RetrieverConfig::default());
+        let out = r
+            .query("repo", "investigate retry circuit backoff format")
+            .unwrap();
+        assert_eq!(out.mode, RankMode::Lexical);
+    }
+
+    #[test]
+    fn use_laya_false_skips_scorer_even_when_present() {
+        let store = FakeStore::new(sample_chunks());
+        let scorer = ProbScorer::new(StdHashMap::new());
+        let cfg = RetrieverConfig {
+            use_laya: false,
+            ..RetrieverConfig::default()
+        };
+        let r = Retriever::new(&store, Some(&scorer), cfg);
+        let out = r
+            .query("repo", "investigate retry circuit backoff format")
+            .unwrap();
+        assert_eq!(out.mode, RankMode::Lexical);
+        assert_eq!(*scorer.calls.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn threshold_drops_low_probability_candidates() {
+        let chunks = sample_chunks();
+        let ids: Vec<String> = chunks.iter().map(|c| c.id()).collect();
+        let mut probs: StdHashMap<String, f32> = StdHashMap::new();
+        probs.insert(ids[0].clone(), 0.9); // passes
+        probs.insert(ids[1].clone(), 0.1); // dropped
+        probs.insert(ids[2].clone(), 0.05); // dropped
+        let store = FakeStore::new(chunks);
+        let scorer = ProbScorer::new(probs);
+        // low enough that the threshold actually bites
+        let cfg = RetrieverConfig {
+            min_keep: 1,
+            ..RetrieverConfig::default()
+        };
+        let r = Retriever::new(&store, Some(&scorer), cfg);
+        let out = r
+            .query("repo", "investigate retry circuit backoff format")
+            .unwrap();
+        assert_eq!(out.mode, RankMode::Laya);
+        assert_eq!(out.spans.len(), 1);
+        assert_eq!(out.spans[0].path, "src/store/retry.rs");
+    }
+
+    #[test]
+    fn min_keep_overrides_threshold_when_too_few_would_pass() {
+        let chunks = sample_chunks();
+        let ids: Vec<String> = chunks.iter().map(|c| c.id()).collect();
+        let mut probs: StdHashMap<String, f32> = StdHashMap::new();
+        probs.insert(ids[0].clone(), 0.05);
+        probs.insert(ids[1].clone(), 0.04);
+        probs.insert(ids[2].clone(), 0.03);
+        let store = FakeStore::new(chunks);
+        let scorer = ProbScorer::new(probs);
+        let cfg = RetrieverConfig {
+            min_keep: 3,
+            ..RetrieverConfig::default()
+        };
+        let r = Retriever::new(&store, Some(&scorer), cfg);
+        let out = r
+            .query("repo", "investigate retry circuit backoff format")
+            .unwrap();
+        assert_eq!(out.mode, RankMode::Laya);
+        // Nothing clears p_threshold (0.5), but min_keep=3 forces all 3 through.
+        assert_eq!(out.spans.len(), 3);
+    }
+}
