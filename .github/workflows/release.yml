@@ -1,0 +1,92 @@
+# Draft release: builds `laya` for macOS arm64 (Metal) and Linux x86_64 (CPU) on a v* tag and
+# attaches tarballs + .sha256 files to a *draft* GitHub release for manual review and publishing.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          # Oldest supported hosted Ubuntu, so the binary needs glibc 2.35 rather than 2.39.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: test
+        run: cargo test --workspace --release --locked --target "$TARGET"
+        env:
+          TARGET: ${{ matrix.target }}
+      - name: build
+        run: cargo build --release --locked -p laya-cli --target "$TARGET"
+        env:
+          TARGET: ${{ matrix.target }}
+      - name: package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          name="laya-${REF_NAME}-${TARGET}"
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/laya" "dist/$name/"
+          cp LICENSE NOTICE README.md CHANGELOG.md "dist/$name/"
+          cargo metadata --format-version 1 --locked --filter-platform "$TARGET" \
+            | python3 .github/scripts/third_party_licenses.py > "dist/$name/THIRD-PARTY-LICENSES.txt"
+          "dist/$name/laya" --help > /dev/null
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256" && cat "$name.tar.gz.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: laya-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: combined checksums
+        run: cd dist && cat ./*.sha256 > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/SHA256SUMS
