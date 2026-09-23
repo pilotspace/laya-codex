@@ -154,8 +154,9 @@ your prompt ─► laya-codex hook ─► local daemon ─► BM25 keyword searc
                                    │            (Moon index, tree-sitter chunks of 10–50 lines)
                                    ├─► Laya re-ranker: "is this code relevant to this task?"
                                    ▼
-          ≤ 9,500 chars added to the prompt: a ranked map, the code of the top 3 files,
-          definitions and uses of the names in your prompt, and related callers and callees
+          ≤ 9,500 chars added to the prompt: a ranked map, the code of the top 2 files
+          (checked against disk), definitions and uses of the names in your prompt, and
+          related callers and callees
 ```
 
 - **Indexing.** laya-codex splits your code into 10–50-line chunks along function and class boundaries using

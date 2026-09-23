@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Aimed at the time gap found in benchmark v2: Claude re-checked code it had been given (about
+0.5 Reads of an inlined block and 1 grep for an already-given symbol per session), and every
+prompt carried about 5.8k characters.
+
+### Changed
+- **At most 2 inlined code blocks** by default, down from 3; 1 for single-function tasks. In
+  benchmark v2 the third block was the largest (~2.5k characters) and the least often a correct
+  file (22%). Replaying the v2 injections, this cuts them by 25% and loses an inlined correct file
+  on 3 of 60 tasks; that file stays in the location list.
+
+### Added
+- **Trust line:** when code is inlined, the injection says it is the exact current content of
+  those line ranges and asks Claude not to Read or grep to re-check it. The claim is backed by a
+  check: before rendering, the daemon compares each file it is about to inline with its index
+  hash, and a file edited since indexing is listed as a location instead of inlined.
+- **"All indexed uses shown":** a prompt identifier's definition line carries this label when
+  every indexed use is listed or visible in the inlined code, so Claude can skip the grep for call
+  sites. It is only claimed for a complete list and is dropped if the 9,500-character cap cuts a
+  line.
+
+### Fixed
+- Adaptive injection could inline code from a file edited outside Claude since the last index
+  (for example after `git checkout`); such files are now shown as locations only.
+- An inlined block merged from two chunks 1–3 lines apart left out the lines between them while
+  its heading claimed the whole range, so line numbers inside the block were off. Inlined code is
+  now taken from the file's own lines for the stated range.
+
 ## [0.2.0] — 2026-09-23
 
 One name everywhere. The tool is **laya-codex**; "Laya" now only means the upstream

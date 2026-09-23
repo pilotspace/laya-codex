@@ -1,7 +1,7 @@
 //! `laya-codex daemon`: long-lived process that keeps Moon supervised, the Laya model warm and
 //! per-session state in memory. Clients speak the JSON-lines protocol in `protocol.rs`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -246,6 +246,7 @@ impl Daemon {
     /// so concurrent prompts cannot both send the same span.
     fn render(
         &self,
+        (root, id): (&Path, &str),
         session: Option<&str>,
         prompt: &str,
         result: &QueryResult,
@@ -275,6 +276,7 @@ impl Daemon {
             })
             .collect();
         let mut ctx = laya_rank::size_context(result, scope, &self.sizing, &already);
+        self.keep_only_current_code(root, id, &mut ctx);
         if !req.related {
             ctx.related.clear();
         }
@@ -290,6 +292,44 @@ impl Daemon {
             sessions.mark_sent(s, &keys);
         }
         (text, scope)
+    }
+
+    /// Inline code only from files whose bytes still match the index, so the render can vouch
+    /// that each block is the file's current content. A changed, missing or unindexed file is
+    /// demoted to a location pointer (the agent can Read it), never inlined possibly stale.
+    /// A kept span's text is taken from the file's own lines `start..=end`: a span merged from
+    /// chunks a few lines apart would otherwise lack the lines between them.
+    fn keep_only_current_code(&self, root: &Path, id: &str, ctx: &mut laya_rank::SizedContext) {
+        let mut current: HashMap<String, Option<String>> = HashMap::new();
+        let mut contents = |path: &str| -> Option<String> {
+            current
+                .entry(path.to_string())
+                .or_insert_with(|| {
+                    let indexed = self.store.file_hash(id, path).ok().flatten()?;
+                    let bytes = std::fs::read(root.join(path)).ok()?;
+                    (indexed == laya_parse::file_hash(&bytes))
+                        .then(|| String::from_utf8_lossy(&bytes).into_owned())
+                })
+                .clone()
+        };
+        let mut stale = Vec::new();
+        for mut span in std::mem::take(&mut ctx.full) {
+            let lines = contents(&span.path).and_then(|text| {
+                let (start, end) = (span.start_line as usize, span.end_line as usize);
+                let lines: Vec<&str> = text.lines().collect();
+                (start >= 1 && end >= start && end <= lines.len())
+                    .then(|| lines[start - 1..end].join("\n"))
+            });
+            match lines {
+                Some(text) => {
+                    span.text = text;
+                    ctx.full.push(span);
+                }
+                None => stale.push(span),
+            }
+        }
+        ctx.map.splice(0..0, stale);
+        ctx.verified_current = true;
     }
 
     /// The session table. A panic under the lock (see `serve_conn`) leaves it poisoned; the
@@ -319,7 +359,7 @@ impl Daemon {
                 top_n,
                 render,
             } => {
-                let (_, id) = self.repo(&repo);
+                let (root, id) = self.repo(&repo);
                 let mut cfg = self.base_cfg.clone();
                 if let Some(b) = budget_ms {
                     cfg.laya_budget = Duration::from_millis(b.min(MAX_BUDGET_MS));
@@ -347,8 +387,13 @@ impl Daemon {
                                     budget_tokens: r.budget_tokens.min(MAX_RENDER_TOKENS),
                                     ..r.clone()
                                 };
-                                let (text, scope) =
-                                    self.render(session.as_deref(), &prompt, &result, &r);
+                                let (text, scope) = self.render(
+                                    (&root, &id),
+                                    session.as_deref(),
+                                    &prompt,
+                                    &result,
+                                    &r,
+                                );
                                 (Some(text), scope.map(scope_name))
                             }
                             None => (None, None),
@@ -985,26 +1030,38 @@ mod tests {
         }
     }
 
+    /// A repo on disk with four one-function files, indexed with their real hashes (the
+    /// adaptive render only inlines code whose file still matches the index).
     fn daemon_with_code() -> (Arc<Daemon>, String) {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "laya-code-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
         let d = Daemon::new(Arc::new(MemoStore::default()), RetrieverConfig::default());
-        let repo = std::env::temp_dir().to_string_lossy().into_owned();
+        let repo = root.to_string_lossy().into_owned();
         let (_, id) = d.repo(&repo);
-        let chunks: Vec<Chunk> = (0..4)
-            .map(|i| Chunk {
-                path: format!("src/wal{i}.rs"),
+        for i in 0..4 {
+            let path = format!("src/wal{i}.rs");
+            let text = format!("fn replay_wal{i}() {{ /* replay wal segment */ }}");
+            std::fs::write(root.join(&path), format!("{text}\n")).unwrap();
+            let c = Chunk {
+                path: path.clone(),
                 start_line: 1,
-                end_line: 20,
+                end_line: 1,
                 lang: Lang::Rust,
                 symbol: format!("fn replay_wal{i}"),
                 kind: "function_item".into(),
                 defines: vec![format!("replay_wal{i}")],
                 refs: vec![],
-                text: format!("fn replay_wal{i}() {{ /* replay wal segment */ }}"),
-            })
-            .collect();
-        for c in &chunks {
+                text: text.clone(),
+            };
+            let hash = laya_parse::file_hash(format!("{text}\n").as_bytes());
             d.store
-                .put_file(&id, &c.path, "h", std::slice::from_ref(c))
+                .put_file(&id, &path, &hash, std::slice::from_ref(&c))
                 .unwrap();
         }
         (d, repo)
@@ -1056,6 +1113,106 @@ mod tests {
                 "{path} re-sent: {second}"
             );
         }
+    }
+
+    fn render_in(d: &Arc<Daemon>, repo: &str, session: &str) -> String {
+        match d.handle(Request::Query {
+            repo: repo.into(),
+            session: Some(session.into()),
+            prompt: "replay wal segment".into(),
+            budget_ms: Some(0),
+            top_n: None,
+            render: Some(RenderReq {
+                budget_tokens: 3000,
+                related: true,
+                adaptive: true,
+            }),
+        }) {
+            Response::Query {
+                rendered: Some(r), ..
+            } => r,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn adaptive_render_vouches_only_for_code_that_matches_the_file_on_disk() {
+        let (d, repo) = daemon_with_code();
+        let first = render_in(&d, &repo, "s1");
+        assert!(first.contains(laya_rank::TRUST_LINE), "{first}");
+        let inlined: Vec<String> = first
+            .lines()
+            .filter_map(|l| l.strip_prefix("### "))
+            .map(|l| l.split(':').next().unwrap().to_string())
+            .collect();
+        assert!(!inlined.is_empty(), "{first}");
+
+        // Edit every inlined file behind the index's back: its indexed code is no longer the
+        // file's content, so a new session must get a location pointer, not stale code.
+        for p in &inlined {
+            let abs = Path::new(&repo).join(p);
+            let old = std::fs::read_to_string(&abs).unwrap();
+            std::fs::write(&abs, format!("// edited\n{old}")).unwrap();
+        }
+        let second = render_in(&d, &repo, "s2");
+        for p in &inlined {
+            assert!(
+                !second.contains(&format!("### {p}:")),
+                "stale {p} inlined: {second}"
+            );
+            assert!(second.contains(p.as_str()), "{p} still listed: {second}");
+        }
+        if !second.contains("```") {
+            assert!(
+                !second.contains(laya_rank::TRUST_LINE),
+                "no code, no claim: {second}"
+            );
+        }
+    }
+
+    #[test]
+    fn inlined_code_is_the_files_lines_even_across_a_merge_gap() {
+        // Two chunks of one file, two lines apart, are merged into one span 1-4 by the span
+        // shaper; the chunks' texts alone lack lines 2-3. The injection vouches for the exact
+        // content of 1-4, so it must show them.
+        let root = std::env::temp_dir().join(format!("laya-gap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let file = "fn replay_wal_a() { /* replay wal segment */ }\n\
+                    // gap line one\n\
+                    // gap line two\n\
+                    fn replay_wal_b() { /* replay wal segment */ }\n";
+        std::fs::write(root.join("src/wal.rs"), file).unwrap();
+        let d = Daemon::new(Arc::new(MemoStore::default()), RetrieverConfig::default());
+        let repo = root.to_string_lossy().into_owned();
+        let (_, id) = d.repo(&repo);
+        let lines: Vec<&str> = file.lines().collect();
+        let chunk = |n: u32, name: &str| Chunk {
+            path: "src/wal.rs".into(),
+            start_line: n,
+            end_line: n,
+            lang: Lang::Rust,
+            symbol: format!("fn {name}"),
+            kind: "function_item".into(),
+            defines: vec![name.into()],
+            refs: vec![],
+            text: lines[n as usize - 1].to_string(),
+        };
+        let chunks = [chunk(1, "replay_wal_a"), chunk(4, "replay_wal_b")];
+        d.store
+            .put_file(
+                &id,
+                "src/wal.rs",
+                &laya_parse::file_hash(file.as_bytes()),
+                &chunks,
+            )
+            .unwrap();
+        let out = render_in(&d, &repo, "gap");
+        assert!(out.contains("### src/wal.rs:1-4"), "merged span: {out}");
+        assert!(
+            out.contains("// gap line one\n// gap line two"),
+            "gap lines missing from the vouched-for code: {out}"
+        );
     }
 
     #[test]

@@ -32,7 +32,9 @@ pub(crate) mod fakes;
 
 pub use config::RetrieverConfig;
 pub use read_narrow::{ReadPolicy, read_narrowing};
-pub use render::{render_compact, render_compact_opts, render_context, render_context_opts};
+pub use render::{
+    TRUST_LINE, render_compact, render_compact_opts, render_context, render_context_opts,
+};
 pub use retriever::Retriever;
 pub use signals::{PromptSignals, content_terms, extract_signals, is_follow_up};
 pub use sizing::{

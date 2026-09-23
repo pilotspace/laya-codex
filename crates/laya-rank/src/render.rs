@@ -54,6 +54,18 @@ pub fn render_context_opts(
 pub(crate) const COMPACT_HEADER: &str = "<!-- laya-codex: code located for this task by static analysis \
 (tree-sitter chunks + BM25 + Laya relevance model). -->\n";
 
+/// Said once, before the inlined code, only when the caller checked every inlined file against
+/// the index for this prompt ([`crate::SizedContext::verified_current`]). Benchmark v2: agents
+/// re-Read about 0.5 inlined blocks and grepped for about 1 already-given symbol per session.
+pub const TRUST_LINE: &str = "The code blocks below are the exact current contents of those \
+line ranges (checked against the files on disk for this prompt). Answer from them; don't Read \
+or grep to re-check them.\n\n";
+
+/// Appended to an identifier's definition line when every indexed use of it is shown, either
+/// listed under "Definitions and uses:" or inside inlined code. [`append_related`] drops it when
+/// the size cap cuts one of the identifier's lines.
+pub(crate) const COMPLETE_USES: &str = " (all indexed uses shown)";
+
 pub(crate) const COMPACT_FOOTER: &str = "Use the code above directly. Search or Read further only for what is \
 still missing, and prefer Read with offset/limit around the listed lines.\n";
 
@@ -172,14 +184,19 @@ pub(crate) fn append_related(out: &mut String, related: &[Related], inlined: &[&
             .iter()
             .any(|s| s.path == r.path && (s.start_line..=s.end_line).contains(&r.start_line))
     };
+    let shown: Vec<&Related> = usages.into_iter().filter(|r| !visible(r)).collect();
+    let cut = identifiers_cut_by_the_cap(out, &shown);
     append_section(
         out,
         USAGES_HEADER,
-        usages.iter().filter(|r| !visible(r)).map(|r| {
-            format!(
-                "- {}:{}: {} — {}\n",
-                r.path, r.start_line, r.symbol, r.relation
-            )
+        shown.iter().map(|r| {
+            let claimed = r.relation.ends_with(COMPLETE_USES);
+            let relation = if claimed && cut.contains(&usage_ident(&r.relation)) {
+                r.relation.trim_end_matches(COMPLETE_USES)
+            } else {
+                r.relation.as_str()
+            };
+            usage_line(r, relation)
         }),
     );
     append_section(
@@ -187,6 +204,35 @@ pub(crate) fn append_related(out: &mut String, related: &[Related], inlined: &[&
         RELATED_HEADER,
         neighbours.iter().map(|r| render_related_line(r)),
     );
+}
+
+fn usage_line(r: &Related, relation: &str) -> String {
+    format!(
+        "- {}:{}: {} — {}\n",
+        r.path, r.start_line, r.symbol, relation
+    )
+}
+
+/// The identifier a usage relation is about: the text between the first pair of backticks.
+fn usage_ident(relation: &str) -> &str {
+    relation.split('`').nth(1).unwrap_or_default()
+}
+
+/// Identifiers with at least one usage line that would not fit under [`MAX_INJECT_CHARS`] after
+/// `out` (lines as [`append_section`] adds them, claims included). Their "all uses shown" claim
+/// would be false, so it is dropped.
+fn identifiers_cut_by_the_cap<'a>(out: &str, lines: &[&'a Related]) -> Vec<&'a str> {
+    let mut len = out.len();
+    let mut cut = Vec::new();
+    for (i, r) in lines.iter().enumerate() {
+        let need = usage_line(r, &r.relation).len() + if i == 0 { USAGES_HEADER.len() } else { 0 };
+        if cut.is_empty() && len + need <= MAX_INJECT_CHARS {
+            len += need;
+        } else {
+            cut.push(usage_ident(&r.relation));
+        }
+    }
+    cut
 }
 
 fn append_section(out: &mut String, header: &str, lines: impl Iterator<Item = String>) {
@@ -281,6 +327,43 @@ mod compact_tests {
             symbol: sym.into(),
             relation: relation.into(),
         }
+    }
+
+    fn usage(path: &str, line: u32, text: &str, relation: &str) -> Related {
+        Related {
+            path: path.into(),
+            start_line: line,
+            end_line: line,
+            symbol: text.into(),
+            relation: relation.into(),
+        }
+    }
+
+    #[test]
+    fn completeness_claim_survives_only_if_every_line_of_the_identifier_is_shown() {
+        let claimed = format!("definition of `x`{COMPLETE_USES}");
+        let lines = vec![
+            usage("a.rs", 1, "fn x() {}", &claimed),
+            usage("b.rs", 7, &"x(); ".repeat(20), "use of `x`"),
+        ];
+        let mut roomy = String::new();
+        append_related(&mut roomy, &lines, &[]);
+        assert!(roomy.contains(COMPLETE_USES), "{roomy}");
+
+        // Leave room for the definition line only: the use line is cut, so "all uses shown"
+        // would be false and must not be printed.
+        let def_line = format!("- a.rs:1: fn x() {{}} — {claimed}\n");
+        let mut tight = "z".repeat(MAX_INJECT_CHARS - USAGES_HEADER.len() - def_line.len());
+        append_related(&mut tight, &lines, &[]);
+        assert!(
+            tight.contains("definition of `x`"),
+            "the definition line still fits"
+        );
+        assert!(
+            !tight.contains(COMPLETE_USES),
+            "claim kept although a use was cut"
+        );
+        assert!(tight.len() <= MAX_INJECT_CHARS);
     }
 
     #[test]
