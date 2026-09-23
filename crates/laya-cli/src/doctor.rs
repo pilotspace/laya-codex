@@ -104,6 +104,49 @@ pub fn check_moon(bin: &Path, tried: &[PathBuf], running: bool, probe_timeout: D
     }
 }
 
+/// The server on the Moon port: `probe` is `(what answers, it is a password-less Moon an older
+/// laya started from this LAYA_HOME)`, or why laya's password could not be loaded.
+pub fn check_auth(probe: Result<(laya_store::MoonProbe, bool), String>, port: u16) -> Check {
+    use laya_store::MoonProbe;
+    let other = || {
+        Some(format!(
+            "stop the other Moon on port {port}, or set LAYA_MOON_PORT to a free port"
+        ))
+    };
+    match probe {
+        Err(e) => Check::new(
+            "auth",
+            Level::Fail,
+            format!("cannot load laya's Moon password: {e}"),
+            Some("delete $LAYA_HOME/moon.acl and run `laya stop`; both are recreated".into()),
+        ),
+        Ok((MoonProbe::Ready, _)) => Check::new(
+            "auth",
+            Level::Pass,
+            format!("laya's password-protected Moon answers on port {port}"),
+            None,
+        ),
+        Ok((MoonProbe::Down, _)) => Check::new(
+            "auth",
+            Level::Pass,
+            format!("port {port} is free; laya starts its password-protected Moon on demand"),
+            None,
+        ),
+        Ok((MoonProbe::Unprotected, true)) => Check::new(
+            "auth",
+            Level::Warn,
+            format!(
+                "port {port} is served by a Moon an older laya started without a password; the next daemon start replaces it"
+            ),
+            Some(
+                "`laya stop` (the daemon restarts on demand and replaces it, keeping the index)"
+                    .into(),
+            ),
+        ),
+        Ok((p, _)) => Check::new("auth", Level::Fail, laya_store::refusal(port, p), other()),
+    }
+}
+
 /// Run `bin --help` and require a successful exit within `timeout` (killed otherwise).
 fn probe(bin: &Path, timeout: Duration) -> Result<(), String> {
     let mut child = Command::new(bin)
@@ -435,8 +478,12 @@ pub fn render(checks: &[Check]) -> String {
 
 /// Gather the real inputs and run every check. `start` lets the daemon ping autostart it.
 pub fn run(cfg: &Config, root: &Path, start: bool) -> Vec<Check> {
-    let sup = laya_store::MoonSupervisor::new(&cfg.moon_bin, cfg.moon_port, cfg.moon_dir());
-    let moon_running = sup.is_running();
+    let sup = crate::config::supervisor(cfg).map_err(|e| format!("{e:#}"));
+    let probe = sup
+        .as_ref()
+        .map(|s| (s.probe(), s.is_legacy()))
+        .map_err(Clone::clone);
+    let moon_running = matches!(probe, Ok((laya_store::MoonProbe::Ready, _)));
     let mut checks = Vec::new();
 
     let home = cfg.home.clone();
@@ -447,6 +494,7 @@ pub fn run(cfg: &Config, root: &Path, start: bool) -> Vec<Check> {
     checks.push(bounded("moon", Duration::from_secs(4), move || {
         check_moon(&bin, &tried, moon_running, Duration::from_secs(2))
     }));
+    checks.push(check_auth(probe, cfg.moon_port));
     let (use_model, dir, searched) = (
         cfg.use_model,
         cfg.model_dir.clone(),
@@ -483,18 +531,20 @@ pub fn run(cfg: &Config, root: &Path, start: bool) -> Vec<Check> {
     ));
 
     // Re-checked here: `--start` may have brought Moon up with the daemon.
-    let (port, repo) = (cfg.moon_port, root.to_path_buf());
+    let repo = root.to_path_buf();
+    let sc = crate::config::store_config(cfg).map_err(|e| format!("{e:#}"));
     checks.push(bounded("index", Duration::from_secs(5), move || {
-        let files = if sup.is_running() {
-            let mut sc = laya_store::StoreConfig::local(port);
-            sc.query_timeout = Duration::from_secs(3);
-            sc.max_retries = 0;
-            laya_store::MoonStore::new(sc)
-                .and_then(|s| s.list_files(&laya_store::repo_id(&repo)))
-                .map(|f| f.len())
-                .map_err(|e| e.to_string())
-        } else {
-            Err("Moon is not running".to_string())
+        let files = match (sup, sc) {
+            (Ok(sup), Ok(mut sc)) if sup.is_running() => {
+                sc.query_timeout = Duration::from_secs(3);
+                sc.max_retries = 0;
+                laya_store::MoonStore::new(sc)
+                    .and_then(|s| s.list_files(&laya_store::repo_id(&repo)))
+                    .map(|f| f.len())
+                    .map_err(|e| e.to_string())
+            }
+            (Err(e), _) | (_, Err(e)) => Err(e),
+            _ => Err("laya's Moon is not running".to_string()),
         };
         check_index(files, &repo)
     }));
@@ -669,6 +719,29 @@ mod tests {
         let c = check_daemon(Err("connection refused".into()), sock);
         assert_eq!(c.level, Level::Warn);
         assert!(c.detail.contains("not running"), "{}", c.detail);
+    }
+
+    #[test]
+    fn the_moon_on_the_port_must_be_layas_protected_one() {
+        use laya_store::MoonProbe;
+        let ok = |p| check_auth(Ok((p, false)), 7).level;
+        assert_eq!(ok(MoonProbe::Ready), Level::Pass);
+        assert_eq!(ok(MoonProbe::Down), Level::Pass);
+        let c = check_auth(Ok((MoonProbe::Unprotected, false)), 7);
+        assert_eq!(c.level, Level::Fail);
+        assert!(
+            c.detail.contains("port 7") && c.detail.contains("without laya's password"),
+            "{}",
+            c.detail
+        );
+        assert!(c.fix.as_deref().unwrap().contains("LAYA_MOON_PORT"));
+        assert_eq!(ok(MoonProbe::WrongPassword), Level::Fail);
+        // A Moon an older laya started is replaced at the next daemon start.
+        let c = check_auth(Ok((MoonProbe::Unprotected, true)), 7);
+        assert_eq!(c.level, Level::Warn);
+        assert!(c.fix.as_deref().unwrap().contains("laya stop"));
+        let c = check_auth(Err("moon.acl is a symlink".into()), 7);
+        assert_eq!(c.level, Level::Fail);
     }
 
     #[test]

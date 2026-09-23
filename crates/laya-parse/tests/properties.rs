@@ -15,7 +15,8 @@ fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-const MOON: &str = "/Users/tindang/workspaces/tind-repo/moon";
+/// Env var naming an extra real-world repository (e.g. a moon checkout) to check.
+const MOON_REPO_VAR: &str = "LAYA_TEST_MOON_REPO";
 
 fn check_tree(root: &Path, limit: usize) -> usize {
     let cfg = ChunkConfig::default();
@@ -44,9 +45,16 @@ fn invariants_hold_on_every_file_of_this_repo() {
 
 #[test]
 fn invariants_hold_on_moon_sample() {
-    let root = Path::new(MOON);
-    if !root.exists() {
-        eprintln!("moon repo not present, skipping");
+    let Some(repo) = std::env::var_os(MOON_REPO_VAR) else {
+        eprintln!("SKIP: set {MOON_REPO_VAR} to a large repository (e.g. a moon checkout)");
+        return;
+    };
+    let root = Path::new(&repo);
+    if !root.is_dir() {
+        eprintln!(
+            "SKIP: {MOON_REPO_VAR}={} is not a directory",
+            root.display()
+        );
         return;
     }
     let n = check_tree(root, 400);

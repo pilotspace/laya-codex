@@ -153,8 +153,9 @@ fn pre_read(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
             "escape_hatch"
         });
     }
-    let Some(total) = count_lines(&ctx.root.join(&rel)) else {
-        return Outcome::skip("unreadable");
+    let total = match count_lines(&ctx.root.join(&rel)) {
+        Ok(n) => n,
+        Err(action) => return Outcome::skip(action),
     };
     if total < laya_rank::ReadPolicy::default().min_file_lines {
         return Outcome::skip("small_file");
@@ -280,8 +281,30 @@ fn session_start(source: &str, session: &str, ctx: &HookCtx) -> Outcome {
     Outcome::skip("index_started")
 }
 
-fn count_lines(path: &Path) -> Option<u32> {
-    Some(line_count(&std::fs::read(path).ok()?))
+/// Files larger than this are never read by the Read hook (the same cap the indexer uses).
+const MAX_READ_BYTES: u64 = laya_parse::MAX_FILE_BYTES;
+
+/// Line count of a regular file of at most [`MAX_READ_BYTES`], or the skip action to log.
+/// Stats before opening (a FIFO or device is never opened) and bounds the read, so a file that
+/// grows after the stat still cannot pull more than the cap into memory.
+fn count_lines(path: &Path) -> Result<u32, &'static str> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path).map_err(|_| "unreadable")?;
+    if !meta.is_file() {
+        return Err("unreadable");
+    }
+    if meta.len() > MAX_READ_BYTES {
+        return Err("too_large");
+    }
+    let file = std::fs::File::open(path).map_err(|_| "unreadable")?;
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_READ_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "unreadable")?;
+    if bytes.len() as u64 > MAX_READ_BYTES {
+        return Err("too_large");
+    }
+    Ok(line_count(&bytes))
 }
 
 /// Lines as the Read tool numbers them (`\n`-terminated, so CRLF counts once; a final line
@@ -492,6 +515,37 @@ mod tests {
         let o = handle(&read_input(rel), &ctx(&f));
         assert_eq!((o.action, o.output), ("small_file", None));
         assert_eq!(plan_calls(&f), 0);
+    }
+
+    #[test]
+    fn files_over_one_mib_pass_through_without_being_read_or_planned() {
+        let rel = "target/laya-hook-test-huge.rs";
+        std::fs::create_dir_all(root().join("target")).unwrap();
+        // Many short lines (well over `min_file_lines`), just past the 1 MiB cap.
+        let body = "// x\n".repeat((MAX_READ_BYTES as usize) / 5 + 10);
+        assert!(body.len() as u64 > MAX_READ_BYTES);
+        std::fs::write(root().join(rel), body).unwrap();
+        let f = plan_fake(1);
+        let o = handle(&read_input(rel), &ctx(&f));
+        assert_eq!((o.action, o.output), ("too_large", None));
+        assert_eq!(plan_calls(&f), 0);
+        let _ = std::fs::remove_file(root().join(rel));
+    }
+
+    #[test]
+    fn count_lines_refuses_oversized_and_non_regular_files() {
+        let dir = std::env::temp_dir().join(format!("laya-hook-cl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = dir.join("ok.rs");
+        std::fs::write(&ok, "a\nb\n").unwrap();
+        assert_eq!(count_lines(&ok), Ok(2));
+        let huge = dir.join("huge.rs");
+        std::fs::write(&huge, vec![b'\n'; MAX_READ_BYTES as usize + 1]).unwrap();
+        assert_eq!(count_lines(&huge), Err("too_large"));
+        // A directory (or FIFO/device) is never opened for reading.
+        assert_eq!(count_lines(&dir), Err("unreadable"));
+        assert_eq!(count_lines(&dir.join("missing.rs")), Err("unreadable"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

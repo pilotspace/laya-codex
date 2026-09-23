@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use crate::secure::Password;
+
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
     pub host: String,
@@ -38,6 +40,8 @@ pub struct StoreConfig {
     /// whole posting list for every *repeated* occurrence in a document, so indexing cost grows
     /// with tf x df; capping tf trades a little BM25 tf signal for much faster indexing.
     pub max_tf: u32,
+    /// Sent with `AUTH` on every new connection (including reconnects) when set.
+    pub password: Option<Password>,
 }
 
 impl StoreConfig {
@@ -59,7 +63,15 @@ impl StoreConfig {
             per_term_limit: 200,
             df_sq_budget: 20_000_000,
             max_tf: 2,
+            password: None,
         }
+    }
+
+    /// The same configuration authenticating with `password`.
+    #[must_use]
+    pub fn with_password(mut self, password: Password) -> Self {
+        self.password = Some(password);
+        self
     }
 
     pub(crate) fn url(&self) -> String {

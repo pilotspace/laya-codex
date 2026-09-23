@@ -52,6 +52,9 @@ pub enum Request {
         session: String,
         path: String,
     },
+    /// Ask the daemon to exit (`laya stop`). Answered with `Response::Ok` before it exits; the
+    /// Moon it supervises keeps running. Older daemons answer "bad request".
+    Shutdown,
 }
 
 /// A narrowed first Read: show `limit` lines from `offset` (1-based) of a `total_lines`-line
@@ -185,6 +188,16 @@ mod tests {
         assert_eq!(none, Response::ReadPlan { plan: None });
         let bare: Response = serde_json::from_str(r#"{"status":"read_plan"}"#).unwrap();
         assert_eq!(bare, Response::ReadPlan { plan: None });
+    }
+
+    #[test]
+    fn shutdown_is_a_bare_op() {
+        let s = serde_json::to_string(&Request::Shutdown).unwrap();
+        assert_eq!(s, r#"{"op":"shutdown"}"#);
+        assert_eq!(
+            serde_json::from_str::<Request>(&s).unwrap(),
+            Request::Shutdown
+        );
     }
 
     #[test]

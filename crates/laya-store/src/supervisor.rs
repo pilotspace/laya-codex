@@ -1,8 +1,13 @@
 //! [`MoonSupervisor`]: keep a local moon sidecar alive.
 //!
-//! `ensure_running` is both "start" and "restart after crash": it PINGs, and if nothing answers
-//! it spawns a detached moon (own process group, so a Ctrl-C to the CLI does not kill it) with
-//! `--appendonly yes` so data and the FT index survive restarts, then waits for PING.
+//! `ensure_running` is both "start" and "restart after crash": it probes the port, and if nothing
+//! answers it spawns a detached moon (own process group, so a Ctrl-C to the CLI does not kill it)
+//! with `--appendonly yes` so data and the FT index survive restarts, then waits until it answers.
+//!
+//! With [`MoonSupervisor::with_auth`] Moon is spawned with laya's ACL file and password, and only
+//! a Moon that rejects anonymous clients *and* accepts laya's password counts as running
+//! ([`MoonProbe::Ready`]). A Moon without a password on the port is refused, except one an older
+//! laya started from the same data dir (its pidfile names a live `moon`), which is replaced.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -13,16 +18,40 @@ use std::time::{Duration, Instant};
 
 use laya_core::{Error, Result};
 
+use crate::secure::{Password, create_private_dir};
+
 const PING_TIMEOUT: Duration = Duration::from_millis(200);
 const POLL: Duration = Duration::from_millis(20);
 const STOP_GRACE: Duration = Duration::from_secs(3);
+/// Longest reply line the probe reads.
+const MAX_REPLY: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupervisorStatus {
-    /// Something already answered PING on the port.
+    /// laya's Moon already answered on the port.
     AlreadyRunning,
-    /// A new moon was spawned and answered PING.
+    /// A new moon was spawned and answered.
     Spawned { pid: u32 },
+}
+
+/// What answers on the Moon port, from laya's point of view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoonProbe {
+    /// Nothing answers RESP there (closed port, or a non-RESP listener).
+    Down,
+    /// Ours: without auth, it answers PING; with auth, it rejects an anonymous PING and answers
+    /// PING after `AUTH <password>`.
+    Ready,
+    /// It answers an anonymous PING although laya expects a password: not laya's Moon.
+    Unprotected,
+    /// It requires a password but rejects laya's.
+    WrongPassword,
+}
+
+#[derive(Debug, Clone)]
+struct Auth {
+    password: Password,
+    aclfile: PathBuf,
 }
 
 #[derive(Debug)]
@@ -30,24 +59,42 @@ pub struct MoonSupervisor {
     bin: PathBuf,
     port: u16,
     dir: PathBuf,
+    auth: Option<Auth>,
     spawn_timeout: Duration,
     /// The moon we spawned, kept so it can be reaped; `None` if another process spawned it.
     child: Mutex<Option<Child>>,
 }
 
 impl MoonSupervisor {
-    /// `dir` holds moon's data (AOF), `moon.log` and `moon.pid`.
+    /// `dir` holds moon's data (AOF), `moon.log` and `moon.pid`; it is created mode 0700.
     pub fn new(bin: impl Into<PathBuf>, port: u16, dir: impl AsRef<Path>) -> Self {
         Self {
             bin: bin.into(),
             port,
             dir: dir.as_ref().to_path_buf(),
+            auth: None,
             spawn_timeout: Duration::from_secs(3),
             child: Mutex::new(None),
         }
     }
 
-    /// Override the default 3 s wait for a freshly spawned moon to answer PING.
+    /// Protect the Moon with `password`: it is spawned with `--aclfile aclfile` (which must hold
+    /// the same password, see [`crate::load_or_create_acl`]) and `--requirepass`, and a Moon on
+    /// the port only counts as running when it demands and accepts this password.
+    ///
+    /// `--requirepass` is required because Moon (8bba3ced) treats every connection as
+    /// authenticated while it is unset, even with an ACL file. It makes the password visible to
+    /// local users via `ps`.
+    #[must_use]
+    pub fn with_auth(mut self, password: Password, aclfile: impl Into<PathBuf>) -> Self {
+        self.auth = Some(Auth {
+            password,
+            aclfile: aclfile.into(),
+        });
+        self
+    }
+
+    /// Override the default 3 s wait for a freshly spawned moon to answer.
     #[must_use]
     pub fn with_spawn_timeout(mut self, d: Duration) -> Self {
         self.spawn_timeout = d;
@@ -69,10 +116,23 @@ impl MoonSupervisor {
         self.dir.join("moon.log")
     }
 
-    /// Does a RESP server answer `PING` on `127.0.0.1:port` within 200 ms?
+    /// Is laya's Moon ([`MoonProbe::Ready`]) answering on `127.0.0.1:port`?
     #[must_use]
     pub fn is_running(&self) -> bool {
-        ping(self.port)
+        self.probe() == MoonProbe::Ready
+    }
+
+    /// Classify what answers on the port (200 ms per step).
+    #[must_use]
+    pub fn probe(&self) -> MoonProbe {
+        probe(self.port, self.auth.as_ref().map(|a| &a.password))
+    }
+
+    /// Would [`Self::ensure_running`] replace the Moon on the port (a password-less Moon an older
+    /// laya started from this data dir)?
+    #[must_use]
+    pub fn is_legacy(&self) -> bool {
+        self.auth.is_some() && self.probe() == MoonProbe::Unprotected && self.legacy_pid().is_some()
     }
 
     fn child(&self) -> std::sync::MutexGuard<'_, Option<Child>> {
@@ -81,12 +141,74 @@ impl MoonSupervisor {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Make sure moon answers on the port, spawning it if needed.
-    pub fn ensure_running(&self) -> Result<SupervisorStatus> {
-        if self.is_running() {
-            return Ok(SupervisorStatus::AlreadyRunning);
+    /// Error for a Moon on the port that laya must not use.
+    fn refuse(&self, p: MoonProbe) -> Error {
+        Error::StoreUnavailable(refusal(self.port, p))
+    }
+
+    /// Pid of a password-less Moon an older laya started from our data dir: the pidfile names a
+    /// live process whose executable is called `moon`.
+    fn legacy_pid(&self) -> Option<u32> {
+        let pid: u32 = std::fs::read_to_string(self.pidfile())
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        (process_basename(pid)? == "moon").then_some(pid)
+    }
+
+    /// Stop a legacy Moon (see [`Self::legacy_pid`]) so an authenticated one can take the port.
+    fn replace_legacy(&self, pid: u32) -> Result<()> {
+        tracing::warn!(
+            pid,
+            port = self.port,
+            "stopping the password-less moon started by an older laya"
+        );
+        self.terminate(pid)?;
+        if self.probe() != MoonProbe::Down {
+            return Err(Error::StoreUnavailable(format!(
+                "the password-less moon (pid {pid}) on port {} did not stop",
+                self.port
+            )));
         }
-        std::fs::create_dir_all(&self.dir)?;
+        let _ = std::fs::remove_file(self.pidfile());
+        Ok(())
+    }
+
+    /// SIGTERM `pid`, wait up to 3 s for the port to go quiet, then SIGKILL (and wait again).
+    fn terminate(&self, pid: u32) -> Result<()> {
+        let quiet = |grace: Duration| {
+            let t = Instant::now();
+            while self.probe() != MoonProbe::Down && t.elapsed() < grace {
+                std::thread::sleep(POLL);
+            }
+            self.probe() == MoonProbe::Down
+        };
+        signal(pid, libc::SIGTERM)?;
+        if !quiet(STOP_GRACE) {
+            tracing::warn!(pid, "moon ignored SIGTERM; sending SIGKILL");
+            signal(pid, libc::SIGKILL)?;
+            quiet(STOP_GRACE);
+        }
+        Ok(())
+    }
+
+    /// Make sure laya's Moon answers on the port, spawning it if needed.
+    ///
+    /// Errors without spawning when the port is served by a Moon laya cannot authenticate
+    /// against, unless it is a password-less Moon an older laya started from the same data dir:
+    /// that one is stopped and replaced, keeping its data dir (hence the index).
+    pub fn ensure_running(&self) -> Result<SupervisorStatus> {
+        match self.probe() {
+            MoonProbe::Ready => return Ok(SupervisorStatus::AlreadyRunning),
+            MoonProbe::Down => {}
+            p @ MoonProbe::Unprotected => match self.legacy_pid() {
+                Some(pid) if self.auth.is_some() => self.replace_legacy(pid)?,
+                _ => return Err(self.refuse(p)),
+            },
+            p @ MoonProbe::WrongPassword => return Err(self.refuse(p)),
+        }
+        create_private_dir(&self.dir)?;
         let log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -98,8 +220,14 @@ impl MoonSupervisor {
             .arg(self.port.to_string())
             .arg("--dir")
             .arg(&self.dir)
-            .args(["--shards", "1", "--appendonly", "yes"])
-            .stdin(Stdio::null())
+            .args(["--shards", "1", "--appendonly", "yes"]);
+        if let Some(a) = &self.auth {
+            cmd.arg("--aclfile")
+                .arg(&a.aclfile)
+                .arg("--requirepass")
+                .arg(a.password.expose());
+        }
+        cmd.stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log);
         #[cfg(unix)]
@@ -111,11 +239,15 @@ impl MoonSupervisor {
 
         let t = Instant::now();
         loop {
-            if self.is_running() {
-                if matches!(child.try_wait(), Ok(Some(_))) {
-                    // Our moon died but something answers: another process won the spawn race.
-                    return Ok(SupervisorStatus::AlreadyRunning);
-                }
+            let p = self.probe();
+            if p != MoonProbe::Down && matches!(child.try_wait(), Ok(Some(_))) {
+                // Our moon died but something answers: another process won the spawn race.
+                return match p {
+                    MoonProbe::Ready => Ok(SupervisorStatus::AlreadyRunning),
+                    p => Err(self.refuse(p)),
+                };
+            }
+            if p == MoonProbe::Ready {
                 write_pidfile(&self.pidfile(), pid)?;
                 *self.child() = Some(child);
                 tracing::info!(pid, port = self.port, "moon spawned");
@@ -131,7 +263,7 @@ impl MoonSupervisor {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(Error::StoreUnavailable(format!(
-                    "moon did not answer PING on port {} within {:?}; log tail: {}",
+                    "moon did not answer on port {} within {:?}; log tail: {}",
                     self.port,
                     self.spawn_timeout,
                     log_tail(&self.logfile())
@@ -153,7 +285,7 @@ impl MoonSupervisor {
                 .ok()
                 .and_then(|s| s.trim().parse().ok())
         });
-        if self.is_running() {
+        if self.probe() != MoonProbe::Down {
             let Some(pid) = pid else {
                 return Err(Error::StoreUnavailable(format!(
                     "a server answers on port {} but no pid is known (no {})",
@@ -161,15 +293,7 @@ impl MoonSupervisor {
                     pidfile.display()
                 )));
             };
-            signal(pid, libc::SIGTERM)?;
-            let t = Instant::now();
-            while self.is_running() && t.elapsed() < STOP_GRACE {
-                std::thread::sleep(POLL);
-            }
-            if self.is_running() {
-                tracing::warn!(pid, "moon ignored SIGTERM; sending SIGKILL");
-                signal(pid, libc::SIGKILL)?;
-            }
+            self.terminate(pid)?;
         }
         if let Some(mut c) = self.child().take() {
             let _ = c.wait(); // reap; returns immediately once it exited
@@ -178,6 +302,19 @@ impl MoonSupervisor {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
         }
+    }
+}
+
+/// Why laya refuses the Moon on `port` (for `Unprotected` / `WrongPassword`), with the fix.
+#[must_use]
+pub fn refusal(port: u16, p: MoonProbe) -> String {
+    match p {
+        MoonProbe::Unprotected => format!(
+            "port {port} is served by a Moon without laya's password; stop it or set LAYA_MOON_PORT"
+        ),
+        _ => format!(
+            "port {port} is served by a Moon that rejects laya's password (another LAYA_HOME?); stop it or set LAYA_MOON_PORT"
+        ),
     }
 }
 
@@ -210,20 +347,84 @@ fn log_tail(path: &Path) -> String {
     lines.into_iter().rev().collect::<Vec<_>>().join(" | ")
 }
 
-/// Raw RESP PING with a 200 ms budget; no client state needed.
-pub(crate) fn ping(port: u16) -> bool {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+/// Executable file name of a live process (`ps -o comm=`), `None` if it is gone or unknown.
+#[must_use]
+pub fn process_basename(pid: u32) -> Option<String> {
+    let out = Command::new("ps")
+        .args(["-o", "comm=", "-p", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let comm = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Path::new(&comm)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+}
+
+/// Send one RESP command; the first line of the reply, `None` on any transport failure.
+fn roundtrip(s: &mut TcpStream, args: &[&str]) -> Option<String> {
+    let mut req = format!("*{}\r\n", args.len());
+    for a in args {
+        req.push_str(&format!("${}\r\n{a}\r\n", a.len()));
+    }
+    s.write_all(req.as_bytes()).ok()?;
+    let mut line = Vec::with_capacity(64);
+    let mut b = [0u8; 1];
+    while !line.ends_with(b"\r\n") {
+        if line.len() >= MAX_REPLY || s.read(&mut b).ok()? == 0 {
+            return None;
+        }
+        line.push(b[0]);
+    }
+    line.truncate(line.len() - 2);
+    Some(String::from_utf8_lossy(&line).into_owned())
+}
+
+/// Classify the server on `127.0.0.1:port`, 200 ms per step; no client state needed.
+pub(crate) fn probe(port: u16, password: Option<&Password>) -> MoonProbe {
+    probe_addr(SocketAddr::from(([127, 0, 0, 1], port)), password)
+}
+
+/// [`probe`] for any address.
+pub(crate) fn probe_addr(addr: SocketAddr, password: Option<&Password>) -> MoonProbe {
     let Ok(mut s) = TcpStream::connect_timeout(&addr, PING_TIMEOUT) else {
-        return false;
+        return MoonProbe::Down;
     };
     if s.set_read_timeout(Some(PING_TIMEOUT)).is_err()
         || s.set_write_timeout(Some(PING_TIMEOUT)).is_err()
-        || s.write_all(b"*1\r\n$4\r\nPING\r\n").is_err()
     {
-        return false;
+        return MoonProbe::Down;
     }
-    let mut buf = [0u8; 7];
-    s.read_exact(&mut buf).is_ok() && &buf == b"+PONG\r\n"
+    let Some(reply) = roundtrip(&mut s, &["PING"]) else {
+        return MoonProbe::Down;
+    };
+    classify(&reply, password, || {
+        password.is_some_and(|p| {
+            roundtrip(&mut s, &["AUTH", p.expose()]).as_deref() == Some("+OK")
+                && roundtrip(&mut s, &["PING"]).as_deref() == Some("+PONG")
+        })
+    })
+}
+
+/// Classify an anonymous PING `reply`; `authenticates` runs `AUTH` + `PING` when needed.
+fn classify(
+    reply: &str,
+    password: Option<&Password>,
+    authenticates: impl FnOnce() -> bool,
+) -> MoonProbe {
+    match (reply, password) {
+        ("+PONG", None) => MoonProbe::Ready,
+        ("+PONG", Some(_)) => MoonProbe::Unprotected,
+        (r, _) if !r.starts_with('-') => MoonProbe::Down, // not a RESP server we understand
+        (_, None) => MoonProbe::WrongPassword,
+        (_, Some(_)) if authenticates() => MoonProbe::Ready,
+        (_, Some(_)) => MoonProbe::WrongPassword,
+    }
 }
 
 #[cfg(test)]
@@ -231,12 +432,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ping_is_false_when_nothing_listens() {
+    fn probe_is_down_when_nothing_listens() {
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .and_then(|l| l.local_addr())
             .map(|a| a.port())
             .expect("port");
-        assert!(!ping(port));
+        assert_eq!(probe(port, None), MoonProbe::Down);
+        assert_eq!(probe(port, Some(&Password::new("x"))), MoonProbe::Down);
+    }
+
+    #[test]
+    fn anonymous_pong_is_unprotected_when_laya_expects_a_password() {
+        let pw = Password::new("pw");
+        let never = || panic!("must not authenticate");
+        assert_eq!(classify("+PONG", None, never), MoonProbe::Ready);
+        assert_eq!(classify("+PONG", Some(&pw), never), MoonProbe::Unprotected);
+        assert_eq!(classify("HTTP/1.1 400", Some(&pw), never), MoonProbe::Down);
+        assert_eq!(
+            classify("-NOAUTH Authentication required.", None, never),
+            MoonProbe::WrongPassword
+        );
+        let noauth = "-NOAUTH Authentication required.";
+        assert_eq!(classify(noauth, Some(&pw), || true), MoonProbe::Ready);
+        assert_eq!(
+            classify(noauth, Some(&pw), || false),
+            MoonProbe::WrongPassword
+        );
+    }
+
+    #[test]
+    fn refusal_names_the_port_and_the_fix() {
+        let m = refusal(16379, MoonProbe::Unprotected);
+        assert!(m.contains("port 16379") && m.contains("without laya's password"));
+        assert!(m.contains("LAYA_MOON_PORT"));
+        assert!(refusal(1, MoonProbe::WrongPassword).contains("rejects laya's password"));
+    }
+
+    #[test]
+    fn process_basename_names_this_test_binary() {
+        let me = process_basename(std::process::id()).expect("self");
+        assert!(!me.is_empty() && !me.contains('/'), "{me}");
+        assert_eq!(process_basename(u32::MAX / 2), None);
     }
 
     #[test]

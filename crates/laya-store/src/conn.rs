@@ -1,5 +1,6 @@
 //! Connection pool + resilient executor: timeouts, jittered retries, reconnects and the breaker.
 
+use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::Duration;
@@ -9,6 +10,7 @@ use redis::{Connection, ErrorKind, RedisError, RedisResult};
 
 use crate::breaker::{BreakerState, CircuitBreaker};
 use crate::config::StoreConfig;
+use crate::supervisor::{MoonProbe, probe_addr, refusal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OpKind {
@@ -50,7 +52,12 @@ impl Executor {
         let info = redis::IntoConnectionInfo::into_connection_info(cfg.url()).map_err(bad)?;
         // Skip the `CLIENT SETINFO` handshake: it costs a round trip per (re)connect and is
         // pure telemetry. With it gone, a connect is just the TCP handshake.
-        let redis_settings = info.redis_settings().clone().set_skip_set_lib_name();
+        let mut redis_settings = info.redis_settings().clone().set_skip_set_lib_name();
+        // The client sends `AUTH` on every connection it opens, so reconnects after a Moon
+        // restart or a breaker probe authenticate too.
+        if let Some(p) = &cfg.password {
+            redis_settings = redis_settings.set_password(p.expose());
+        }
         let client = redis::Client::open(info.set_redis_settings(redis_settings)).map_err(bad)?;
         let slots = (0..cfg.pool_size.max(1))
             .map(|_| Mutex::new(None))
@@ -112,6 +119,7 @@ impl Executor {
         let con = match guard.as_mut() {
             Some(p) => &mut p.con,
             None => {
+                self.verify_server()?;
                 let con = self
                     .client
                     .get_connection_with_timeout(self.cfg.connect_timeout)?;
@@ -129,6 +137,36 @@ impl Executor {
             self.generation.fetch_add(1, Ordering::AcqRel);
         }
         r
+    }
+
+    /// With a password configured, refuse a server that answers anonymous clients: Moon without
+    /// a password accepts any `AUTH`, so a successful `AUTH` alone does not prove the server is
+    /// laya's. Runs once per new connection (pooled connections are reused).
+    fn verify_server(&self) -> RedisResult<()> {
+        let Some(pw) = &self.cfg.password else {
+            return Ok(());
+        };
+        let addr = (self.cfg.host.as_str(), self.cfg.port)
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| {
+                RedisError::from((
+                    ErrorKind::Io,
+                    "unresolvable moon host",
+                    self.cfg.host.clone(),
+                ))
+            })?;
+        match probe_addr(addr, Some(pw)) {
+            MoonProbe::Ready => Ok(()),
+            MoonProbe::Down => Err(RedisError::from(std::io::Error::from(
+                std::io::ErrorKind::ConnectionRefused,
+            ))),
+            p => Err(RedisError::from((
+                ErrorKind::AuthenticationFailed,
+                "refusing moon",
+                refusal(self.cfg.port, p),
+            ))),
+        }
     }
 
     fn backoff(&self, attempt: u32) -> Duration {

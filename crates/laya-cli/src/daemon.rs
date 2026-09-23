@@ -414,6 +414,8 @@ impl Daemon {
             } => Response::ReadPlan {
                 plan: self.read_plan(&repo, &session, &path),
             },
+            // Acknowledged here; `serve_conn` exits the process once the reply is written.
+            Request::Shutdown => Response::Ok,
         }
     }
 
@@ -467,7 +469,9 @@ fn env_num<T: std::str::FromStr>(key: &str) -> Option<T> {
     std::env::var(key).ok()?.parse().ok()
 }
 
-fn serve_conn(daemon: Arc<Daemon>, stream: UnixStream) {
+/// Serve one client connection. After acknowledging `Request::Shutdown` it calls `shutdown`
+/// (which exits the process in the real daemon).
+fn serve_conn(daemon: Arc<Daemon>, stream: UnixStream, shutdown: &dyn Fn()) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let mut writer = match stream.try_clone() {
         Ok(w) => w,
@@ -476,34 +480,65 @@ fn serve_conn(daemon: Arc<Daemon>, stream: UnixStream) {
     let reader = BufReader::new(stream);
     for line in reader.lines() {
         let Ok(line) = line else { return };
-        let resp = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => daemon.handle(req),
-            Err(e) => Response::Error {
-                message: format!("bad request: {e}"),
-            },
+        let (resp, stop) = match serde_json::from_str::<Request>(&line) {
+            Ok(req) => {
+                let stop = req == Request::Shutdown;
+                (daemon.handle(req), stop)
+            }
+            Err(e) => (
+                Response::Error {
+                    message: format!("bad request: {e}"),
+                },
+                false,
+            ),
         };
         let Ok(mut s) = serde_json::to_string(&resp) else {
             return;
         };
         s.push('\n');
-        if writer.write_all(s.as_bytes()).is_err() {
+        let written = writer.write_all(s.as_bytes()).and_then(|()| writer.flush());
+        if stop {
+            shutdown();
+            return;
+        }
+        if written.is_err() {
             return;
         }
     }
 }
 
-/// Bind the socket, refusing to start a second daemon when one already answers.
+/// Only processes of the daemon's own user may talk to it. The socket is already mode 0600 in a
+/// 0700 directory; this also covers a socket reached through a bind mount or a lax umask.
+fn peer_allowed(s: &UnixStream) -> bool {
+    matches!(crate::sys::peer_uid(s), Ok(uid) if uid == crate::sys::euid())
+}
+
+/// Bind the socket (mode 0600), refusing to start a second daemon when one already answers
+/// (an older laya that does not take the daemon lock).
 fn bind_single(socket: &Path) -> anyhow::Result<Option<UnixListener>> {
+    use std::os::unix::fs::PermissionsExt;
     if UnixStream::connect(socket).is_ok() {
         return Ok(None);
     }
-    let _ = std::fs::remove_file(socket);
     if let Some(dir) = socket.parent() {
-        std::fs::create_dir_all(dir)?;
+        laya_store::create_private_dir(dir)?;
     }
-    Ok(Some(UnixListener::bind(socket)?))
+    let _ = std::fs::remove_file(socket);
+    let listener = UnixListener::bind(socket)?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    Ok(Some(listener))
 }
 
+/// Remove `path` if it still holds this process's pid (another daemon may have replaced it).
+fn remove_own_pidfile(path: &Path) {
+    let ours =
+        std::fs::read_to_string(path).is_ok_and(|s| s.trim() == std::process::id().to_string());
+    if ours {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Run the daemon. The caller holds the daemon lock (see `laya daemon` in main.rs).
 pub fn run(cfg: &Config) -> anyhow::Result<()> {
     let Some(listener) = bind_single(&cfg.socket_path())? else {
         eprintln!(
@@ -512,10 +547,21 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
         );
         return Ok(());
     };
-    crate::config::ensure_moon(cfg)?;
-    let store: Arc<dyn Store> = Arc::new(laya_store::MoonStore::new(
-        laya_store::StoreConfig::local(cfg.moon_port),
-    )?);
+    let (socket, pidfile) = (cfg.socket_path(), cfg.daemon_pidfile());
+    let shutdown: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        eprintln!("[laya] shutdown requested; exiting (moon keeps running)");
+        let _ = std::fs::remove_file(&socket);
+        remove_own_pidfile(&pidfile);
+        std::process::exit(0);
+    });
+    if let Err(e) = crate::config::ensure_moon(cfg) {
+        let _ = std::fs::remove_file(cfg.socket_path());
+        remove_own_pidfile(&cfg.daemon_pidfile());
+        return Err(e);
+    }
+    let store: Arc<dyn Store> = Arc::new(laya_store::MoonStore::new(crate::config::store_config(
+        cfg,
+    )?)?);
     // Defaults are the configuration that won the paired benchmark (bench/results/claude-v2):
     // weighted fusion w=0.5, no probability gate, 128 state tokens. Env vars override them
     // (read once at daemon start; see bench/sweep.py). LAYA_WEIGHT=rrf selects rank fusion.
@@ -617,9 +663,13 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     eprintln!("[laya] daemon listening on {}", cfg.socket_path().display());
     for stream in listener.incoming() {
         match stream {
+            Ok(s) if !peer_allowed(&s) => {
+                eprintln!("[laya] rejected a connection from another user");
+            }
             Ok(s) => {
                 let d = Arc::clone(&daemon);
-                std::thread::spawn(move || serve_conn(d, s));
+                let stop = Arc::clone(&shutdown);
+                std::thread::spawn(move || serve_conn(d, s, &*stop));
             }
             Err(e) => eprintln!("[laya] accept error: {e}"),
         }
@@ -1063,5 +1113,51 @@ mod tests {
         std::fs::write(root.join("src/huge.rs"), huge.repeat(300)).unwrap();
         indexer::index_file(&root, d.store.as_ref(), &d.repo(&repo).1, "src/huge.rs").unwrap();
         assert_eq!(plan(&d, &repo, "s", "src/huge.rs"), None, "huge");
+    }
+
+    #[test]
+    fn socket_is_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile_dir("sock");
+        let sock = d.join("laya.sock");
+        let _l = bind_single(&sock).unwrap().expect("bound");
+        let mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // A live socket is not stolen by a second daemon.
+        assert!(bind_single(&sock).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn shutdown_request_is_acknowledged_then_runs_the_shutdown_hook() {
+        use std::sync::atomic::AtomicBool;
+        let (d, _) = daemon_with_code();
+        let (client, server) = UnixStream::pair().unwrap();
+        let fired = Arc::new(AtomicBool::new(false));
+        let f = Arc::clone(&fired);
+        let t = std::thread::spawn(move || {
+            serve_conn(d, server, &move || f.store(true, Ordering::SeqCst));
+        });
+        (&client)
+            .write_all(b"{\"op\":\"ping\"}\n{\"op\":\"shutdown\"}\n")
+            .unwrap();
+        let mut lines = BufReader::new(client.try_clone().unwrap()).lines();
+        assert!(lines.next().unwrap().unwrap().contains("pong"));
+        assert_eq!(lines.next().unwrap().unwrap(), r#"{"status":"ok"}"#);
+        t.join().unwrap();
+        assert!(fired.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn peers_of_the_same_user_are_allowed() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        assert!(peer_allowed(&a));
+    }
+
+    fn tempfile_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("laya-dmn-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
     }
 }

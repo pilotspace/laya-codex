@@ -10,6 +10,7 @@ mod init;
 mod mcp;
 mod protocol;
 mod session;
+mod sys;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -144,7 +145,7 @@ fn main() {
 fn cmd_index(cfg: &Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     let root = repo_root(&path.unwrap_or_else(|| PathBuf::from(".")));
     config::ensure_moon(cfg)?;
-    let mut sc = laya_store::StoreConfig::local(cfg.moon_port);
+    let mut sc = config::store_config(cfg)?;
     sc.bulk_timeout = Duration::from_secs(30);
     let store = laya_store::MoonStore::new(sc)?;
     let id = laya_store::repo_id(&root);
@@ -206,18 +207,29 @@ fn cmd_query(
 }
 
 fn cmd_daemon(cfg: &Config) -> anyhow::Result<()> {
-    std::fs::create_dir_all(&cfg.home)?;
-    std::fs::write(cfg.home.join("daemon.pid"), std::process::id().to_string())?;
+    laya_store::create_private_dir(&cfg.home)
+        .with_context(|| format!("LAYA_HOME {}", cfg.home.display()))?;
+    // One daemon per LAYA_HOME: the lock is taken before touching the pidfile or the socket and
+    // held until the process exits. A second daemon (racing autostarts) exits quietly.
+    let Some(_lock) = sys::DaemonLock::try_acquire(&cfg.daemon_lock())
+        .with_context(|| format!("lock {}", cfg.daemon_lock().display()))?
+    else {
+        return Ok(());
+    };
+    std::fs::write(cfg.daemon_pidfile(), format!("{}\n", std::process::id()))?;
     daemon::run(cfg)
 }
 
 fn cmd_stop(cfg: &Config) -> anyhow::Result<()> {
-    let pid = std::fs::read_to_string(cfg.home.join("daemon.pid")).context("no daemon pidfile")?;
-    let status = std::process::Command::new("kill")
-        .arg(pid.trim())
-        .status()?;
-    let _ = std::fs::remove_file(cfg.socket_path());
-    println!("stopped daemon pid {} ({status})", pid.trim());
+    match client::stop_daemon(
+        &cfg.socket_path(),
+        &cfg.daemon_pidfile(),
+        &cfg.daemon_lock(),
+    )? {
+        client::Stopped::ViaSocket => println!("stopped daemon"),
+        client::Stopped::ViaSignal(pid) => println!("stopped daemon pid {pid} (SIGTERM)"),
+        client::Stopped::NotRunning => println!("no daemon running"),
+    }
     Ok(())
 }
 

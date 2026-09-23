@@ -31,7 +31,7 @@ pub fn index_repo(root: &Path, store: &dyn Store, repo: &str) -> laya_core::Resu
     store.ensure_index(repo)?;
     let files: Vec<PathBuf> = laya_parse::walk_repo(root)
         .into_iter()
-        .filter(|p| laya_parse::detect_lang(&rel(root, p)).is_some())
+        .filter(|p| laya_parse::lang_for_path(&rel(root, p)).is_some())
         .collect();
     let mut stats = IndexStats {
         files_seen: files.len(),
@@ -67,18 +67,53 @@ pub fn index_repo(root: &Path, store: &dyn Store, repo: &str) -> laya_core::Resu
     Ok(stats)
 }
 
-/// Re-index one file (after an edit). Deletes it from the store if it is gone or unsupported.
+/// `root/rel_path` if the full walk ([`laya_parse::walk_repo`]) would index it: inside the root,
+/// not hidden, not gitignored/excluded, a regular file (not a symlink), of a known language and
+/// at most 1 MiB. Walks only the ancestor chain of the file with the walk's exact settings, so
+/// nested `.gitignore`/`.ignore` files apply just as they do for a full index.
+fn walk_admits(root: &Path, rel_path: &str) -> Option<PathBuf> {
+    let rel = Path::new(rel_path);
+    if !rel
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let abs = root.join(rel);
+    let target = abs.clone();
+    // Keep these settings identical to `laya_parse::walk_repo`.
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .ignore(true)
+        .parents(true)
+        .require_git(false)
+        .follow_links(false)
+        .filter_entry(move |e| target.starts_with(e.path()))
+        .build();
+    let entry = walker.flatten().find(|e| e.path() == abs)?;
+    if !entry.file_type().is_some_and(|t| t.is_file()) {
+        return None;
+    }
+    laya_parse::lang_for_path(&rel_path.replace('\\', "/"))?;
+    let len = entry.metadata().ok()?.len();
+    (len <= laya_parse::MAX_FILE_BYTES).then_some(abs)
+}
+
+/// Re-index one file (after an edit). Deletes it from the store if it is gone, unsupported, or
+/// excluded by the same filters as a full index (gitignore, hidden, size).
 pub fn index_file(
     root: &Path,
     store: &dyn Store,
     repo: &str,
     rel_path: &str,
 ) -> laya_core::Result<usize> {
-    let abs = root.join(rel_path);
-    if !abs.is_file() || laya_parse::detect_lang(rel_path).is_none() {
+    let Some(abs) = walk_admits(root, rel_path) else {
         store.delete_file(repo, rel_path)?;
         return Ok(0);
-    }
+    };
     match laya_parse::parse_file(root, &abs) {
         Ok(f) => {
             store.put_file(repo, &f.path, &f.hash, &f.chunks)?;
@@ -225,5 +260,54 @@ mod tests {
         std::fs::remove_file(root.join("src/a.rs")).unwrap();
         assert_eq!(index_file(&root, &s, "r", "src/a.rs").unwrap(), 0);
         assert!(s.files.lock().unwrap().get("src/a.rs").is_none());
+    }
+
+    #[test]
+    fn index_file_applies_the_same_filters_as_the_full_walk() {
+        let root = tmp_repo("filters");
+        std::fs::write(root.join(".gitignore"), "gen/\nsecret.rs\n").unwrap();
+        for rel in ["gen/out.rs", "secret.rs", ".hidden/h.rs", "src/.dot.rs"] {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "fn ignored() {}\n").unwrap();
+        }
+        let s = MemStore::default();
+        // Seed the store as if they had been indexed earlier: an edit must drop, not refresh, them.
+        for rel in ["gen/out.rs", "secret.rs", ".hidden/h.rs", "src/.dot.rs"] {
+            s.put_file("r", rel, "old", &[]).unwrap();
+            assert_eq!(index_file(&root, &s, "r", rel).unwrap(), 0, "{rel}");
+            assert!(s.files.lock().unwrap().get(rel).is_none(), "{rel}");
+        }
+        // The full walk agrees.
+        index_repo(&root, &s, "r").unwrap();
+        let mut indexed: Vec<String> = s.files.lock().unwrap().keys().cloned().collect();
+        indexed.sort();
+        assert_eq!(indexed, ["src/a.rs", "src/b.py"]);
+        // Paths escaping the root are never indexed.
+        assert_eq!(index_file(&root, &s, "r", "../x.rs").unwrap(), 0);
+        assert_eq!(index_file(&root, &s, "r", "src/a.rs").unwrap(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn index_file_checks_size_under_the_repo_root_not_the_cwd() {
+        let root = tmp_repo("size");
+        let s = MemStore::default();
+        // > 1 MiB inside the repo: skipped (and dropped if it was indexed before).
+        let big = "fn f() {}\n".repeat(110_000);
+        assert!(big.len() as u64 > laya_parse::MAX_FILE_BYTES);
+        std::fs::write(root.join("src/big.rs"), &big).unwrap();
+        s.put_file("r", "src/big.rs", "old", &[]).unwrap();
+        assert_eq!(index_file(&root, &s, "r", "src/big.rs").unwrap(), 0);
+        assert!(s.files.lock().unwrap().get("src/big.rs").is_none());
+        // A same-named > 1 MiB file in the process cwd must not hide the small repo file.
+        let rel = format!("laya-idx-cwd-probe-{}.rs", std::process::id());
+        let in_cwd = std::env::current_dir().unwrap().join(&rel);
+        std::fs::write(&in_cwd, &big).unwrap();
+        std::fs::write(root.join(&rel), "fn small() -> u8 {\n    1\n}\n").unwrap();
+        let n = index_file(&root, &s, "r", &rel);
+        let _ = std::fs::remove_file(&in_cwd);
+        assert!(n.unwrap() >= 1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

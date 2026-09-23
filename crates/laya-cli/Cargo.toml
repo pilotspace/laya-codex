@@ -17,8 +17,10 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 anyhow.workspace = true
 blake3.workspace = true
+ignore = "0.4"
 clap = { version = "4", features = ["derive"] }
 mimalloc = { version = "0.1", default-features = false }
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 laya-model = { workspace = true, features = ["metal"] }

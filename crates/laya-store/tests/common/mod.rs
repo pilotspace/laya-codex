@@ -1,5 +1,6 @@
 //! Test harness: spawns a private `moon` on a random free port with a temp dir and kills it on
-//! drop. `MOON_BIN` overrides the binary path; tests skip (with a message) when it is missing.
+//! drop. The binary comes from `LAYA_TEST_MOON_BIN` (or `MOON_BIN`); tests skip (with a message)
+//! when neither is set or the file is missing.
 #![allow(dead_code)]
 
 use std::io::{Read, Write};
@@ -11,17 +12,23 @@ use std::time::{Duration, Instant};
 
 use laya_core::{Chunk, Lang};
 
-pub const DEFAULT_MOON_BIN: &str = "/Users/tindang/workspaces/tind-repo/moon/target/release/moon";
+/// Env vars naming the Moon binary for integration tests, in priority order.
+pub const MOON_BIN_VARS: [&str; 2] = ["LAYA_TEST_MOON_BIN", "MOON_BIN"];
 
 pub fn moon_bin() -> Option<PathBuf> {
-    let p = std::env::var_os("MOON_BIN")
+    let Some(p) = MOON_BIN_VARS
+        .iter()
+        .find_map(std::env::var_os)
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_MOON_BIN));
+    else {
+        eprintln!("SKIP: set LAYA_TEST_MOON_BIN to a moon binary to run this test");
+        return None;
+    };
     if p.is_file() {
         Some(p)
     } else {
         eprintln!(
-            "SKIP: moon binary not found at {} (set MOON_BIN)",
+            "SKIP: moon binary not found at {} (LAYA_TEST_MOON_BIN)",
             p.display()
         );
         None
