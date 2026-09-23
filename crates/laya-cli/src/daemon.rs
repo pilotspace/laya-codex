@@ -384,6 +384,11 @@ impl Daemon {
             }
             Request::IndexRepo { repo } => {
                 let (root, id) = self.repo(&repo);
+                if !root.is_dir() {
+                    return Response::Error {
+                        message: format!("{} is not a directory", root.display()),
+                    };
+                }
                 let fresh = lock(&self.indexing).insert(id.clone());
                 if fresh {
                     let slot = IndexingSlot {
@@ -1309,6 +1314,20 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn index_repo_of_a_missing_directory_is_an_error() {
+        let d = Daemon::new(Arc::new(MemoStore::default()), RetrieverConfig::default());
+        let missing = std::env::temp_dir().join(format!("laya-no-repo-{}", std::process::id()));
+        let r = d.handle(Request::IndexRepo {
+            repo: missing.to_string_lossy().into_owned(),
+        });
+        assert!(
+            matches!(&r, Response::Error { message } if message.contains("not a directory")),
+            "{r:?}"
+        );
+        assert!(d.indexing.lock().unwrap().is_empty());
     }
 
     fn tempfile_dir(tag: &str) -> PathBuf {

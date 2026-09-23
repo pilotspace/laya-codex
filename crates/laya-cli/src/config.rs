@@ -238,6 +238,20 @@ pub fn repo_root(start: &Path) -> PathBuf {
         .unwrap_or(start)
 }
 
+/// [`repo_root`] of a user-given path (default: the current directory), which must be an
+/// existing directory; otherwise commands would silently work on an empty repo.
+pub fn existing_repo_root(start: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    let start = start.unwrap_or_else(|| PathBuf::from("."));
+    match std::fs::metadata(&start) {
+        Ok(m) if m.is_dir() => Ok(repo_root(&start)),
+        Ok(_) => anyhow::bail!("{} is not a directory", start.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("{} does not exist", start.display())
+        }
+        Err(e) => Err(e).with_context(|| format!("cannot access {}", start.display())),
+    }
+}
+
 /// Repo-relative `/`-separated path for `p` (absolute or relative to `root`); `None` if outside.
 pub fn rel_path(root: &Path, p: &str) -> Option<String> {
     let path = Path::new(p);

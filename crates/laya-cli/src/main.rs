@@ -163,7 +163,7 @@ fn main() {
 }
 
 fn cmd_index(cfg: &Config, path: Option<PathBuf>) -> anyhow::Result<()> {
-    let root = repo_root(&path.unwrap_or_else(|| PathBuf::from(".")));
+    let root = config::existing_repo_root(path)?;
     config::ensure_moon(cfg)?;
     let mut sc = config::store_config(cfg)?;
     sc.bulk_timeout = Duration::from_secs(30);
@@ -195,7 +195,7 @@ fn cmd_query(
     top: Option<usize>,
     as_json: bool,
 ) -> anyhow::Result<()> {
-    let root = repo_root(&repo.unwrap_or_else(|| PathBuf::from(".")));
+    let root = config::existing_repo_root(repo)?;
     let c = Client::new(&cfg.socket_path(), Duration::from_secs(60), true);
     wait_ready(
         &c,
@@ -275,9 +275,7 @@ fn cmd_init(
     force: bool,
     no_index: bool,
 ) -> anyhow::Result<()> {
-    let start = repo.unwrap_or_else(|| PathBuf::from("."));
-    anyhow::ensure!(start.is_dir(), "{} is not a directory", start.display());
-    let root = repo_root(&start);
+    let root = config::existing_repo_root(repo)?;
     let exe = std::env::current_exe()
         .and_then(|p| p.canonicalize())
         .context("locate the laya executable")?;
