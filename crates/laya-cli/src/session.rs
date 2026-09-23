@@ -93,6 +93,13 @@ impl Sessions {
         out
     }
 
+    /// The agent's context was compacted or cleared: nothing sent or read earlier is still in it.
+    pub fn reset_context(&mut self, id: &str) {
+        let s = self.get(id);
+        s.sent.clear();
+        s.full_reads.clear();
+    }
+
     pub fn view(&mut self, id: &str) -> SessionView {
         let s = self.get(id);
         SessionView { last: s.last.clone(), working_set: s.working_set.clone() }

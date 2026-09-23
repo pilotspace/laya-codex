@@ -9,11 +9,12 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use laya_core::{Chunk, Scorer, Store};
-use laya_rank::{Retriever, RetrieverConfig};
+use laya_core::QueryResult;
+use laya_rank::{Retriever, RetrieverConfig, Scope, SizingPolicy, SpanKey};
 
 use crate::config::{Config, rel_path, repo_root};
 use crate::indexer;
-use crate::protocol::{Request, Response};
+use crate::protocol::{RenderReq, Request, Response};
 use crate::session::Sessions;
 
 /// Caches Laya probabilities in the store, keyed by (task, chunk content), so repeated or
@@ -24,7 +25,7 @@ pub struct MemoScorer {
     model_tag: String,
     /// Set while a model run is in flight. A query that finds the model busy degrades to
     /// lexical ranking instead of queueing behind abandoned (timed-out) runs.
-    busy: std::sync::atomic::AtomicBool,
+    busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct BusyGuard<'a>(&'a std::sync::atomic::AtomicBool);
@@ -37,6 +38,11 @@ impl Drop for BusyGuard<'_> {
 impl MemoScorer {
     pub fn new(inner: Arc<dyn Scorer>, store: Arc<dyn Store>, model_tag: &str) -> Self {
         MemoScorer { inner, store, model_tag: model_tag.to_string(), busy: Default::default() }
+    }
+
+    /// The model's busy flag, shared with other users of the same model (the scope classifier).
+    pub fn busy_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.busy)
     }
 
     fn key(&self, task: &str, chunk: &Chunk) -> String {
@@ -80,23 +86,135 @@ impl Scorer for MemoScorer {
     }
 }
 
+/// Predicts how much code a prompt needs (function / file / module / cross-module), which sets
+/// the adaptive sizing caps. `None` = unknown; sizing then uses the default caps.
+pub trait ScopeClassifier: Send + Sync {
+    fn classify(&self, prompt: &str) -> Option<Scope>;
+}
+
+const SCOPES: [Scope; 4] = [Scope::Function, Scope::File, Scope::Module, Scope::Cross];
+
+/// Laya `choice` wording for the scope question; the criteria order matches `SCOPES`.
+pub const SCOPE_QUESTION: &str = "What is the scope of the code change needed for: \"{task}\"?";
+pub const SCOPE_CRITERIA: [(&str, &str); 4] = [
+    ("function", "the edit stays inside one function or method"),
+    ("file", "the edit is confined to one file"),
+    ("module", "a few related files in one module"),
+    ("cross", "many files across several modules"),
+];
+
+/// Argmax scope if its probability reaches `min_p`, else `None` (not confident enough to shrink
+/// or grow the context).
+pub fn scope_from_probs(probs: &[f32], min_p: f32) -> Option<Scope> {
+    if probs.len() != SCOPES.len() {
+        return None;
+    }
+    let (i, &p) = probs.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1))?;
+    (p >= min_p).then_some(SCOPES[i])
+}
+
+/// Scope classifier on the resident Laya model. Memoized per prompt in the store; skipped (→
+/// `None`) while the model is busy so a prompt never queues behind an abandoned scoring run.
+pub struct LayaScope {
+    pub scorer: Arc<laya_model::LayaScorer>,
+    pub store: Arc<dyn Store>,
+    pub busy: Arc<std::sync::atomic::AtomicBool>,
+    pub model_tag: String,
+    pub min_p: f32,
+}
+
+impl LayaScope {
+    fn probs(&self, prompt: &str) -> Option<Vec<f32>> {
+        let key = format!("scope:{}", &blake3::hash(format!("{}\0{prompt}", self.model_tag).as_bytes()).to_hex()[..32]);
+        if let Some(v) = self.store.memo_get(&key).ok().flatten() {
+            return v.split(',').map(|x| x.parse().ok()).collect();
+        }
+        use std::sync::atomic::Ordering;
+        if self.busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return None;
+        }
+        let _guard = BusyGuard(&self.busy);
+        let criteria: Vec<(&str, Option<&str>)> = SCOPE_CRITERIA.iter().map(|(n, d)| (*n, Some(*d))).collect();
+        let question = SCOPE_QUESTION.replace("{task}", prompt);
+        let probs = self.scorer.model.choice(&question, &criteria, &[prompt.to_string()]).ok()?.pop()?;
+        let v: Vec<String> = probs.iter().map(|p| format!("{p:.4}")).collect();
+        let _ = self.store.memo_put(&key, &v.join(","), 86_400);
+        Some(probs)
+    }
+}
+
+impl ScopeClassifier for LayaScope {
+    fn classify(&self, prompt: &str) -> Option<Scope> {
+        let t0 = std::time::Instant::now();
+        let probs = self.probs(prompt)?;
+        let scope = scope_from_probs(&probs, self.min_p);
+        eprintln!("[laya] scope {scope:?} p={probs:?} in {:?}", t0.elapsed());
+        scope
+    }
+}
+
+fn scope_name(s: Scope) -> String {
+    serde_json::to_value(s).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+}
+
 pub struct Daemon {
     pub store: Arc<dyn Store>,
     pub scorer: RwLock<Option<Arc<dyn Scorer>>>,
+    pub scope: RwLock<Option<Arc<dyn ScopeClassifier>>>,
+    pub sizing: SizingPolicy,
     pub sessions: Mutex<Sessions>,
     pub indexing: Mutex<HashSet<String>>,
     pub base_cfg: RetrieverConfig,
 }
 
 impl Daemon {
+    #[cfg(test)]
     pub fn new(store: Arc<dyn Store>, base_cfg: RetrieverConfig) -> Arc<Self> {
+        Self::with_sizing(store, base_cfg, SizingPolicy::default())
+    }
+
+    pub fn with_sizing(store: Arc<dyn Store>, base_cfg: RetrieverConfig, sizing: SizingPolicy) -> Arc<Self> {
         Arc::new(Daemon {
             store,
             scorer: RwLock::new(None),
+            scope: RwLock::new(None),
+            sizing,
             sessions: Mutex::new(Sessions::default()),
             indexing: Mutex::new(HashSet::new()),
             base_cfg,
         })
+    }
+
+    /// Render `result` for injection. Adaptive: classify scope, size by scope and calibrated P,
+    /// skip what the session already has, and record what was inlined — under one session lock
+    /// so concurrent prompts cannot both send the same span.
+    fn render(&self, session: Option<&str>, prompt: &str, result: &QueryResult, req: &RenderReq) -> (String, Option<Scope>) {
+        if !req.adaptive {
+            return (laya_rank::render_compact_opts(result, 3, req.budget_tokens, req.related), None);
+        }
+        let scope = self.scope.read().ok().and_then(|c| c.clone()).and_then(|c| c.classify(prompt));
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return (laya_rank::render_compact_opts(result, 3, req.budget_tokens, req.related), scope);
+        };
+        let already: Vec<SpanKey> = session
+            .map(|s| sessions.already(s))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(path, start_line, end_line)| SpanKey { path, start_line, end_line })
+            .collect();
+        let mut ctx = laya_rank::size_context(result, scope, &self.sizing, &already);
+        if !req.related {
+            ctx.related.clear();
+        }
+        if ctx.full.is_empty() && ctx.map.is_empty() && ctx.related.is_empty() {
+            return (String::new(), scope); // everything relevant is already in context
+        }
+        let (text, keys) = laya_rank::render_sized_with_keys(&ctx, req.budget_tokens);
+        if let Some(s) = session {
+            let keys: Vec<(String, u32, u32)> = keys.into_iter().map(|k| (k.path, k.start_line, k.end_line)).collect();
+            sessions.mark_sent(s, &keys);
+        }
+        (text, scope)
     }
 
     fn repo(&self, repo: &str) -> (PathBuf, String) {
@@ -111,7 +229,7 @@ impl Daemon {
                 model_ready: self.scorer.read().map(|s| s.is_some()).unwrap_or(false),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
-            Request::Query { repo, session, prompt, budget_ms, top_n, render: _ } => {
+            Request::Query { repo, session, prompt, budget_ms, top_n, render } => {
                 let (_, id) = self.repo(&repo);
                 let mut cfg = self.base_cfg.clone();
                 if let Some(b) = budget_ms {
@@ -127,10 +245,17 @@ impl Daemon {
                 let retriever = Retriever::new(self.store.as_ref(), scorer, cfg);
                 match retriever.query(&id, &prompt) {
                     Ok(result) => {
-                        if let (Some(s), Ok(mut sessions)) = (session, self.sessions.lock()) {
-                            sessions.record_query(&s, &result);
+                        if let (Some(s), Ok(mut sessions)) = (&session, self.sessions.lock()) {
+                            sessions.record_query(s, &result);
                         }
-                        Response::Query { result, rendered: None, scope: None }
+                        let (rendered, scope) = match &render {
+                            Some(r) => {
+                                let (text, scope) = self.render(session.as_deref(), &prompt, &result, r);
+                                (Some(text), scope.map(scope_name))
+                            }
+                            None => (None, None),
+                        };
+                        Response::Query { result, rendered, scope }
                     }
                     Err(e) => Response::Error { message: e.to_string() },
                 }
@@ -139,8 +264,13 @@ impl Daemon {
                 Ok(mut s) => Response::Count { count: s.note_read(&session, &path, full) },
                 Err(_) => Response::Error { message: "session lock poisoned".into() },
             },
-            Request::Session { session } => match self.sessions.lock() {
-                Ok(mut s) => Response::Session { view: s.view(&session) },
+            Request::Session { session, reset } => match self.sessions.lock() {
+                Ok(mut s) => {
+                    if reset {
+                        s.reset_context(&session);
+                    }
+                    Response::Session { view: s.view(&session) }
+                }
                 Err(_) => Response::Error { message: "session lock poisoned".into() },
             },
             Request::ReindexFile { repo, path } => {
@@ -237,7 +367,17 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     }
     let state_tokens = env_num::<usize>("LAYA_STATE_TOKENS").unwrap_or(128);
     eprintln!("[laya] retriever config {base:?} state_tokens={state_tokens}");
-    let daemon = Daemon::new(Arc::clone(&store), base);
+    let mut sizing = SizingPolicy::default();
+    if let Some(t) = env_num::<f32>("LAYA_TAU_FULL") {
+        sizing.tau_full = t;
+    }
+    if let Some(t) = env_num::<f32>("LAYA_TAU_MAP") {
+        sizing.tau_map = t;
+    }
+    let scope_p = env_num::<f32>("LAYA_SCOPE_P").unwrap_or(0.4);
+    let use_scope = std::env::var("LAYA_SCOPE").map(|v| v != "0").unwrap_or(true);
+    eprintln!("[laya] sizing {sizing:?} scope={use_scope} scope_p={scope_p}");
+    let daemon = Daemon::with_sizing(Arc::clone(&store), base, sizing);
 
     if let (true, Some(dir)) = (cfg.use_model, cfg.model_dir.clone()) {
         let d = Arc::clone(&daemon);
@@ -249,10 +389,17 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
                     let tag = format!("{name}-s{state_tokens}");
                     let mut scorer = laya_model::LayaScorer::new(model);
                     scorer.max_state_tokens = state_tokens;
-                    let inner: Arc<dyn Scorer> = Arc::new(scorer);
-                    let memo: Arc<dyn Scorer> = Arc::new(MemoScorer::new(inner, Arc::clone(&d.store), &tag));
+                    let scorer = Arc::new(scorer);
+                    let inner: Arc<dyn Scorer> = scorer.clone();
+                    let memo = MemoScorer::new(inner, Arc::clone(&d.store), &tag);
+                    if use_scope {
+                        let scope = LayaScope { scorer, store: Arc::clone(&d.store), busy: memo.busy_flag(), model_tag: name.clone(), min_p: scope_p };
+                        if let Ok(mut s) = d.scope.write() {
+                            *s = Some(Arc::new(scope));
+                        }
+                    }
                     if let Ok(mut s) = d.scorer.write() {
-                        *s = Some(memo);
+                        *s = Some(Arc::new(memo));
                     }
                     eprintln!("[laya] model {} ready in {:?}", dir.display(), t0.elapsed());
                 }
@@ -293,16 +440,34 @@ mod tests {
     struct MemoStore {
         inner: MemStore,
         memo: Mutex<std::collections::HashMap<String, String>>,
+        /// Chunks by id, searchable by any-term match (enough for daemon-level tests).
+        chunks: Mutex<Vec<Chunk>>,
     }
     impl Store for MemoStore {
         fn ensure_index(&self, r: &str) -> laya_core::Result<()> { self.inner.ensure_index(r) }
-        fn put_file(&self, r: &str, p: &str, h: &str, c: &[Chunk]) -> laya_core::Result<()> { self.inner.put_file(r, p, h, c) }
+        fn put_file(&self, r: &str, p: &str, h: &str, c: &[Chunk]) -> laya_core::Result<()> {
+            self.chunks.lock().unwrap().extend(c.iter().cloned());
+            self.inner.put_file(r, p, h, c)
+        }
         fn delete_file(&self, r: &str, p: &str) -> laya_core::Result<()> { self.inner.delete_file(r, p) }
         fn file_hash(&self, r: &str, p: &str) -> laya_core::Result<Option<String>> { self.inner.file_hash(r, p) }
         fn list_files(&self, r: &str) -> laya_core::Result<Vec<String>> { self.inner.list_files(r) }
-        fn bm25(&self, r: &str, t: &[String], l: usize) -> laya_core::Result<Vec<(String, f32)>> { self.inner.bm25(r, t, l) }
+        fn bm25(&self, _: &str, t: &[String], l: usize) -> laya_core::Result<Vec<(String, f32)>> {
+            let chunks = self.chunks.lock().unwrap();
+            let mut hits: Vec<(String, f32)> = chunks
+                .iter()
+                .map(|c| (c.id(), t.iter().filter(|w| c.text.to_lowercase().contains(w.as_str())).count() as f32))
+                .filter(|(_, n)| *n > 0.0)
+                .collect();
+            hits.sort_by(|a, b| b.1.total_cmp(&a.1));
+            hits.truncate(l);
+            Ok(hits)
+        }
         fn chunks_defining(&self, r: &str, i: &[String], l: usize) -> laya_core::Result<Vec<String>> { self.inner.chunks_defining(r, i, l) }
-        fn get_chunks(&self, r: &str, i: &[String]) -> laya_core::Result<Vec<Chunk>> { self.inner.get_chunks(r, i) }
+        fn get_chunks(&self, _: &str, ids: &[String]) -> laya_core::Result<Vec<Chunk>> {
+            let chunks = self.chunks.lock().unwrap();
+            Ok(ids.iter().filter_map(|id| chunks.iter().find(|c| &c.id() == id).cloned()).collect())
+        }
         fn memo_get(&self, k: &str) -> laya_core::Result<Option<String>> { Ok(self.memo.lock().unwrap().get(k).cloned()) }
         fn memo_put(&self, k: &str, v: &str, _: u64) -> laya_core::Result<()> { self.memo.lock().unwrap().insert(k.into(), v.into()); Ok(()) }
     }
@@ -326,12 +491,77 @@ mod tests {
         assert_eq!(inner.0.load(Ordering::SeqCst), 3);
     }
 
+    struct FixedScope(Option<Scope>);
+    impl ScopeClassifier for FixedScope {
+        fn classify(&self, _prompt: &str) -> Option<Scope> { self.0 }
+    }
+
+    fn daemon_with_code() -> (Arc<Daemon>, String) {
+        let d = Daemon::new(Arc::new(MemoStore::default()), RetrieverConfig::default());
+        let repo = std::env::temp_dir().to_string_lossy().into_owned();
+        let (_, id) = d.repo(&repo);
+        let chunks: Vec<Chunk> = (0..4)
+            .map(|i| Chunk { path: format!("src/wal{i}.rs"), start_line: 1, end_line: 20, lang: Lang::Rust,
+                symbol: format!("fn replay_wal{i}"), kind: "function_item".into(), defines: vec![format!("replay_wal{i}")],
+                refs: vec![], text: format!("fn replay_wal{i}() {{ /* replay wal segment */ }}") })
+            .collect();
+        for c in &chunks {
+            d.store.put_file(&id, &c.path, "h", std::slice::from_ref(c)).unwrap();
+        }
+        (d, repo)
+    }
+
+    fn query(d: &Arc<Daemon>, repo: &str, adaptive: bool) -> Response {
+        d.handle(Request::Query { repo: repo.into(), session: Some("s".into()), prompt: "replay wal segment".into(),
+            budget_ms: Some(0), top_n: None, render: Some(RenderReq { budget_tokens: 3000, related: true, adaptive }) })
+    }
+
+    #[test]
+    fn adaptive_render_skips_code_already_sent_in_the_session() {
+        let (d, repo) = daemon_with_code();
+        let Response::Query { rendered: Some(first), result, .. } = query(&d, &repo, true) else { panic!("no render") };
+        assert!(!result.spans.is_empty(), "retrieval found nothing: {result:?}");
+        assert!(first.contains("```"), "first prompt inlines code: {first}");
+        let sent = d.sessions.lock().unwrap().already("s");
+        assert!(!sent.is_empty());
+        let Response::Query { rendered: Some(second), .. } = query(&d, &repo, true) else { panic!("no render") };
+        for (path, start, end) in &sent {
+            assert!(!second.contains(&format!("### {path}:{start}-{end}")), "{path} re-sent: {second}");
+        }
+    }
+
+    #[test]
+    fn session_reset_forgets_sent_spans() {
+        let (d, repo) = daemon_with_code();
+        query(&d, &repo, true);
+        assert!(!d.sessions.lock().unwrap().already("s").is_empty());
+        d.handle(Request::Session { session: "s".into(), reset: true });
+        assert!(d.sessions.lock().unwrap().already("s").is_empty());
+    }
+
+    #[test]
+    fn scope_is_classified_and_reported_only_for_adaptive_renders() {
+        let (d, repo) = daemon_with_code();
+        *d.scope.write().unwrap() = Some(Arc::new(FixedScope(Some(Scope::Function))));
+        assert!(matches!(query(&d, &repo, true), Response::Query { scope: Some(ref s), .. } if s == "function"));
+        assert!(matches!(query(&d, &repo, false), Response::Query { scope: None, rendered: Some(_), .. }));
+        let plain = d.handle(Request::Query { repo, session: None, prompt: "replay wal".into(), budget_ms: Some(0), top_n: None, render: None });
+        assert!(matches!(plain, Response::Query { rendered: None, .. }));
+    }
+
+    #[test]
+    fn scope_from_probs_needs_confidence() {
+        assert_eq!(scope_from_probs(&[0.1, 0.7, 0.1, 0.1], 0.4), Some(Scope::File));
+        assert_eq!(scope_from_probs(&[0.3, 0.3, 0.2, 0.2], 0.4), None);
+        assert_eq!(scope_from_probs(&[0.5], 0.4), None);
+    }
+
     #[test]
     fn daemon_tracks_reads_and_sessions() {
         let d = Daemon::new(Arc::new(MemoStore::default()), RetrieverConfig::default());
         assert_eq!(d.handle(Request::NoteRead { session: "s".into(), path: "a.rs".into(), full: false }), Response::Count { count: 1 });
         assert_eq!(d.handle(Request::NoteRead { session: "s".into(), path: "a.rs".into(), full: false }), Response::Count { count: 2 });
         assert!(matches!(d.handle(Request::Ping), Response::Pong { model_ready: false, .. }));
-        assert!(matches!(d.handle(Request::Session { session: "s".into() }), Response::Session { .. }));
+        assert!(matches!(d.handle(Request::Session { session: "s".into(), reset: false }), Response::Session { .. }));
     }
 }

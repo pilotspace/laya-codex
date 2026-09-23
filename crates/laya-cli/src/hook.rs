@@ -13,7 +13,7 @@ use laya_core::{QueryResult, RankMode};
 use serde_json::{Value, json};
 
 use crate::config::rel_path;
-use crate::protocol::{Request, Response, SessionView};
+use crate::protocol::{RenderReq, Request, Response, SessionView};
 
 /// Transport to the daemon (a unix-socket client in production, a fake in tests).
 pub trait DaemonApi {
@@ -31,6 +31,8 @@ pub struct HookCtx<'a> {
     pub compact: bool,
     /// Append the "Related by references" section (one-hop callers/callees of the top spans).
     pub related: bool,
+    /// Let the daemon size the injection (scope + calibrated P) and skip spans already sent.
+    pub adaptive: bool,
 }
 
 /// What a handler did, for the optional JSONL hook log.
@@ -79,16 +81,21 @@ fn user_prompt(prompt: &str, session: &str, ctx: &HookCtx) -> Outcome {
         prompt: prompt.to_string(),
         budget_ms: Some(ctx.budget_ms),
         top_n: None,
-        render: None,
+        render: ctx.compact.then_some(RenderReq { budget_tokens: ctx.inject_tokens, related: ctx.related, adaptive: ctx.adaptive }),
     };
-    let result = match ctx.api.call(req) {
-        Ok(Response::Query { result, .. }) => result,
+    let (result, rendered) = match ctx.api.call(req) {
+        Ok(Response::Query { result, rendered, .. }) => (result, rendered),
         _ => return Outcome::skip("query_failed"),
     };
     if result.spans.is_empty() {
         return Outcome::skip("no_spans");
     }
-    let text = if ctx.compact {
+    let text = if let Some(text) = rendered {
+        if text.is_empty() {
+            return Outcome::skip("already_in_context");
+        }
+        text
+    } else if ctx.compact {
         laya_rank::render_compact_opts(&result, 3, ctx.inject_tokens, ctx.related)
     } else {
         laya_rank::render_context_opts(&result, ctx.inject_tokens, ctx.related)
@@ -100,8 +107,8 @@ fn user_prompt(prompt: &str, session: &str, ctx: &HookCtx) -> Outcome {
     }
 }
 
-fn session_view(session: &str, ctx: &HookCtx) -> Option<SessionView> {
-    match ctx.api.call(Request::Session { session: session.to_string() }) {
+fn session_view(session: &str, reset: bool, ctx: &HookCtx) -> Option<SessionView> {
+    match ctx.api.call(Request::Session { session: session.to_string(), reset }) {
         Ok(Response::Session { view }) => Some(view),
         _ => None,
     }
@@ -118,7 +125,7 @@ fn pre_read(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
     if ranged || count > 1 {
         return Outcome::skip(if ranged { "already_ranged" } else { "escape_hatch" });
     }
-    let Some(last) = session_view(session, ctx).and_then(|v| v.last) else { return Outcome::skip("no_ranking") };
+    let Some(last) = session_view(session, false, ctx).and_then(|v| v.last) else { return Outcome::skip("no_ranking") };
     let Some(total) = count_lines(&ctx.root.join(&rel)) else { return Outcome::skip("unreadable") };
     let Some((offset, limit)) = laya_rank::read_narrowing(&last, &rel, total, &laya_rank::ReadPolicy { p_threshold: ctx.read_p, ..Default::default() }) else {
         return Outcome::skip("not_narrowed");
@@ -141,7 +148,7 @@ fn pre_read(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
 
 fn pre_agent(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
     let Some(prompt) = tool_input["prompt"].as_str() else { return Outcome::skip("no_prompt") };
-    let Some(view) = session_view(session, ctx) else { return Outcome::skip("daemon_unavailable") };
+    let Some(view) = session_view(session, false, ctx) else { return Outcome::skip("daemon_unavailable") };
     if view.working_set.is_empty() {
         return Outcome::skip("empty_working_set");
     }
@@ -171,8 +178,13 @@ fn post_edit(tool_input: &Value, ctx: &HookCtx) -> Outcome {
 }
 
 fn session_start(source: &str, session: &str, ctx: &HookCtx) -> Outcome {
+    if source == "clear" {
+        let _ = session_view(session, true, ctx);
+        return Outcome::skip("context_reset");
+    }
     if source == "compact" {
-        let Some(view) = session_view(session, ctx) else { return Outcome::skip("daemon_unavailable") };
+        // Compaction dropped earlier injections and reads from the agent's context.
+        let Some(view) = session_view(session, true, ctx) else { return Outcome::skip("daemon_unavailable") };
         if view.working_set.is_empty() {
             return Outcome::skip("empty_working_set");
         }
@@ -204,14 +216,19 @@ mod tests {
         calls: RefCell<Vec<Request>>,
         result: Option<QueryResult>,
         read_count: u32,
+        rendered: Option<String>,
     }
 
     impl DaemonApi for Fake {
         fn call(&self, req: Request) -> anyhow::Result<Response> {
             self.calls.borrow_mut().push(req.clone());
             Ok(match req {
-                Request::Query { .. } => match &self.result {
-                    Some(r) => Response::Query { result: r.clone(), rendered: None, scope: None },
+                Request::Query { render, .. } => match &self.result {
+                    Some(r) => Response::Query {
+                        result: r.clone(),
+                        rendered: render.and_then(|_| self.rendered.clone()),
+                        scope: Some("file".into()),
+                    },
                     None => anyhow::bail!("down"),
                 },
                 Request::NoteRead { .. } => Response::Count { count: self.read_count },
@@ -232,11 +249,11 @@ mod tests {
     }
 
     fn fake(result: Option<QueryResult>, read_count: u32) -> Fake {
-        Fake { calls: RefCell::new(vec![]), result, read_count }
+        Fake { calls: RefCell::new(vec![]), result, read_count, rendered: None }
     }
 
     fn ctx<'a>(api: &'a dyn DaemonApi) -> HookCtx<'a> {
-        HookCtx { api, root: root(), budget_ms: 500, inject_tokens: 4000, read_p: 0.7, compact: false, related: true }
+        HookCtx { api, root: root(), budget_ms: 500, inject_tokens: 4000, read_p: 0.7, compact: false, related: true, adaptive: false }
     }
 
     fn res(spans: Vec<RankedSpan>) -> QueryResult {
@@ -308,6 +325,31 @@ mod tests {
         let upd = &o.output.unwrap()["hookSpecificOutput"]["updatedInput"];
         assert_eq!(upd["subagent_type"], "Explore");
         assert!(upd["prompt"].as_str().unwrap().contains("src/a.rs:1-20"));
+    }
+
+    #[test]
+    fn adaptive_prompt_uses_daemon_render_and_skips_when_nothing_new() {
+        let mut f = fake(Some(res(vec![span("src/a.rs", 1, 20, 0.8)])), 0);
+        f.rendered = Some("SIZED CONTEXT".into());
+        let c = HookCtx { compact: true, adaptive: true, ..ctx(&f) };
+        let o = handle(&json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is wal replay done"}), &c);
+        assert_eq!(o.action, "inject");
+        assert_eq!(o.output.unwrap()["hookSpecificOutput"]["additionalContext"], "SIZED CONTEXT");
+        assert!(f.calls.borrow().iter().any(|r| matches!(r, Request::Query { render: Some(RenderReq { adaptive: true, .. }), .. })));
+        let mut g = fake(Some(res(vec![span("src/a.rs", 1, 20, 0.8)])), 0);
+        g.rendered = Some(String::new());
+        let c = HookCtx { compact: true, adaptive: true, ..ctx(&g) };
+        let o = handle(&json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is wal replay done"}), &c);
+        assert_eq!((o.action, o.output), ("already_in_context", None));
+    }
+
+    #[test]
+    fn compact_or_clear_resets_the_sessions_context() {
+        let f = fake(Some(res(vec![span("src/a.rs", 1, 20, 0.8)])), 0);
+        for source in ["compact", "clear"] {
+            handle(&json!({"hook_event_name": "SessionStart", "session_id": "s", "source": source}), &ctx(&f));
+            assert!(matches!(f.calls.borrow().last(), Some(Request::Session { reset: true, .. })), "{source}");
+        }
     }
 
     #[test]

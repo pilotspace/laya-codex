@@ -29,7 +29,12 @@ pub enum Request {
         full: bool,
     },
     /// Last query result and working set of a session.
-    Session { session: String },
+    /// `reset` = the agent's context was compacted or cleared: forget which spans it has.
+    Session {
+        session: String,
+        #[serde(default)]
+        reset: bool,
+    },
     /// Re-index one file (after an edit). Relative or absolute path.
     ReindexFile { repo: String, path: String },
     /// Incremental index of the whole repo (hash-skipped); runs in the background.

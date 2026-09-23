@@ -170,6 +170,7 @@ fn cmd_hook(cfg: &Config) {
         // Defaults match the benchmarked configuration (calibrated laya-code, compact injection).
         read_p: std::env::var("LAYA_READ_P").ok().and_then(|v| v.parse().ok()).unwrap_or(0.4),
         compact: std::env::var("LAYA_RENDER").map(|v| v != "full").unwrap_or(true),
+        adaptive: std::env::var("LAYA_ADAPTIVE").map(|v| v == "1").unwrap_or(false),
         related: std::env::var("LAYA_RELATED").map(|v| v != "0").unwrap_or(true) };
     let outcome = hook::handle(&input, &ctx);
     if let Some(out) = &outcome.output {
