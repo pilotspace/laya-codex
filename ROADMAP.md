@@ -32,16 +32,22 @@ laya something people can install in one line and forget about.
 
 ## v0.1.x — hardening (patch releases)
 
-Security and robustness items from the v0.1.0 release review that did not block the release:
+Security and robustness items from the v0.1.0 release review that did not block the release.
 
-- **Panic isolation:** the release profile uses `panic = "abort"`, so one parser or tokenizer
-  panic on a strange file kills the daemon; wrap each connection and index job in
-  `catch_unwind`, or build with unwind.
+Done (unreleased, see [CHANGELOG.md](CHANGELOG.md)):
+
+- **Panic isolation:** release builds unwind; panics are caught per request, index job and
+  file, and hooks swallow them. Writes to a closed stdout exit quietly.
+- **Daemon limits:** 64 connections, 1 MiB request lines, 30 s read and 10 s write
+  timeouts; `top_n`, `budget_ms` and the render budget are clamped on the socket path.
+- **CLI usability:** `laya index`, `laya query --repo` and `laya init --repo` reject a
+  path that does not exist or is not a directory.
+
+Open:
+
 - **Hook permission decision:** the Read and Agent hooks return `permissionDecision: "allow"`
   alongside `updatedInput`. Claude Code still applies deny and ask rules, but `allow` can skip a
   prompt; switch to `updatedInput` without a decision once Claude Code confirms that form.
-- **Daemon limits:** cap concurrent connections, request line length and write time; clamp
-  `top_n` on the socket path as the MCP path already does.
 - **Moon upgrade:** move the pinned Moon from `8bba3ced` to the current release (v0.8.9+) after
   re-running the benchmark and soak test against it; fix Moon's `LICENSE` file so it matches its
   `Cargo.toml` (see [docs/release/LICENSES.md](docs/release/LICENSES.md)).
@@ -51,8 +57,6 @@ Security and robustness items from the v0.1.0 release review that did not block 
   Related: `ACL SAVE` against Moon rewrites `moon.acl` with a hashed password laya cannot read.
 - **One walker:** re-index-on-edit copies the full walk's ignore settings; export one helper from
   `laya-parse` so they cannot drift.
-- **CLI usability:** `laya index` on a path that does not exist must error instead of indexing
-  zero files.
 - **Upgrades:** the installer stops the running daemon; add a version handshake so a new `laya`
   never talks to an old daemon.
 

@@ -4,6 +4,37 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Hardening items from the v0.1.0 release review.
+
+### Fixed
+
+- **Panic isolation:** release builds now use `panic = "unwind"` instead of `abort`, so a panic
+  on a strange input no longer kills the daemon. A panicking request gets an
+  `internal error: ...` reply and the connection keeps serving. A panicking background index
+  job is logged and its "indexing" flag is cleared, so the repo can be re-indexed. A file whose
+  chunking panics is skipped and the rest of the repo is indexed. The session table recovers
+  from a panic that happened while it was locked. A panic inside `laya hook` prints nothing
+  and exits 0, so hooks still fail open. Cost: the binary is 0.9 MB larger (+2.8% on macOS
+  arm64); indexing speed is unchanged within noise.
+- `laya query ... | head` and other writes to a closed stdout exit 0 quietly instead of
+  printing `failed printing to stdout: Broken pipe` and aborting.
+- `laya index`, `laya query --repo` and `laya init --repo` exit 1 with `<path> does not exist`
+  or `<path> is not a directory` instead of indexing or searching an empty repo. The daemon
+  also refuses to index a path that is not a directory.
+
+### Security
+
+- **Daemon limits:** at most 64 connections at once; more get an immediate `daemon busy` error
+  and are closed without blocking the accept loop. Request lines over 1 MiB get
+  `request too long` and the connection is closed before the line is buffered. Each accepted
+  socket has a 30 s read and a 10 s write timeout, so idle clients and clients that never read
+  their replies are dropped. Accept errors (such as running out of file descriptors) back off
+  instead of spinning.
+- Size parameters on the socket are clamped: `top_n` to 1–20 (the same range the MCP tool
+  uses), `budget_ms` to 60 s and the render budget to 32k tokens.
+
 ## [0.1.1] — 2026-09-23
 
 Fixes found by installing v0.1.0 from the public release.
@@ -140,5 +171,6 @@ prompts per session, paired bootstrap 95% CIs, Claude Sonnet, Laya scored cold i
 - Instruction-heavy benchmark prompts no longer outrank the task terms in retrieval.
 - Long follow-up prompts are no longer treated as new tasks.
 
+[Unreleased]: https://github.com/pilotspace/laya-codex/compare/v0.1.1...HEAD
 [0.1.1]: https://github.com/pilotspace/laya-codex/releases/tag/v0.1.1
 [0.1.0]: https://github.com/pilotspace/laya-codex/releases/tag/v0.1.0
