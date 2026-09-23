@@ -58,10 +58,21 @@ else
     die "need sha256sum or shasum to verify downloads"
 fi
 
-# curl with retries and time limits; file:// URLs work too (used by the installer test).
+# Transfers slower than 10 KB/s for this many seconds are abandoned and retried.
+STALL_SECONDS="${LAYA_STALL_SECONDS:-30}"
+# Also retry after a stall or a dropped connection (curl 7.71+; older curl retries fewer cases).
+RETRY_ALL=""
+if curl --help all 2>/dev/null | grep -q -- --retry-all-errors; then RETRY_ALL="--retry-all-errors"; fi
+
+# fetch <url> <file> [max seconds]: download with retries, time limits and stall detection.
+# Always writes to a file (never stdout), so curl truncates a partial download before retrying
+# instead of appending to it. file:// URLs work too (used by the installer test).
 fetch() {
-    curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
-        --connect-timeout 15 --max-time "${2:-600}" "$1"
+    rm -f "$2"
+    # shellcheck disable=SC2086 # RETRY_ALL is empty or one flag
+    curl --fail --silent --show-error --location --retry 5 --retry-delay 2 $RETRY_ALL \
+        --connect-timeout 15 --speed-limit 10240 --speed-time "$STALL_SECONDS" \
+        --max-time "${3:-900}" --output "$2" "$1"
 }
 
 os="$(uname -s)"
@@ -92,8 +103,8 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 get_asset() {
     asset="$1"
     say "downloading $asset"
-    fetch "$RELEASES_URL/download/$VERSION/$asset" >"$tmp/$asset" || die "download failed: $asset"
-    fetch "$RELEASES_URL/download/$VERSION/$asset.sha256" 60 >"$tmp/$asset.sha256" ||
+    fetch "$RELEASES_URL/download/$VERSION/$asset" "$tmp/$asset" || die "download failed: $asset"
+    fetch "$RELEASES_URL/download/$VERSION/$asset.sha256" "$tmp/$asset.sha256" 60 ||
         die "download failed: $asset.sha256"
     want="$(cut -d' ' -f1 <"$tmp/$asset.sha256")"
     got="$(sha256 "$tmp/$asset")"
@@ -130,7 +141,7 @@ say "installed laya $VERSION and moon to $INSTALL_DIR"
 if [ "$MODEL" = 1 ]; then
     dest="$LAYA_HOME/models/laya-code"
     say "fetching the laya-code re-ranker manifest"
-    fetch "$MODEL_URL/MANIFEST.sha256" 60 >"$tmp/MANIFEST.sha256" || die "could not fetch the model manifest"
+    fetch "$MODEL_URL/MANIFEST.sha256" "$tmp/MANIFEST.sha256" 60 || die "could not fetch the model manifest"
     mkdir -p "$dest"
     # One "<sha256>  <path>" line per file; download only what is missing or stale.
     while read -r want file; do
@@ -141,7 +152,7 @@ if [ "$MODEL" = 1 ]; then
         fi
         say "downloading model file $file"
         mkdir -p "$(dirname "$dest/$file")"
-        fetch "$MODEL_URL/$file" 3600 >"$dest/$file.part" || die "download failed: model $file"
+        fetch "$MODEL_URL/$file" "$dest/$file.part" 3600 || die "download failed: model $file"
         got="$(sha256 "$dest/$file.part")"
         [ "$got" = "$want" ] || { rm -f "$dest/$file.part"; die "checksum mismatch for model $file"; }
         mv -f "$dest/$file.part" "$dest/$file"

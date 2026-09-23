@@ -6,6 +6,7 @@
 //! | `LAYA_MODEL_DIR` | `$LAYA_HOME/models/laya-code`, else `$LAYA_HOME/models/laya-base` |
 //! | `LAYA_MOON_BIN` | `moon` beside the `laya` binary, else on PATH |
 //! | `LAYA_MOON_PORT` | `16379` |
+//! | `LAYA_MOON_START_SECS` | `30` (how long a spawned Moon may take to answer) |
 //! | `LAYA_NO_MODEL` | unset (set to `1` for lexical-only ranking) |
 //! | `LAYA_BUDGET_MS` | `1200` (Laya time budget per query) |
 //! | `LAYA_HOOK_LOG` | unset (JSONL log of hook actions, used by the benchmark) |
@@ -22,6 +23,8 @@ pub struct Config {
     /// Every location considered for the Moon binary, in order (for diagnostics).
     pub moon_tried: Vec<PathBuf>,
     pub moon_port: u16,
+    /// How long a freshly spawned Moon may take to answer (it replays its index from disk).
+    pub moon_start_timeout: std::time::Duration,
     pub use_model: bool,
     pub budget_ms: u64,
     pub hook_log: Option<PathBuf>,
@@ -49,6 +52,9 @@ impl Config {
         );
         Config {
             moon_port: env_parse("LAYA_MOON_PORT").unwrap_or(16379),
+            moon_start_timeout: moon_start_timeout(
+                std::env::var("LAYA_MOON_START_SECS").ok().as_deref(),
+            ),
             use_model: std::env::var("LAYA_NO_MODEL")
                 .map(|v| v != "1")
                 .unwrap_or(true),
@@ -166,11 +172,23 @@ pub fn moon_password(cfg: &Config) -> anyhow::Result<laya_store::Password> {
         .map_err(|e| anyhow::anyhow!("moon password: {e}"))
 }
 
+/// Startup time limit for a spawned Moon: `LAYA_MOON_START_SECS` when it is a positive number
+/// of seconds, else 30 s. Moon replays its whole index from disk before it answers, so a large
+/// index or a slow machine needs far more than a fresh start.
+pub fn moon_start_timeout(env: Option<&str>) -> std::time::Duration {
+    let secs = env
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(30);
+    std::time::Duration::from_secs(secs)
+}
+
 /// The supervisor of laya's password-protected Moon.
 pub fn supervisor(cfg: &Config) -> anyhow::Result<laya_store::MoonSupervisor> {
     Ok(
         laya_store::MoonSupervisor::new(&cfg.moon_bin, cfg.moon_port, cfg.moon_dir())
-            .with_auth(moon_password(cfg)?, cfg.moon_acl()),
+            .with_auth(moon_password(cfg)?, cfg.moon_acl())
+            .with_spawn_timeout(cfg.moon_start_timeout),
     )
 }
 
@@ -237,6 +255,16 @@ pub fn rel_path(root: &Path, p: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moon_start_timeout_defaults_to_30s_and_honours_the_env_value() {
+        use std::time::Duration;
+        assert_eq!(moon_start_timeout(None), Duration::from_secs(30));
+        assert_eq!(moon_start_timeout(Some("90")), Duration::from_secs(90));
+        // Nonsense or zero falls back to the default rather than failing every start.
+        assert_eq!(moon_start_timeout(Some("soon")), Duration::from_secs(30));
+        assert_eq!(moon_start_timeout(Some("0")), Duration::from_secs(30));
+    }
 
     #[test]
     fn repo_root_finds_git_ancestor() {
