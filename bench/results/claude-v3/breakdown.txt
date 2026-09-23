@@ -1,0 +1,8 @@
+baseline (n=20)
+  tool calls/run: {'Grep': 6.1, 'Read': 3.15, 'Glob': 0.15}
+laya-compact (n=20)
+  tool calls/run: {'Grep': 3.2, 'Read': 3.15, 'Glob': 0.2, 'mcp__laya__laya_search': 0.1}
+  hook actions/run: {'already_ranged': 2.65, 'index_started': 1.0, 'inject': 1.0, 'not_narrowed': 0.45, 'narrow_read': 0.05}
+laya-refs (n=20)
+  tool calls/run: {'Read': 2.7, 'Grep': 2.65, 'Glob': 0.15, 'mcp__laya__laya_search': 0.1}
+  hook actions/run: {'already_ranged': 2.15, 'index_started': 1.0, 'inject': 1.0, 'not_narrowed': 0.55}

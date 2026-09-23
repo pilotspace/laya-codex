@@ -1,0 +1,31 @@
+[package]
+name = "laya-parse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Repo walking, language detection and cAST-style AST-aligned chunking for laya-codex."
+
+[dependencies]
+laya-core.workspace = true
+blake3 = "1"
+ignore = "0.4"
+rayon = "1"
+thiserror = "2"
+tree-sitter = "0.27"
+tree-sitter-language = "0.1"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-ruby = "0.23"
+tree-sitter-php = "0.24"
+tree-sitter-kotlin-ng = "1"
+tree-sitter-swift = "0.7"
+
+[dev-dependencies]
+tempfile = "3"

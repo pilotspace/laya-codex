@@ -1,0 +1,1003 @@
+//! Adaptive context sizing: stop injecting a fixed amount (map 10 / full 3 / related 8
+//! regardless of the task) and instead size per scope and skip anything already sent this
+//! session.
+//!
+//! [`size_context`] turns a [`QueryResult`] into a [`SizedContext`] — which spans get their full
+//! code inlined, which are map-only (a location pointer), which are already-sent (dropped
+//! entirely), and which related items survive after removing overlap with all of the above.
+//! [`render_sized`] / [`render_sized_with_keys`] render that into the same compact injection
+//! format [`crate::render_compact`] uses.
+
+use std::collections::HashSet;
+
+use laya_core::{QueryResult, RankMode, RankedSpan, Related};
+use serde::{Deserialize, Serialize};
+
+use crate::render::{
+    COMPACT_FOOTER, COMPACT_HEADER, append_ranked_locations, append_related, estimate_tokens,
+    render_span,
+};
+
+/// How much of the codebase a prompt's task spans, used to pick [`SizingCaps`]. `serde` uses
+/// `snake_case` (`"function"`, `"file"`, `"module"`, `"cross"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    /// The task is about one function/method.
+    Function,
+    /// The task is about one file.
+    File,
+    /// The task spans a module (a handful of related files).
+    Module,
+    /// The task cuts across the codebase (e.g. a rename, a cross-cutting refactor).
+    Cross,
+}
+
+/// How many spans get full code (`full_spans`), how many spans total get at least a location
+/// pointer (`map_spans`, i.e. `full_spans` is a subset of this), and how many reference
+/// neighbours (`related`) are kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SizingCaps {
+    pub map_spans: usize,
+    pub full_spans: usize,
+    pub related: usize,
+}
+
+/// "Today's behaviour" caps, used when [`Scope`] is unknown (`None`).
+const DEFAULT_CAPS: SizingCaps = SizingCaps {
+    map_spans: 10,
+    full_spans: 3,
+    related: 8,
+};
+
+impl Scope {
+    /// Sizing caps for `scope`, or [`DEFAULT_CAPS`] ("today's behaviour") when `scope` is `None`.
+    pub fn caps(scope: Option<Scope>) -> SizingCaps {
+        match scope {
+            None => DEFAULT_CAPS,
+            Some(Scope::Function) => SizingCaps {
+                map_spans: 5,
+                full_spans: 1,
+                related: 4,
+            },
+            Some(Scope::File) => SizingCaps {
+                map_spans: 8,
+                full_spans: 2,
+                related: 6,
+            },
+            Some(Scope::Module) => DEFAULT_CAPS,
+            Some(Scope::Cross) => SizingCaps {
+                map_spans: 12,
+                full_spans: 3,
+                related: 10,
+            },
+        }
+    }
+}
+
+fn default_tau_full() -> f32 {
+    0.40
+}
+fn default_tau_map() -> f32 {
+    0.20
+}
+fn default_min_full() -> usize {
+    1
+}
+fn default_min_map() -> usize {
+    3
+}
+
+/// Thresholds/floors for [`size_context`]'s Laya-probability-based selection.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub struct SizingPolicy {
+    /// Minimum `p_relevant` for a span to be eligible for `full`.
+    #[serde(default = "default_tau_full")]
+    pub tau_full: f32,
+    /// Minimum `p_relevant` for a span to be eligible for `map` (below this, and not needed to
+    /// reach `min_map`, a span is dropped rather than shown as a bare pointer).
+    #[serde(default = "default_tau_map")]
+    pub tau_map: f32,
+    /// Always fill `full` to at least this many spans (from the top, ignoring `tau_full`) if
+    /// fewer than this many clear the threshold and candidates are available.
+    #[serde(default = "default_min_full")]
+    pub min_full: usize,
+    /// Always fill `full + map` to at least this many spans total (ignoring `tau_map`) if fewer
+    /// clear the threshold and candidates are available.
+    #[serde(default = "default_min_map")]
+    pub min_map: usize,
+}
+
+impl Default for SizingPolicy {
+    fn default() -> Self {
+        Self {
+            tau_full: default_tau_full(),
+            tau_map: default_tau_map(),
+            min_full: default_min_full(),
+            min_map: default_min_map(),
+        }
+    }
+}
+
+/// Identifies a span by location only (no text/score) — what the daemon persists per session to
+/// know what's already been sent.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SpanKey {
+    pub path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+impl SpanKey {
+    fn of(s: &RankedSpan) -> Self {
+        SpanKey {
+            path: s.path.clone(),
+            start_line: s.start_line,
+            end_line: s.end_line,
+        }
+    }
+}
+
+/// The result of [`size_context`]: what to inline in full, what to only list, what reference
+/// neighbours to append, and what was dropped because it was already sent this session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SizedContext {
+    pub full: Vec<RankedSpan>,
+    pub map: Vec<RankedSpan>,
+    pub related: Vec<Related>,
+    pub already: Vec<RankedSpan>,
+}
+
+fn overlaps(
+    path_a: &str,
+    start_a: u32,
+    end_a: u32,
+    path_b: &str,
+    start_b: u32,
+    end_b: u32,
+) -> bool {
+    path_a == path_b && start_a <= end_b && start_b <= end_a
+}
+
+fn span_overlaps_key(s: &RankedSpan, k: &SpanKey) -> bool {
+    overlaps(
+        &s.path,
+        s.start_line,
+        s.end_line,
+        &k.path,
+        k.start_line,
+        k.end_line,
+    )
+}
+
+fn related_overlaps_span(r: &Related, s: &RankedSpan) -> bool {
+    overlaps(
+        &r.path,
+        r.start_line,
+        r.end_line,
+        &s.path,
+        s.start_line,
+        s.end_line,
+    )
+}
+
+/// Size `result` into a [`SizedContext`] for `scope` (`None` = today's fixed defaults) under
+/// `policy`, treating anything overlapping `already` as already sent (dropped from `full`/`map`,
+/// reported in `.already`, and never counted against the caps — the next-ranked spans are
+/// promoted into their place).
+pub fn size_context(
+    result: &QueryResult,
+    scope: Option<Scope>,
+    policy: &SizingPolicy,
+    already: &[SpanKey],
+) -> SizedContext {
+    let caps = Scope::caps(scope);
+
+    let mut already_spans: Vec<RankedSpan> = Vec::new();
+    let mut candidates: Vec<RankedSpan> = Vec::new();
+    for s in &result.spans {
+        if already.iter().any(|k| span_overlaps_key(s, k)) {
+            already_spans.push(s.clone());
+        } else {
+            candidates.push(s.clone());
+        }
+    }
+
+    let has_p = result.mode == RankMode::Laya && candidates.iter().all(|s| s.p_relevant.is_some());
+    let (full, map) = if has_p {
+        select_by_threshold(&candidates, &caps, policy)
+    } else {
+        select_lexical(&candidates, &caps)
+    };
+
+    let covered: Vec<&RankedSpan> = full
+        .iter()
+        .chain(map.iter())
+        .chain(already_spans.iter())
+        .collect();
+    // Usage lines (grep-style definition/use lines) are not reference neighbours: a map entry
+    // shows only a range, so they stay unless the renderer finds them inside visible code.
+    let (usages, neighbours): (Vec<&Related>, Vec<&Related>) = result
+        .related
+        .iter()
+        .partition(|r| crate::render::is_usage(r));
+    let related: Vec<Related> = neighbours
+        .into_iter()
+        .filter(|r| !covered.iter().any(|s| related_overlaps_span(r, s)))
+        .take(caps.related)
+        .chain(usages)
+        .cloned()
+        .collect();
+
+    SizedContext {
+        full,
+        map,
+        related,
+        already: already_spans,
+    }
+}
+
+/// `full` = candidates with `p_relevant >= tau_full`, capped at `caps.full_spans`, topped up to
+/// `policy.min_full` (ignoring the threshold) if too few pass. `map` = the next candidates (not
+/// already in `full`) with `p_relevant >= tau_map`, such that `full.len() + map.len() <=
+/// caps.map_spans`, topped up (ignoring the threshold) so the total reaches `policy.min_map` when
+/// candidates allow it.
+fn select_by_threshold(
+    candidates: &[RankedSpan],
+    caps: &SizingCaps,
+    policy: &SizingPolicy,
+) -> (Vec<RankedSpan>, Vec<RankedSpan>) {
+    let passing = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.p_relevant.is_some_and(|p| p >= policy.tau_full))
+        .map(|(i, _)| i);
+    let mut full_idx = distinct_files(candidates, passing, caps.full_spans);
+    if full_idx.len() < policy.min_full {
+        let need = policy.min_full.min(caps.full_spans);
+        full_idx = distinct_files(candidates, 0..candidates.len(), need);
+    }
+    let full_set: HashSet<usize> = full_idx.iter().copied().collect();
+
+    let map_budget = caps.map_spans.saturating_sub(full_idx.len());
+    let mut map_idx: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(i, s)| !full_set.contains(i) && s.p_relevant.is_some_and(|p| p >= policy.tau_map))
+        .map(|(i, _)| i)
+        .take(map_budget)
+        .collect();
+
+    if full_idx.len() + map_idx.len() < policy.min_map {
+        let target = policy
+            .min_map
+            .saturating_sub(full_idx.len())
+            .min(map_budget);
+        if map_idx.len() < target {
+            map_idx = candidates
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !full_set.contains(i))
+                .map(|(i, _)| i)
+                .take(target)
+                .collect();
+        }
+    }
+
+    let full = full_idx.iter().map(|&i| candidates[i].clone()).collect();
+    let map = map_idx.iter().map(|&i| candidates[i].clone()).collect();
+    (full, map)
+}
+
+/// No usable probabilities (lexical mode, or a span is missing `p_relevant`): `full` = the top
+/// `caps.full_spans` candidates, `map` = the rest up to a `full + map` total of `caps.map_spans`.
+fn select_lexical(
+    candidates: &[RankedSpan],
+    caps: &SizingCaps,
+) -> (Vec<RankedSpan>, Vec<RankedSpan>) {
+    let full_idx = distinct_files(candidates, 0..candidates.len(), caps.full_spans);
+    let map_budget = caps.map_spans.saturating_sub(full_idx.len());
+    let map: Vec<RankedSpan> = (0..candidates.len())
+        .filter(|i| !full_idx.contains(i))
+        .take(map_budget)
+        .map(|i| candidates[i].clone())
+        .collect();
+    (
+        full_idx.iter().map(|&i| candidates[i].clone()).collect(),
+        map,
+    )
+}
+
+/// Up to `k` of `indices` (in order), at most one per file: full code for one span in each of
+/// several files covers more of what the task needs than several spans of one file.
+fn distinct_files(
+    candidates: &[RankedSpan],
+    indices: impl Iterator<Item = usize>,
+    k: usize,
+) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::new();
+    for i in indices {
+        if out.len() == k {
+            break;
+        }
+        if !out
+            .iter()
+            .any(|&j| candidates[j].path == candidates[i].path)
+        {
+            out.push(i);
+        }
+    }
+    out
+}
+
+const ALREADY_PREFIX: &str = "\nAlready provided earlier in this session: ";
+
+/// Render `ctx` in the same compact format as [`crate::render_compact`]: header, a
+/// "Ranked locations:" listing of `full` then `map` (grouped per file), the full code of every
+/// `full` span that fits `budget_tokens`, the footer, an "Already provided earlier in this
+/// session: …" line (omitted when `ctx.already` is empty), then the "Related by references:"
+/// section (omitted when `ctx.related` is empty).
+///
+/// If a `full` span's code block would exceed `budget_tokens`, it is *not* cut: it's degraded to
+/// a map-only entry (it stays in the "Ranked locations:" listing, just without an inlined code
+/// block, exactly like the spec's "degrade to a map entry rather than cutting the code block"
+/// says) and excluded from the returned keys. Use [`render_sized_with_keys`] to know exactly
+/// which spans got full code after that degradation; [`sized_keys`] reports `ctx.full` without it
+/// (i.e. what would be sent absent any budget pressure).
+pub fn render_sized(ctx: &SizedContext, budget_tokens: usize) -> String {
+    render_sized_with_keys(ctx, budget_tokens).0
+}
+
+/// [`render_sized`], additionally returning the [`SpanKey`]s of the spans that actually got a
+/// full code block (i.e. `ctx.full` minus anything degraded to a map entry by `budget_tokens`) —
+/// what the daemon should record as sent.
+pub fn render_sized_with_keys(ctx: &SizedContext, budget_tokens: usize) -> (String, Vec<SpanKey>) {
+    let mut out = String::from(COMPACT_HEADER);
+    let listed: Vec<&RankedSpan> = ctx.full.iter().chain(ctx.map.iter()).collect();
+    append_ranked_locations(&mut out, &listed);
+
+    let mut used = estimate_tokens(&out) + estimate_tokens(COMPACT_FOOTER);
+    let mut rendered_keys = Vec::new();
+    let mut inlined: Vec<&RankedSpan> = ctx.already.iter().collect();
+    for span in &ctx.full {
+        let block = render_span(span);
+        let t = estimate_tokens(&block);
+        // Reserve room for the footer and the "Already provided" line after the code blocks.
+        if used + t > budget_tokens
+            || !crate::render::fits(&out, &block, COMPACT_FOOTER.len() + 400)
+        {
+            // Degrade to a map entry: it's already in the "Ranked locations:" listing above, so
+            // simply not inlining its code block is exactly that degradation — no truncated code.
+            continue;
+        }
+        out.push_str(&block);
+        used += t;
+        rendered_keys.push(SpanKey::of(span));
+        inlined.push(span);
+    }
+    out.push_str(COMPACT_FOOTER);
+
+    if !ctx.already.is_empty() {
+        let mut line = String::from(ALREADY_PREFIX);
+        for (i, s) in ctx.already.iter().enumerate() {
+            let loc = format!(
+                "{}{}:{}-{}",
+                if i > 0 { ", " } else { "" },
+                s.path,
+                s.start_line,
+                s.end_line
+            );
+            if !crate::render::fits(&out, &format!("{line}{loc}"), 1) {
+                break;
+            }
+            line.push_str(&loc);
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+
+    append_related(&mut out, &ctx.related, &inlined);
+
+    (out, rendered_keys)
+}
+
+/// The [`SpanKey`]s of `ctx.full` — the spans `size_context` decided should get full code,
+/// independent of any rendering budget. See [`render_sized_with_keys`] for the budget-aware,
+/// "actually rendered" version.
+pub fn sized_keys(ctx: &SizedContext) -> Vec<SpanKey> {
+    ctx.full.iter().map(SpanKey::of).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span(
+        path: &str,
+        start: u32,
+        end: u32,
+        symbol: &str,
+        p: Option<f32>,
+        score: f32,
+    ) -> RankedSpan {
+        RankedSpan {
+            path: path.to_string(),
+            start_line: start,
+            end_line: end,
+            symbol: symbol.to_string(),
+            p_relevant: p,
+            score,
+            text: format!("// {path}:{start}"),
+        }
+    }
+
+    fn related(path: &str, start: u32, end: u32, relation: &str) -> Related {
+        Related {
+            path: path.to_string(),
+            start_line: start,
+            end_line: end,
+            symbol: String::new(),
+            relation: relation.to_string(),
+        }
+    }
+
+    fn result(mode: RankMode, spans: Vec<RankedSpan>, related: Vec<Related>) -> QueryResult {
+        let candidates = spans.len();
+        QueryResult {
+            spans,
+            mode,
+            elapsed_ms: 1,
+            candidates,
+            related,
+        }
+    }
+
+    fn key(s: &RankedSpan) -> SpanKey {
+        SpanKey::of(s)
+    }
+
+    #[test]
+    fn full_code_goes_to_distinct_files_in_both_modes() {
+        let spans = vec![
+            span("a.rs", 1, 20, "", Some(0.9), 1.0),
+            span("a.rs", 40, 60, "", Some(0.9), 0.9),
+            span("b.rs", 1, 20, "", Some(0.9), 0.8),
+            span("c.rs", 1, 20, "", Some(0.9), 0.7),
+        ];
+        let lexical: Vec<RankedSpan> = spans
+            .iter()
+            .map(|s| RankedSpan {
+                p_relevant: None,
+                ..s.clone()
+            })
+            .collect();
+        let policy = SizingPolicy {
+            tau_full: 0.0,
+            tau_map: 0.0,
+            ..SizingPolicy::default()
+        };
+        for r in [
+            result(RankMode::Laya, spans, vec![]),
+            result(RankMode::Lexical, lexical, vec![]),
+        ] {
+            let ctx = size_context(&r, None, &policy, &[]);
+            let full: Vec<(&str, u32)> = ctx
+                .full
+                .iter()
+                .map(|s| (s.path.as_str(), s.start_line))
+                .collect();
+            assert_eq!(full, vec![("a.rs", 1), ("b.rs", 1), ("c.rs", 1)]);
+            assert!(
+                ctx.map
+                    .iter()
+                    .any(|s| s.path == "a.rs" && s.start_line == 40),
+                "second a.rs span stays in the map"
+            );
+        }
+    }
+
+    #[test]
+    fn usage_lines_survive_map_overlap_and_the_related_cap() {
+        let spans: Vec<RankedSpan> = (0..5)
+            .map(|i| span(&format!("f{i}.rs"), 1, 50, "", Some(0.9), 1.0))
+            .collect();
+        let mut rel: Vec<Related> = (0..20)
+            .map(|i| related(&format!("r{i}.rs"), 1, 9, "calls `x` (#1)"))
+            .collect();
+        rel.push(Related {
+            symbol: "x();".into(),
+            ..related("f4.rs", 7, 7, "use of `x`")
+        });
+        let ctx = size_context(
+            &result(RankMode::Laya, spans, rel),
+            None,
+            &SizingPolicy {
+                tau_full: 0.0,
+                tau_map: 0.0,
+                ..SizingPolicy::default()
+            },
+            &[],
+        );
+        assert!(
+            ctx.map.iter().any(|s| s.path == "f4.rs"),
+            "f4.rs is map-only"
+        );
+        assert!(
+            ctx.related
+                .iter()
+                .any(|r| r.path == "f4.rs" && r.relation == "use of `x`")
+        );
+        assert_eq!(
+            ctx.related
+                .iter()
+                .filter(|r| !crate::render::is_usage(r))
+                .count(),
+            8
+        );
+    }
+
+    #[test]
+    fn sized_render_stays_under_the_hook_cap_and_reports_only_inlined_keys() {
+        let spans: Vec<RankedSpan> = ["a.rs", "b.rs", "c.rs"]
+            .iter()
+            .map(|p| RankedSpan {
+                text: "z".repeat(4_000),
+                ..span(p, 1, 200, "", Some(0.9), 1.0)
+            })
+            .collect();
+        let related: Vec<Related> = (0..100)
+            .map(|i| related(&format!("r{i}.rs"), 1, 9, "calls `x` (#1)"))
+            .collect();
+        let ctx = size_context(
+            &result(RankMode::Laya, spans, related),
+            None,
+            &SizingPolicy::default(),
+            &[],
+        );
+        let (out, keys) = render_sized_with_keys(&ctx, 100_000);
+        assert!(
+            out.len() <= crate::render::MAX_INJECT_CHARS,
+            "{} chars",
+            out.len()
+        );
+        assert_eq!(
+            keys.len(),
+            out.matches("```").count() / 2,
+            "keys = inlined blocks only"
+        );
+        assert!(keys.len() < 3, "not every 4k-char block fits");
+    }
+
+    // ---- Scope::caps ----
+
+    #[test]
+    fn caps_match_spec_per_scope_and_default() {
+        assert_eq!(
+            Scope::caps(Some(Scope::Function)),
+            SizingCaps {
+                map_spans: 5,
+                full_spans: 1,
+                related: 4
+            }
+        );
+        assert_eq!(
+            Scope::caps(Some(Scope::File)),
+            SizingCaps {
+                map_spans: 8,
+                full_spans: 2,
+                related: 6
+            }
+        );
+        assert_eq!(
+            Scope::caps(Some(Scope::Module)),
+            SizingCaps {
+                map_spans: 10,
+                full_spans: 3,
+                related: 8
+            }
+        );
+        assert_eq!(
+            Scope::caps(Some(Scope::Cross)),
+            SizingCaps {
+                map_spans: 12,
+                full_spans: 3,
+                related: 10
+            }
+        );
+        assert_eq!(
+            Scope::caps(None),
+            SizingCaps {
+                map_spans: 10,
+                full_spans: 3,
+                related: 8
+            }
+        );
+    }
+
+    #[test]
+    fn sizing_policy_defaults_match_spec() {
+        let p = SizingPolicy::default();
+        assert_eq!(p.tau_full, 0.40);
+        assert_eq!(p.tau_map, 0.20);
+        assert_eq!(p.min_full, 1);
+        assert_eq!(p.min_map, 3);
+    }
+
+    #[test]
+    fn sizing_policy_deserializes_partial_json_with_defaults() {
+        let p: SizingPolicy = serde_json::from_str(r#"{"tau_full": 0.6}"#).unwrap();
+        assert_eq!(p.tau_full, 0.6);
+        assert_eq!(p.tau_map, 0.20);
+    }
+
+    // ---- threshold behaviour ----
+
+    #[test]
+    fn laya_mode_splits_full_and_map_by_threshold() {
+        let spans = vec![
+            span("a.rs", 1, 5, "", Some(0.9), 0.9), // >= tau_full -> full
+            span("b.rs", 1, 5, "", Some(0.5), 0.5), // >= tau_full -> full
+            span("c.rs", 1, 5, "", Some(0.25), 0.25), // >= tau_map only -> map
+            span("d.rs", 1, 5, "", Some(0.05), 0.05), // below tau_map -> dropped
+        ];
+        let r = result(RankMode::Laya, spans, vec![]);
+        let ctx = size_context(&r, None, &SizingPolicy::default(), &[]);
+        assert_eq!(
+            ctx.full.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
+            vec!["a.rs", "b.rs"]
+        );
+        assert_eq!(
+            ctx.map.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
+            vec!["c.rs"]
+        );
+        assert!(
+            !ctx.full
+                .iter()
+                .chain(ctx.map.iter())
+                .any(|s| s.path == "d.rs")
+        );
+    }
+
+    #[test]
+    fn full_is_capped_at_caps_full_spans_even_if_more_pass_threshold() {
+        let spans: Vec<RankedSpan> = (0..5)
+            .map(|i| {
+                span(
+                    &format!("f{i}.rs"),
+                    1,
+                    5,
+                    "",
+                    Some(0.9),
+                    0.9 - i as f32 * 0.01,
+                )
+            })
+            .collect();
+        let r = result(RankMode::Laya, spans, vec![]);
+        let caps_policy = SizingPolicy::default();
+        let ctx = size_context(&r, Some(Scope::Function), &caps_policy, &[]); // full_spans cap = 1
+        assert_eq!(ctx.full.len(), 1);
+        assert_eq!(ctx.full[0].path, "f0.rs");
+    }
+
+    // ---- min_full / min_map ----
+
+    #[test]
+    fn min_full_tops_up_full_when_too_few_pass_tau_full() {
+        // Only "a.rs" passes tau_full; min_full default is 1, so no top-up needed here — bump
+        // min_full to 2 to force the fallback.
+        let spans = vec![
+            span("a.rs", 1, 5, "", Some(0.9), 0.9),
+            span("b.rs", 1, 5, "", Some(0.1), 0.1), // below tau_full and tau_map
+        ];
+        let r = result(RankMode::Laya, spans, vec![]);
+        let policy = SizingPolicy {
+            min_full: 2,
+            ..SizingPolicy::default()
+        };
+        let ctx = size_context(&r, None, &policy, &[]);
+        assert_eq!(
+            ctx.full.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
+            vec!["a.rs", "b.rs"]
+        );
+    }
+
+    #[test]
+    fn min_full_top_up_never_exceeds_available_candidates() {
+        let spans = vec![span("a.rs", 1, 5, "", Some(0.05), 0.05)];
+        let r = result(RankMode::Laya, spans, vec![]);
+        let policy = SizingPolicy {
+            min_full: 5,
+            ..SizingPolicy::default()
+        };
+        let ctx = size_context(&r, None, &policy, &[]);
+        assert_eq!(ctx.full.len(), 1);
+    }
+
+    #[test]
+    fn min_map_tops_up_total_when_too_few_pass_tau_map() {
+        // Nothing passes either threshold; min_map=3 should still surface 3 spans (all as map,
+        // since none pass tau_full either — min_full default 1 promotes exactly one of them).
+        let spans: Vec<RankedSpan> = (0..4)
+            .map(|i| {
+                span(
+                    &format!("f{i}.rs"),
+                    1,
+                    5,
+                    "",
+                    Some(0.01),
+                    0.5 - i as f32 * 0.01,
+                )
+            })
+            .collect();
+        let r = result(RankMode::Laya, spans, vec![]);
+        let ctx = size_context(&r, None, &SizingPolicy::default(), &[]);
+        assert_eq!(
+            ctx.full.len(),
+            1,
+            "min_full=1 still promotes the top candidate into full"
+        );
+        assert_eq!(ctx.full.len() + ctx.map.len(), 3, "min_map=3 total");
+        assert_eq!(
+            ctx.map.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
+            vec!["f1.rs", "f2.rs"]
+        );
+    }
+
+    #[test]
+    fn min_map_top_up_respects_map_spans_cap() {
+        let spans: Vec<RankedSpan> = (0..3)
+            .map(|i| {
+                span(
+                    &format!("f{i}.rs"),
+                    1,
+                    5,
+                    "",
+                    Some(0.01),
+                    0.5 - i as f32 * 0.01,
+                )
+            })
+            .collect();
+        let r = result(RankMode::Laya, spans, vec![]);
+        // Function scope: full_spans=1, map_spans=5 (total cap), min_map default 3 — fine within cap.
+        let ctx = size_context(&r, Some(Scope::Function), &SizingPolicy::default(), &[]);
+        assert_eq!(ctx.full.len() + ctx.map.len(), 3);
+    }
+
+    // ---- per-scope caps applied end to end ----
+
+    #[test]
+    fn full_plus_map_never_exceeds_caps_map_spans() {
+        let spans: Vec<RankedSpan> = (0..20)
+            .map(|i| {
+                span(
+                    &format!("f{i}.rs"),
+                    1,
+                    5,
+                    "",
+                    Some(0.9),
+                    1.0 - i as f32 * 0.01,
+                )
+            })
+            .collect();
+        let r = result(RankMode::Laya, spans, vec![]);
+        for scope in [Scope::Function, Scope::File, Scope::Module, Scope::Cross] {
+            let caps = Scope::caps(Some(scope));
+            let ctx = size_context(&r, Some(scope), &SizingPolicy::default(), &[]);
+            assert!(ctx.full.len() <= caps.full_spans);
+            assert!(ctx.full.len() + ctx.map.len() <= caps.map_spans);
+        }
+    }
+
+    // ---- promotion after already-sent spans ----
+
+    #[test]
+    fn already_sent_spans_are_excluded_and_the_next_one_is_promoted() {
+        let spans = vec![
+            span("a.rs", 1, 5, "", Some(0.9), 0.9),
+            span("b.rs", 1, 5, "", Some(0.8), 0.8),
+        ];
+        let r = result(RankMode::Laya, spans.clone(), vec![]);
+        let already = vec![key(&spans[0])];
+        let ctx = size_context(
+            &r,
+            Some(Scope::Function),
+            &SizingPolicy::default(),
+            &already,
+        ); // full cap=1
+        assert_eq!(ctx.already.len(), 1);
+        assert_eq!(ctx.already[0].path, "a.rs");
+        // "b.rs" is promoted into the single full slot that "a.rs" would otherwise have taken.
+        assert_eq!(
+            ctx.full.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
+            vec!["b.rs"]
+        );
+    }
+
+    #[test]
+    fn already_sent_match_is_by_overlap_not_exact_range() {
+        let spans = vec![span("a.rs", 10, 20, "", Some(0.9), 0.9)];
+        let r = result(RankMode::Laya, spans, vec![]);
+        // caller's "already sent" range only partially overlaps the ranked span's range.
+        let already = vec![SpanKey {
+            path: "a.rs".into(),
+            start_line: 15,
+            end_line: 25,
+        }];
+        let ctx = size_context(&r, None, &SizingPolicy::default(), &already);
+        assert!(ctx.full.is_empty());
+        assert_eq!(ctx.already.len(), 1);
+    }
+
+    // ---- lexical fallback ----
+
+    #[test]
+    fn lexical_mode_ignores_thresholds_full_is_top_n_map_is_the_rest() {
+        let spans = vec![
+            span("a.rs", 1, 5, "", None, 0.9),
+            span("b.rs", 1, 5, "", None, 0.8),
+            span("c.rs", 1, 5, "", None, 0.7),
+        ];
+        let r = result(RankMode::Lexical, spans, vec![]);
+        let ctx = size_context(&r, Some(Scope::Function), &SizingPolicy::default(), &[]); // full=1, map total=5
+        assert_eq!(
+            ctx.full.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
+            vec!["a.rs"]
+        );
+        assert_eq!(
+            ctx.map.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
+            vec!["b.rs", "c.rs"]
+        );
+    }
+
+    #[test]
+    fn laya_mode_with_a_span_missing_p_falls_back_to_lexical_selection() {
+        let spans = vec![
+            span("a.rs", 1, 5, "", Some(0.9), 0.9),
+            span("b.rs", 1, 5, "", None, 0.8), // merged span that lost its p, say
+        ];
+        let r = result(RankMode::Laya, spans, vec![]);
+        let ctx = size_context(&r, Some(Scope::Function), &SizingPolicy::default(), &[]);
+        // lexical fallback: top 1 by input order goes to full, not threshold-filtered.
+        assert_eq!(
+            ctx.full.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
+            vec!["a.rs"]
+        );
+        assert_eq!(
+            ctx.map.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
+            vec!["b.rs"]
+        );
+    }
+
+    // ---- related filtering ----
+
+    #[test]
+    fn related_overlapping_full_map_or_already_is_dropped() {
+        let spans = vec![
+            span("a.rs", 1, 10, "", Some(0.9), 0.9),
+            span("b.rs", 1, 10, "", Some(0.9), 0.85),
+        ];
+        let r = result(
+            RankMode::Laya,
+            spans.clone(),
+            vec![
+                related("a.rs", 1, 10, "calls `x` (#1)"), // overlaps full
+                related("b.rs", 1, 10, "calls `y` (#1)"), // overlaps map (depending on caps)
+                related("c.rs", 1, 10, "calls `z` (#1)"), // survives
+            ],
+        );
+        let already = vec![key(&spans[1])];
+        let ctx = size_context(&r, None, &SizingPolicy::default(), &already);
+        assert_eq!(
+            ctx.related
+                .iter()
+                .map(|x| x.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c.rs"]
+        );
+    }
+
+    #[test]
+    fn related_is_capped_at_caps_related() {
+        let related_items: Vec<Related> = (0..20)
+            .map(|i| related(&format!("r{i}.rs"), 1, 5, "x"))
+            .collect();
+        let r = result(RankMode::Laya, vec![], related_items);
+        let ctx = size_context(&r, Some(Scope::Function), &SizingPolicy::default(), &[]); // related cap 4
+        assert_eq!(ctx.related.len(), 4);
+    }
+
+    // ---- render_sized ----
+
+    #[test]
+    fn render_sized_contains_header_listing_code_and_footer() {
+        let ctx = SizedContext {
+            full: vec![span("a.rs", 1, 5, "fn a", Some(0.9), 0.9)],
+            map: vec![span("b.rs", 1, 5, "fn b", Some(0.3), 0.3)],
+            related: vec![related("src/x.rs", 10, 40, "calls `bar` (#1)")],
+            already: vec![],
+        };
+        let out = render_sized(&ctx, 10_000);
+        assert!(out.starts_with("<!-- laya-codex:"));
+        assert!(out.contains("Ranked locations:"));
+        assert!(out.contains("1. a.rs — 1-5 fn a"));
+        assert!(out.contains("2. b.rs — 1-5 fn b"));
+        assert!(out.contains("```")); // full code block for a.rs
+        assert!(out.contains("Use the code above directly"));
+        assert!(out.contains("Related by references:"));
+        assert!(out.contains("- src/x.rs:10-40 — calls `bar` (#1)"));
+        assert!(!out.contains("Already provided"));
+    }
+
+    #[test]
+    fn render_sized_shows_already_line_only_when_non_empty() {
+        let ctx = SizedContext {
+            full: vec![],
+            map: vec![],
+            related: vec![],
+            already: vec![
+                span("a.rs", 1, 5, "", None, 0.0),
+                span("b.rs", 10, 20, "", None, 0.0),
+            ],
+        };
+        let out = render_sized(&ctx, 10_000);
+        assert!(out.contains("Already provided earlier in this session: a.rs:1-5, b.rs:10-20"));
+    }
+
+    #[test]
+    fn sized_keys_returns_ctx_full_regardless_of_budget() {
+        let ctx = SizedContext {
+            full: vec![
+                span("a.rs", 1, 5, "", Some(0.9), 0.9),
+                span("b.rs", 1, 5, "", Some(0.9), 0.8),
+            ],
+            map: vec![],
+            related: vec![],
+            already: vec![],
+        };
+        let keys = sized_keys(&ctx);
+        assert_eq!(keys, vec![key(&ctx.full[0]), key(&ctx.full[1])]);
+    }
+
+    #[test]
+    fn budget_degradation_demotes_a_full_span_to_a_map_entry_not_a_cut_block() {
+        let big = "x".repeat(2000);
+        let ctx = SizedContext {
+            full: vec![
+                span("a.rs", 1, 5, "fn a", Some(0.9), 0.9),
+                span("b.rs", 1, 5, "fn b", Some(0.8), 0.8),
+            ],
+            map: vec![],
+            related: vec![],
+            already: vec![],
+        };
+        let mut ctx = ctx;
+        ctx.full[1].text = big;
+        // budget fits the header/listing/footer plus a.rs's tiny code block, but not b.rs's huge one.
+        let (out, keys) = render_sized_with_keys(&ctx, 220);
+        assert!(
+            out.contains("2. b.rs — 1-5 fn b"),
+            "b.rs stays in the listing (map entry)"
+        );
+        assert_eq!(
+            keys,
+            vec![key(&ctx.full[0])],
+            "only a.rs actually got a full code block"
+        );
+        // no truncated/partial code fence for b.rs's block:
+        assert!(!out.contains("xxxx"));
+    }
+
+    #[test]
+    fn render_sized_equals_render_sized_with_keys_string() {
+        let ctx = SizedContext {
+            full: vec![span("a.rs", 1, 5, "", Some(0.9), 0.9)],
+            map: vec![],
+            related: vec![],
+            already: vec![],
+        };
+        assert_eq!(
+            render_sized(&ctx, 10_000),
+            render_sized_with_keys(&ctx, 10_000).0
+        );
+    }
+}

@@ -1,0 +1,60 @@
+{"id": "2f5b91a193", "task": "chore(hash-ttl): close audit gaps from 7-phase validation", "gold": ["src/command/metadata.rs"]}
+{"id": "c2a154aa12", "task": "chore(test): harden test_txn_commit_wal_crash_recovery flake diagnosis", "gold": ["tests/txn_kv_wiring.rs"]}
+{"id": "4768250d24", "task": "fix(tier-2): CodeRabbit follow-ups from PR #100", "gold": ["src/cluster/command.rs", "src/command/key_extra.rs"]}
+{"id": "b7a443f54b", "task": "chore(repo): satisfy audit-unsafe + audit-unwrap CI gates", "gold": ["src/command/vector_search/ft_invalidate_range.rs", "src/shard/disk_monitor.rs", "src/shard/scatter_aggregate.rs", "src/vector/persistence/sealed_mmap.rs"]}
+{"id": "d532b74e5e", "task": "chore(repo): address PR #97/#98 post-merge review follow-ups", "gold": ["src/lib.rs", "src/shard/coordinator.rs", "src/version_token_tests.rs", "tests/perf_v0112_insert_or_update_single_probe.rs"]}
+{"id": "90670e898a", "task": "feat(moon): W2-M2 MULTI-SHARD \u2014 FT.INVALIDATE_RANGE scatter-sum across shards", "gold": ["src/server/conn/handler_monoio/ft.rs", "src/server/conn/handler_sharded/ft.rs", "src/shard/coordinator.rs"]}
+{"id": "e2ce03bc56", "task": "refactor(storage): delete Database::data_mut() \u2014 test-only callsite", "gold": ["src/storage/db.rs"]}
+{"id": "4e905852bb", "task": "Revert \"refactor(metrics): Phase 3.4 \u2014 drop dead cross-shard fast-path metrics + orphan prefilter\"", "gold": ["src/admin/metrics_setup.rs", "src/command/mod.rs"]}
+{"id": "ff5d53ba19", "task": "refactor(metrics): Phase 3.4 \u2014 drop dead cross-shard fast-path metrics + orphan prefilter", "gold": ["src/admin/metrics_setup.rs", "src/command/mod.rs"]}
+{"id": "2764726ebc", "task": "refactor(shard): handler_sharded/ft.rs local-shard sites \u2014 Phase 2f (4/4)", "gold": ["src/server/conn/handler_sharded/ft.rs"]}
+{"id": "e011cfc3dd", "task": "refactor(shard): handler_sharded/mod.rs local-shard sites \u2014 Phase 2f (3/4)", "gold": ["src/server/conn/handler_sharded/mod.rs"]}
+{"id": "bccc42cda7", "task": "refactor(shard): handler_sharded/txn.rs local-shard sites \u2014 Phase 2f (2/4)", "gold": ["src/server/conn/handler_sharded/txn.rs"]}
+{"id": "a11f97c7fb", "task": "refactor(shard): handler_sharded/write.rs local-shard sites \u2014 Phase 2f (1/4)", "gold": ["src/server/conn/handler_sharded/write.rs"]}
+{"id": "d4ce4745f1", "task": "refactor(shard): scatter_hybrid.rs local-shard sites \u2014 Phase 2e (2/2)", "gold": ["src/shard/scatter_hybrid.rs"]}
+{"id": "bb0674821c", "task": "refactor(shard): scatter_aggregate.rs local-shard sites \u2014 Phase 2e (1/2)", "gold": ["src/shard/scatter_aggregate.rs"]}
+{"id": "8646ae9d52", "task": "refactor(shard): event_loop.rs hot-path tick sites \u2014 Phase 2d (3/3)", "gold": ["src/shard/event_loop.rs"]}
+{"id": "e030731a99", "task": "refactor(shard): event_loop.rs startup-init sites \u2014 Phase 2d (2/3)", "gold": ["src/shard/event_loop.rs"]}
+{"id": "dbbd77b8dd", "task": "refactor(shard): persistence_tick.rs local-shard sites \u2014 Phase 2d (1/3)", "gold": ["src/shard/persistence_tick.rs"]}
+{"id": "075add1cea", "task": "refactor(shard): coordinator.rs companion-store sites \u2014 Phase 2c (3/3)", "gold": ["src/shard/coordinator.rs"]}
+{"id": "7ab66100b3", "task": "refactor(shard): coordinator.rs read_db sites \u2014 Phase 2c (2/3)", "gold": ["src/shard/coordinator.rs"]}
+{"id": "8752e28d66", "task": "refactor(shard): coordinator.rs write_db sites \u2014 Phase 2c (1/3)", "gold": ["src/shard/coordinator.rs"]}
+{"id": "d6c0d7805d", "task": "refactor(shard): Phase 2b \u2014 migrate spsc_handler local-shard accesses to with_shard*", "gold": ["src/shard/spsc_handler.rs"]}
+{"id": "1aa8896159", "task": "refactor(handler_monoio/mod): migrate local shard access to with_shard*", "gold": ["src/server/conn/handler_monoio/mod.rs"]}
+{"id": "64e152926b", "task": "refactor(handler_monoio/write): migrate local shard access to with_shard*", "gold": ["src/server/conn/handler_monoio/write.rs"]}
+{"id": "3d75e92c8f", "task": "refactor(handler_monoio/dispatch): migrate local shard access to with_shard*", "gold": ["src/server/conn/handler_monoio/dispatch.rs"]}
+{"id": "dfedb2b464", "task": "refactor(handler_monoio/ft): migrate local shard access to with_shard*", "gold": ["src/server/conn/handler_monoio/ft.rs"]}
+{"id": "dd7b2e908f", "task": "refactor(handler_monoio/txn): migrate local shard access to with_shard*", "gold": ["src/server/conn/handler_monoio/txn.rs"]}
+{"id": "ddde64b42b", "task": "feat(shard): atomic memory publishers in ShardDatabases", "gold": ["src/shard/shared_databases.rs"]}
+{"id": "d22626839f", "task": "feat(observability): fast-path cross-shard read metrics", "gold": ["src/admin/metrics_setup.rs", "src/server/conn/handler_monoio/mod.rs"]}
+{"id": "1f85c9aac4", "task": "fix(autovacuum): persist compaction_weight on FT.CONFIG SET and VACUUM VECTOR WEIGHT", "gold": ["src/command/server_admin.rs", "src/command/vector_search/ft_config.rs", "src/vector/store.rs", "tests/per_index_compaction_weight.rs"]}
+{"id": "62fbf9f287", "task": "fix(reclamation): P9 \u2014 wire orphan sweep on monoio counter-based path", "gold": ["src/shard/event_loop.rs"]}
+{"id": "3262663f40", "task": "feat(189-03): PERF-09 \u2014 fallback elimination + force-inline SIMD helpers", "gold": ["src/storage/dashtable/simd.rs"]}
+{"id": "b173c6b5e2", "task": "feat(189-02): add DashTable::insert_or_update + rewrite Database::set", "gold": ["src/storage/dashtable/mod.rs", "src/storage/db.rs", "tests/perf_v0112_insert_or_update_single_probe.rs"]}
+{"id": "d8e2087306", "task": "fix(189-01): add +1 depth headroom in DashTable::with_capacity for zero-split guarantee", "gold": ["src/storage/dashtable/mod.rs"]}
+{"id": "3423bb179b", "task": "feat(189-01): add split_count counter to DashTable for pre-sizing verification", "gold": ["src/storage/dashtable/mod.rs"]}
+{"id": "7fa4b0855b", "task": "feat(191-02): add mimalloc-alt feature flag with tri-state allocator cfg", "gold": ["src/main.rs"]}
+{"id": "4a48d0b427", "task": "fix(191-01): correct jemalloc prefixed symbol and env var names", "gold": ["src/command/server_admin.rs", "src/main.rs"]}
+{"id": "596d062517", "task": "fix(190-03): widen Prometheus sum/RSS ratio tolerance in integration test", "gold": ["tests/memory_prometheus_kinds.rs"]}
+{"id": "8f0ac5501a", "task": "feat(190-03): wire scrape hook updating 7 moon_memory_bytes kinds every 15s", "gold": ["src/admin/http_server.rs", "src/admin/metrics_setup.rs"]}
+{"id": "a622d64eee", "task": "feat(190-03): register moon_memory_bytes labeled gauge with 7-kind label set", "gold": ["src/admin/metrics_setup.rs"]}
+{"id": "9f2c2cef7e", "task": "feat(190-02): implement MEMORY DOCTOR full schema (7 subsystems + allocator)", "gold": ["src/admin/metrics_setup.rs", "src/command/server_admin.rs", "src/main.rs"]}
+{"id": "acafe21738", "task": "feat(190-01): add resident_bytes() to Database and DashTable", "gold": ["src/storage/dashtable/mod.rs", "src/storage/db.rs"]}
+{"id": "1640cc23b8", "task": "fix(replication): stop lying about master_link_status and validate REPLCONF", "gold": ["src/command/connection.rs", "src/replication/handshake.rs"]}
+{"id": "6582fa9ca2", "task": "perf(dispatch): batch-level eviction gate skips per-write rt-config lock", "gold": ["src/server/conn/handler_monoio/mod.rs"]}
+{"id": "e00769ef14", "task": "perf(dispatch): length-gate try_handle_* + inline name checks", "gold": ["src/server/conn/handler_monoio/dispatch.rs", "src/server/conn/handler_monoio/mod.rs"]}
+{"id": "e2addc8771", "task": "perf(storage): pre-size DashTable + fuse Database::set probe", "gold": ["src/config.rs", "src/main.rs", "src/shard/mod.rs", "src/storage/db.rs"]}
+{"id": "a0782d5491", "task": "feat(shard): key-access IP affinity hint for listener placement", "gold": ["src/server/conn/core.rs", "src/server/conn/handler_monoio/mod.rs", "src/server/conn/handler_sharded/mod.rs", "src/shard/affinity.rs"]}
+{"id": "bfc723ea95", "task": "perf(expiry): skip O(N) scan when no TTL-bearing keys exist", "gold": ["src/server/expiration.rs", "src/storage/db.rs"]}
+{"id": "5bd024104b", "task": "perf(hot-path): batch dispatch-path counters per command-batch", "gold": ["src/admin/metrics_setup.rs", "src/server/conn/handler_sharded/mod.rs", "src/shard/dispatch.rs"]}
+{"id": "8680735ab2", "task": "perf(hot-path): 1-in-16 latency sampling on command dispatch", "gold": ["src/admin/metrics_setup.rs", "src/server/conn/core.rs", "src/server/conn/handler_monoio/mod.rs", "src/server/conn/handler_sharded/mod.rs"]}
+{"id": "04e11fa805", "task": "fix(ci): gate pipeline_auto_index on text-index + annotate 4 FT unwraps", "gold": ["src/command/vector_search/ft_text_search.rs", "src/server/conn/handler_monoio/ft.rs", "tests/pipeline_auto_index.rs"]}
+{"id": "360915e830", "task": "chore(metrics): add local_inline dispatch-path counter", "gold": ["src/admin/metrics_setup.rs", "src/server/conn/handler_monoio/mod.rs"]}
+{"id": "1518a1e3db", "task": "chore(metrics): add dispatch-path counters for shard routing observability", "gold": ["src/admin/metrics_setup.rs", "src/server/conn/handler_monoio/mod.rs", "src/server/conn/handler_sharded/mod.rs", "src/shard/event_loop.rs"]}
+{"id": "fed2ba7379", "task": "perf(wal): skip WAL v2 when WAL v3 (disk-offload) is active", "gold": ["src/shard/event_loop.rs", "src/shard/spsc_handler.rs"]}
+{"id": "9435b71a8c", "task": "perf(wal-v3): defer fsync from flush_if_needed to 1s timer", "gold": ["src/persistence/wal_v3/segment.rs", "src/shard/timers.rs"]}
+{"id": "b431bf0778", "task": "refactor(176-02): extract ft.rs and pubsub.rs from handler_monoio", "gold": ["src/server/conn/handler_monoio/ft.rs", "src/server/conn/handler_monoio/mod.rs", "src/server/conn/handler_monoio/pubsub.rs"]}
+{"id": "f4fcd5a54c", "task": "feat(sdk): make hybrid_search sparse_field optional + add connect_with_timeout", "gold": ["sdk/rust/src/client.rs", "sdk/rust/src/text.rs", "src/command/graph/graph_read.rs"]}
+{"id": "2a36ee2194", "task": "fix(174-07): reject multi-hop edge-var binding at plan time (FIX-07)", "gold": ["src/graph/cypher/planner.rs", "tests/lunaris_cypher_temporal.rs"]}
+{"id": "3ad250e307", "task": "fix(174-06): GREEN shortestPath rejects non-default min_hops + correct error offset (FIX-06)", "gold": ["src/graph/cypher/parser/mod.rs", "src/graph/cypher/parser/pattern.rs"]}
+{"id": "15bd0f156f", "task": "fix(174-02): GREEN err-path surfaces partial mutations for TXN.ABORT (FIX-02)", "gold": ["src/command/graph/graph_read.rs", "src/graph/cypher/executor/mod.rs", "src/graph/cypher/executor/read.rs", "src/graph/cypher/executor/write.rs"]}

@@ -1,0 +1,154 @@
+# Draft release: on a v* tag, builds `laya` and its Moon sidecar for macOS arm64 (Metal) and
+# Linux x86_64 (CPU) and attaches tarballs + .sha256 files to a *draft* GitHub release for manual
+# review and publishing. install.sh downloads exactly these assets.
+#
+# Moon is built from a pinned commit (the one every benchmark ran against) and shipped as its own
+# tarball with Moon's own LICENSE and a SOURCE pointer; it is not part of the laya archive.
+# Actions are pinned to commit SHAs and release builds use no shared cache.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  MOON_REPO: pilotspace/moon
+  MOON_REF: 8bba3ced49abc43e656a62cbf142b3cb99a48d62
+
+jobs:
+  build:
+    name: laya (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          # Oldest supported hosted Ubuntu, so the binary needs glibc 2.35 rather than 2.39.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: test
+        run: cargo test --workspace --release --locked --target "$TARGET"
+        env:
+          TARGET: ${{ matrix.target }}
+      - name: installer test
+        run: sh scripts/test-install.sh
+      - name: build
+        run: cargo build --release --locked -p laya-cli --target "$TARGET"
+        env:
+          TARGET: ${{ matrix.target }}
+      - name: package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          name="laya-${REF_NAME}-${TARGET}"
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/laya" "dist/$name/"
+          cp LICENSE NOTICE README.md CHANGELOG.md "dist/$name/"
+          cargo metadata --format-version 1 --locked --filter-platform "$TARGET" \
+            | python3 .github/scripts/third_party_licenses.py > "dist/$name/THIRD-PARTY-LICENSES.txt"
+          "dist/$name/laya" --help > /dev/null
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256" && cat "$name.tar.gz.sha256")
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: laya-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  moon:
+    name: moon (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS: Moon's default features, the exact build laya was benchmarked on.
+          - target: aarch64-apple-darwin
+            os: macos-14
+            features: runtime-monoio,jemalloc,graph,text-index
+          # Linux: Tokio rather than io_uring, which containers and seccomp profiles often block.
+          # laya needs `text-index` (FT.CREATE / FT.SEARCH) on every platform.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            features: runtime-tokio,jemalloc,text-index
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.MOON_REPO }}
+          ref: ${{ env.MOON_REF }}
+          path: moon
+      # Moon's rust-toolchain.toml pins its compiler; rustup installs it on first use.
+      - name: build
+        working-directory: moon
+        run: cargo build --release --locked --no-default-features --features "$FEATURES" --target "$TARGET"
+        env:
+          TARGET: ${{ matrix.target }}
+          FEATURES: ${{ matrix.features }}
+      - name: package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          name="moon-${REF_NAME}-${TARGET}"
+          mkdir -p "dist/$name"
+          cp "moon/target/$TARGET/release/moon" "dist/$name/"
+          cp moon/LICENSE "dist/$name/LICENSE"
+          printf 'Moon, built unmodified from https://github.com/%s/tree/%s\n' "$MOON_REPO" "$MOON_REF" \
+            > "dist/$name/SOURCE"
+          "dist/$name/moon" --help > /dev/null
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256" && cat "$name.tar.gz.sha256")
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: moon-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    needs: [build, moon]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: combined checksums
+        run: cd dist && cat ./*.sha256 > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/SHA256SUMS
+            install.sh

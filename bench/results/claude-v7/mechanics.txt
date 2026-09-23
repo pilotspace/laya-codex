@@ -1,0 +1,3 @@
+prompt injections: 80, max 8303 chars, p50 5616, over 9500: 0
+with 'Definitions and uses': 70/80 {'laya-adaptive': '34/40', 'laya-refs': '36/40'}
+narrowed whole-file Reads: 6; file read again later: 6; of which whole-file again: 0

@@ -1,0 +1,9 @@
+paired n=20, laya-adaptive vs baseline
+  reading+injected tokens   -27.9%  95% CI [ -43.8%,   -4.2%]  lower in 13/20 tasks
+  code-reading tokens       -50.1%  95% CI [ -61.6%,  -33.0%]  lower in 17/20 tasks
+  total input tokens        -26.8%  95% CI [ -42.2%,   -6.4%]  lower in 14/20 tasks
+  wall seconds              -17.4%  95% CI [ -31.5%,   -1.0%]  lower in 13/20 tasks
+  turns                     -23.4%  95% CI [ -34.1%,  -10.5%]  lower in 15/20 tasks
+  cost usd                  -27.2%  95% CI [ -39.2%,  -11.1%]  lower in 13/20 tasks
+  recall                   0.933 vs 0.975
+  precision                0.329 vs 0.384

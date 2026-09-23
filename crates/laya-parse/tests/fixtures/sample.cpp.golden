@@ -1,0 +1,8 @@
+== min=10 max=50
+L1-33 | namespace_definition | namespace geo | geo,Point,norm,scaled,Distance,main
+== min=4 max=12
+L1-2 | preproc_include |  |
+L4-13 | function_definition | namespace geo > class Point | geo,Point,norm
+L15-22 | function_definition | namespace geo > class Point | scaled
+L24-28 | function_definition | namespace geo > Distance | Distance
+L30-33 | function_definition | main | main

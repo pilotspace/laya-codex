@@ -1,0 +1,6 @@
+== min=10 max=50
+L1-29 | function_definition |  | MAX_ITEMS,list,list_t,sum,main
+== min=4 max=12
+L1-12 | struct_specifier |  | MAX_ITEMS,list,list_t
+L14-20 | function_definition | sum | sum
+L22-29 | function_definition | main | main

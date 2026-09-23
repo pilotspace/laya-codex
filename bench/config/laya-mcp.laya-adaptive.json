@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "laya": {"command": "@LAYA_BIN@", "args": ["mcp"]}
+  }
+}

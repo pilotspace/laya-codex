@@ -1,0 +1,6 @@
+== min=10 max=50
+L1-28 | namespace_declaration | namespace Example.Store | Example.Store,KeyStore,Count,Get,IKeyed,Key
+== min=4 max=12
+L1-11 | field_declaration | namespace Example.Store | Example.Store,KeyStore,Count
+L13-22 | constructor_declaration | namespace Example.Store > class KeyStore | KeyStore,Get
+L24-28 | interface_declaration | namespace Example.Store > interface IKeyed | IKeyed,Key
