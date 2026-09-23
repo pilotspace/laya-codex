@@ -1,11 +1,13 @@
-# How laya decides what to inject
+# How laya-codex decides what to inject
 
-This page explains what laya adds to a Claude Code session, when it adds it, and how it picks the
+This page explains what laya-codex adds to a Claude Code session, when it adds it, and how it picks the
 code. The examples are real output, not mock-ups.
 
-**How the examples were captured.** The v0.1.2 release binary ran on this repository at
-v0.1.2 (`a38c8be`), with a scratch `LAYA_HOME`, its own Moon port and `LAYA_NO_MODEL=1`. The
-hook JSON was piped into `laya hook` the same way Claude Code sends it. Without the model the
+**How the examples were captured.** The v0.2.0 `laya-codex` binary ran on this repository at
+v0.1.2 (`a38c8be`), with a scratch `LAYA_CODEX_HOME`, its own Moon port and
+`LAYA_CODEX_NO_MODEL=1`. The hook JSON was piped into `laya-codex hook` the same way Claude Code
+sends it. (The hook output is identical to what the v0.1.2 release produced for the same input;
+v0.2.0 renamed the CLI, not the ranking.) Without the model the
 ranking is lexical only, which keeps the output deterministic. With the model loaded, one more
 step (Laya re-ranking, described below) reorders the same candidates, and the output has the
 same shape. Paths are shortened to `/home/me/laya-codex`, and long code blocks are trimmed
@@ -13,8 +15,8 @@ where marked.
 
 ## The short version
 
-laya hooks into five points of a Claude Code session. It fails open: on any error, timeout or
-missing index it prints nothing, and Claude Code carries on as if laya were not installed.
+laya-codex hooks into five points of a Claude Code session. It fails open: on any error, timeout or
+missing index it prints nothing, and Claude Code carries on as if laya-codex were not installed.
 
 | Hook | When it acts | What Claude sees |
 |---|---|---|
@@ -24,7 +26,7 @@ missing index it prints nothing, and Claude Code carries on as if laya were not 
 | `PostToolUse` edits | Edit/Write/MultiEdit/NotebookEdit | nothing. The edited file is re-indexed |
 | `SessionStart` | `startup`/`resume` in a git repository; `compact`; `clear` | after compaction, the session's working set is injected again (up to 8 spans). On startup, indexing runs in the background. Folders that are not git repositories are never indexed automatically |
 
-The MCP tool `laya_search` runs the same ranking on demand, for queries Claude chooses itself.
+The MCP tool `search` runs the same ranking on demand, for queries Claude chooses itself.
 
 ## 1. A prompt comes in
 
@@ -41,16 +43,16 @@ This is the hook input Claude Code sends for a prompt (captured):
 }
 ```
 
-laya uses the git root that contains `cwd` as the repository. It skips the prompt if the prompt
+laya-codex uses the git root that contains `cwd` as the repository. It skips the prompt if the prompt
 starts with `/` or `#`, is under 3 characters, or has fewer than 2 content terms. Otherwise it
-asks the daemon to rank the prompt. The daemon has a time budget (`LAYA_BUDGET_MS`, default
+asks the daemon to rank the prompt. The daemon has a time budget (`LAYA_CODEX_BUDGET_MS`, default
 1,200 ms) and falls back to the lexical ranking when the budget runs out.
 
 ## 2. How the code is ranked
 
 The pipeline has six steps. Each step is a function in `crates/laya-rank`.
 
-1. **Signals** (`signals.rs`). laya pulls three things out of the prompt: BM25 terms, identifiers
+1. **Signals** (`signals.rs`). laya-codex pulls three things out of the prompt: BM25 terms, identifiers
    (`snake_case`, `CamelCase`, `foo()`, `a::b`) and path mentions. Instruction boilerplate
    such as "find", "explain", "please" or "comma-separated" is on a stoplist. Otherwise it
    would outrank the task's own words, because BM25 favours the rarest terms.
@@ -84,12 +86,12 @@ The pipeline has six steps. Each step is a function in `crates/laya-rank`.
    chunks down. P lets a confident chunk climb: in the unit test, a chunk that ranks one place
    lower lexically but has P = 0.9 beats one with P = 0.1. Laya alone, and a weight of 0.7, both
    did worse end to end (MRR 0.602 and 0.678, against 0.724 for w = 0.5).
-   `LAYA_WEIGHT` changes the weight, and `LAYA_WEIGHT=rrf` switches to rank fusion.
+   `LAYA_CODEX_WEIGHT` changes the weight, and `LAYA_CODEX_WEIGHT=rrf` switches to rank fusion.
    Without the model, or if the model misses its budget, this step is skipped and the result
    says `mode=Lexical`.
 5. **Span shaping** (`span.rs`). Adjacent and overlapping chunks from the same file are merged.
    The top 10 spans are kept, with at most 400 lines in total.
-6. **Expansion** (`related.rs`). laya follows one hop of references from the top spans: the
+6. **Expansion** (`related.rs`). laya-codex follows one hop of references from the top spans: the
    definitions they use and the code that calls them. It also lists the lines that define or use the prompt's
    identifiers, in the style of grep output.
 
@@ -170,13 +172,13 @@ is meant to catch misses like these.
 
 ## 4. Follow-up prompts: what "adaptive" skips
 
-Adaptive mode is on by default (`LAYA_ADAPTIVE=0` turns it off). The daemon remembers, for each
+Adaptive mode is on by default (`LAYA_CODEX_ADAPTIVE=0` turns it off). The daemon remembers, for each
 session, which spans it has already sent in full and which files Claude has read whole. It
 leaves those out of later injections, and the next-ranked spans move up into the freed slots.
 
 A follow-up that carries almost no task content ("and where is that fusion weight
 configured?") or explicitly refers back ("the same", "previous") is not ranked on its own words.
-laya ranks the session's **topic** (its last self-contained prompt) instead, plus any
+laya-codex ranks the session's **topic** (its last self-contained prompt) instead, plus any
 identifiers or paths the follow-up names.
 
 This is the second prompt in the same session (captured):
@@ -194,7 +196,7 @@ covers the next spans, `retriever.rs:361-409` (with the `weighted_scores` test),
 Already provided earlier in this session: crates/laya-rank/src/retriever.rs:33-81, crates/laya-rank/src/read_narrow.rs:522-556, crates/laya-rank/src/lib.rs:1-41
 ```
 
-For comparison, the same two prompts were run in a new session with `LAYA_ADAPTIVE=0` (also
+For comparison, the same two prompts were run in a new session with `LAYA_CODEX_ADAPTIVE=0` (also
 captured). The follow-up got the same three code blocks as the first prompt, byte for byte
 (7,220 characters each). If every relevant span is already in context, adaptive mode injects
 nothing at all.
@@ -207,7 +209,7 @@ code-reading tokens fell by 50.1% against 48.5%. Compaction or `/clear` resets t
 
 ## 5. Whole-file Reads: the Read plan
 
-When Claude reads a large file whole, laya narrows the **first** such Read to the region that
+When Claude reads a large file whole, laya-codex narrows the **first** such Read to the region that
 matters and adds an outline. Captured input and output for `retriever.rs` (773 lines), right
 after the prompts above:
 
@@ -236,7 +238,7 @@ How the plan is chosen (`read_narrow.rs`):
 - The file must be indexed and at least 250 lines long. The Read must have no `offset`/`limit`,
   and it must be the first whole-file Read of that file in the session.
 - The region comes from the file's spans in the session's last ranking (`basis: ranking`).
-  Failing that, laya picks the chunks that share the most distinctive task terms with the file
+  Failing that, laya-codex picks the chunks that share the most distinctive task terms with the file
   (`basis: lexical`). If neither exists, the Read is left alone, so code is never hidden on a
   guess.
 - The window covers at most 200 lines: the best candidates (ranked spans, or whole items for the
@@ -250,12 +252,12 @@ files and never needed the whole file.
 
 ## 6. Why this saves tokens
 
-Without laya, Claude Code finds code by searching: Grep, Glob, then whole-file Reads, many of
-them of the wrong file. laya front-loads a small, ranked answer (about 1.5–2.5k tokens), so
+Without laya-codex, Claude Code finds code by searching: Grep, Glob, then whole-file Reads, many of
+them of the wrong file. laya-codex front-loads a small, ranked answer (about 1.5–2.5k tokens), so
 fewer of those steps happen. From [RESULTS.md](RESULTS.md) (v0.1.0 defaults vs stock Claude
 Code, 20 held-out tasks, two prompts per session, paired, Claude Sonnet):
 
-| | stock Claude Code | with laya |
+| | stock Claude Code | with laya-codex |
 |---|---|---|
 | code-reading tokens (Read/Grep/Glob output) | 100% | **−50.1%** (95% CI −61.6%…−33.0%) |
 | total input tokens | 100% | −26.8% |
@@ -273,46 +275,48 @@ re-sends code. Inlining more saved little and cost more.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LAYA_ADAPTIVE` | on | `0` re-sends spans already in context |
-| `LAYA_RELATED` | on | `0` drops "Related by references" |
-| `LAYA_RENDER` | compact | `full` inlines every span (bigger, and not what the benchmark measured) |
-| `LAYA_NO_MODEL` | unset | `1` gives lexical-only ranking with no model load |
-| `LAYA_BUDGET_MS` | 1200 | Laya's time budget per prompt. Past it, the lexical ranking is used |
-| `LAYA_WEIGHT` | 0.5 | Laya's weight in the fusion; `rrf` switches to rank fusion |
+| `LAYA_CODEX_ADAPTIVE` | on | `0` re-sends spans already in context |
+| `LAYA_CODEX_RELATED` | on | `0` drops "Related by references" |
+| `LAYA_CODEX_RENDER` | compact | `full` inlines every span (bigger, and not what the benchmark measured) |
+| `LAYA_CODEX_NO_MODEL` | unset | `1` gives lexical-only ranking with no model load |
+| `LAYA_CODEX_BUDGET_MS` | 1200 | Laya's time budget per prompt. Past it, the lexical ranking is used |
+| `LAYA_CODEX_WEIGHT` | 0.5 | Laya's weight in the fusion; `rrf` switches to rank fusion |
 
-## 8. Troubleshooting with `laya doctor`
+## 8. Troubleshooting with `laya-codex doctor`
 
-`laya doctor --repo /path/to/repo` runs eight checks. Each check prints `PASS`, `WARN` or `FAIL`,
+`laya-codex doctor --repo /path/to/repo` runs eight checks. Each check prints `PASS`, `WARN` or `FAIL`,
 and a `fix:` line when there is one. `--json` gives machine-readable output, and `--start`
 starts the daemon. The exit status is 1 if any check fails. Here is a captured run on a repo
 that is indexed but not yet set up:
 
 ```
+laya-codex doctor: /home/me/laya-codex
 PASS  home    /tmp/lhw is writable
-PASS  moon    /home/me/laya/moon (running)
-PASS  auth    laya's password-protected Moon answers on port 16494
-PASS  model   disabled (LAYA_NO_MODEL=1): lexical-only ranking
+PASS  moon    /home/me/moon/target/release/moon (running)
+PASS  auth    laya-codex's password-protected Moon answers on port 16578
+PASS  model   disabled (LAYA_CODEX_NO_MODEL=1): lexical-only ranking
 PASS  daemon  up at /tmp/lhw/laya.sock (model loading or lexical-only)
-PASS  index   209 files indexed for /home/me/laya-codex
-FAIL  hooks   laya hooks missing for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse in /home/me/laya-codex/.claude
-               fix: laya init --repo /home/me/laya-codex, or install the Claude Code plugin: /plugin marketplace add pilotspace/laya-codex
-WARN  mcp     no laya server in /home/me/laya-codex/.mcp.json (the laya_search tool is unavailable)
-               fix: laya init --repo /home/me/laya-codex
+PASS  index   207 files indexed for /home/me/laya-codex
+FAIL  hooks   laya-codex hooks missing for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse in /home/me/laya-codex/.claude
+               fix: laya-codex init --repo /home/me/laya-codex, or install the Claude Code plugin: /plugin marketplace add pilotspace/laya-codex
+WARN  mcp     no laya-codex server in /home/me/laya-codex/.mcp.json (the search tool is unavailable)
+               fix: laya-codex init --repo /home/me/laya-codex
+6 passed, 1 warnings, 1 failed
 ```
 
 | Check | Symptom | What to do |
 |---|---|---|
-| `home` | `LAYA_HOME` (default `~/.cache/laya-codex`) is not writable | Make it writable, or set `LAYA_HOME` to a writable directory. The daemon socket lives there, so keep the path short. A very long path fails with "path must be shorter than SUN_LEN". |
-| `moon` | `moon binary not found; tried …` or `not runnable` | laya looks for `moon` beside its own binary, then on `PATH`. Re-run the installer, which puts both in one directory, or `brew reinstall laya-codex`. You can also set `LAYA_MOON_BIN=/path/to/moon`. |
-| `auth` | port served by another Moon, or `cannot load laya's Moon password` | Another server holds laya's port (default 16379): stop it, or set `LAYA_MOON_PORT` to a free port. For a password error, delete `$LAYA_HOME/moon.acl` and run `laya stop`; both are recreated. A Moon started by an older laya without a password is replaced at the next daemon start. |
-| `model` | `no model found` (lexical-only), `incomplete`, or `runs on CPU here` | Get the re-ranker with `install.sh --model-only`, which fetches and verifies it into `$LAYA_HOME/models/laya-code`, or set `LAYA_MODEL_DIR`. On Linux the model runs on CPU and is too slow for interactive use, so set `LAYA_NO_MODEL=1`. laya still works lexically. |
-| `daemon` | `not running` (WARN), or `running daemon is vX, this binary is vY` | The daemon starts on demand at the first hook, and `laya doctor --start` starts it now. After an upgrade, run `laya stop` so the next hook starts the new build. If it won't come up, see `$LAYA_HOME/daemon.log`. |
-| `index` | `has no indexed files` or `cannot read the index` | Run `laya index /path/to/repo`. `SessionStart` indexes git repositories in the background, and edits are re-indexed file by file. |
-| `hooks` | hooks missing, or `a laya hook runs …, which is not an executable` | Run `laya init --repo …` or install the plugin. If the hook points at a path that no longer exists (for example a Homebrew Cellar path from before `brew upgrade`), re-run `laya init`. |
-| `mcp` | no `laya` server in `.mcp.json` (WARN) | `laya init --repo …` adds it, and the plugin provides it. Only the `laya_search` tool is missing; the hooks still work. |
+| `home` | `LAYA_CODEX_HOME` (default `~/.cache/laya-codex`) is not writable | Make it writable, or set `LAYA_CODEX_HOME` to a writable directory. The daemon socket lives there, so keep the path short. A very long path fails with "path must be shorter than SUN_LEN". |
+| `moon` | `moon binary not found; tried …` or `not runnable` | laya-codex looks for `moon` beside its own binary (after resolving symlinks), then in `../libexec` next to it (the Homebrew layout), then on `PATH`. Re-run the installer, which puts both in one directory, or `brew reinstall laya-codex`. You can also set `LAYA_CODEX_MOON_BIN=/path/to/moon`. |
+| `auth` | port served by another Moon, or `cannot load laya-codex's Moon password` | Another server holds laya-codex's port (default 16379): stop it, or set `LAYA_CODEX_MOON_PORT` to a free port. For a password error, delete `$LAYA_CODEX_HOME/moon.acl` and run `laya-codex stop`; both are recreated. A Moon started by an older laya-codex without a password is replaced at the next daemon start. |
+| `model` | `no model found` (lexical-only), `incomplete`, or `runs on CPU here` | Get the re-ranker with `curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh \| sh -s -- --model-only`, which fetches and verifies it into `$LAYA_CODEX_HOME/models/laya-code` (or `hf download tindang/laya-code --local-dir ~/.cache/laya-codex/models/laya-code`), or set `LAYA_CODEX_MODEL_DIR`. On Linux the model runs on CPU and is too slow for interactive use, so set `LAYA_CODEX_NO_MODEL=1`. laya-codex still works lexically. |
+| `daemon` | `not running` (WARN), or `running daemon is vX, this binary is vY` | The daemon starts on demand at the first hook, and `laya-codex doctor --start` starts it now. After an upgrade, run `laya-codex stop` so the next hook starts the new build. If it won't come up, see `$LAYA_CODEX_HOME/daemon.log`. |
+| `index` | `has no indexed files` or `cannot read the index` | Run `laya-codex index /path/to/repo`. `SessionStart` indexes git repositories in the background, and edits are re-indexed file by file. |
+| `hooks` | hooks missing, or `a laya-codex hook runs …, which is not an executable` | Run `laya-codex init --repo …` or install the plugin. If the hook points at a path that no longer exists (for example a versioned Homebrew Cellar path written by an older release), re-run `laya-codex init`; with `laya-codex` on `PATH` it writes the bare command. Hooks written by 0.1.x (`laya hook`) are not recognised: delete them. |
+| `mcp` | no `laya-codex` server in `.mcp.json` (WARN) | `laya-codex init --repo …` adds it, and the plugin provides it. Only the `search` tool is missing; the hooks still work. |
 
-When laya adds nothing to a prompt, check these first: whether the prompt is a slash command or
-has fewer than 2 content words; whether the repository is indexed (`laya doctor`); and whether
-adaptive mode has already sent everything relevant. Set `LAYA_HOOK_LOG=/tmp/laya-hook.jsonl` to
+When laya-codex adds nothing to a prompt, check these first: whether the prompt is a slash command or
+has fewer than 2 content words; whether the repository is indexed (`laya-codex doctor`); and whether
+adaptive mode has already sent everything relevant. Set `LAYA_CODEX_HOOK_LOG=/tmp/laya-hook.jsonl` to
 log every hook decision, such as `inject`, `skip_prompt`, `already_in_context`, `narrow_read`
 or `escape_hatch`.

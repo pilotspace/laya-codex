@@ -4,7 +4,7 @@
     python3 scripts/charts.py bench/results/headline-v7.json docs/assets
 
 Writes <out>/benchmark-savings-{light,dark}.svg (paired % change vs stock Claude Code with the
-95% bootstrap CI) and <out>/benchmark-reads-{light,dark}.svg (read behaviour, stock vs laya).
+95% bootstrap CI) and <out>/benchmark-reads-{light,dark}.svg (read behaviour, stock vs laya-codex).
 The input is the headline JSON that the benchmark writes (see bench/results/headline-v7.json).
 """
 import json
@@ -33,14 +33,14 @@ def svg(w, h, body, t, title):
 
 
 def savings(d, t):
-    """Horizontal bars: how much less each metric costs with laya, with the 95% CI."""
+    """Horizontal bars: how much less each metric costs with laya-codex, with the 95% CI."""
     rows = list(d["metrics"].values())
     w, left, right, top, row_h = 760, 200, 60, 74, 44
     h = top + row_h * len(rows) + 46
     span = max(abs(r["lo"]) for r in rows)
     scale = (w - left - right) / (span * 1.08)
     body = [
-        text(24, 32, f"With laya, Claude Code spends less on every measure", 17, t["fg"], weight="600"),
+        text(24, 32, f"With laya-codex, Claude Code spends less on every measure", 17, t["fg"], weight="600"),
         text(24, 54, f"Paired change vs stock Claude Code · {d['n_tasks']} tasks · {', '.join(d['repos'])} · "
                      f"{d['model']} · 95% bootstrap CI", 12, t["muted"]),
     ]
@@ -63,13 +63,13 @@ def savings(d, t):
 
 
 def reads(d, t):
-    """Small multiples: stock Claude Code vs laya on read behaviour."""
+    """Small multiples: stock Claude Code vs laya-codex on read behaviour."""
     items = list(d["reads"].values())
     w, h = 760, 272
     pw = (w - 48) / len(items)
     body = [
         text(24, 32, "Claude reads the right code sooner", 17, t["fg"], weight="600"),
-        text(24, 54, "Read behaviour per task, stock Claude Code vs with laya", 12, t["muted"]),
+        text(24, 54, "Read behaviour per task, stock Claude Code vs with laya-codex", 12, t["muted"]),
     ]
     base_y, bar_max = 226, 110
     for i, it in enumerate(items):
@@ -78,7 +78,7 @@ def reads(d, t):
         hint = "higher is better" if it["better"] == "higher" else "lower is better"
         body.append(text(x0 + pw / 2, 104, hint, 11, t["muted"], "middle"))
         top = max(it["baseline"], it["laya"])
-        for j, (key, color, name) in enumerate((("baseline", t["base"], "stock"), ("laya", t["laya"], "laya"))):
+        for j, (key, color, name) in enumerate((("baseline", t["base"], "stock"), ("laya", t["laya"], "laya-codex"))):
             v = it[key]
             bh = bar_max * 0.72 * v / top
             bx = x0 + pw / 2 - 46 + j * 50
@@ -141,8 +141,8 @@ def journey(d, t):
 
     lx, ly = sx(8.6), sy(0.36)
     legend = (
-        (t["laya"], "", 3, f"laya: correct code in context (median turn {median(j['laya_seen']):g})"),
-        (t["laya"], "6 5", 2, f"laya: first correct Read (median {median(j['laya_read']):g})"),
+        (t["laya"], "", 3, f"laya-codex: correct code in context (median turn {median(j['laya_seen']):g})"),
+        (t["laya"], "6 5", 2, f"laya-codex: first correct Read (median {median(j['laya_read']):g})"),
         (t["base"], "", 3, f"stock Claude Code (median {median(j['baseline']):g})"),
     )
     for k, (color, dash, width, label) in enumerate(legend):
