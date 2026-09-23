@@ -88,12 +88,18 @@ impl Sessions {
     }
 
     /// Text to retrieve for `prompt`: the prompt itself if it is self-contained (or the first in
-    /// the session, which then becomes the topic); a thin follow-up ("now find the tests for
-    /// it") is extended with the session topic so retrieval stays on the task.
+    /// the session, which then becomes the topic). A follow-up ("now find the tests for it") is
+    /// retrieved as the topic plus only the identifiers and paths it names: its prose ("tests",
+    /// "call sites", "main") is conversational and pulls in unrelated code, while the session
+    /// delta and reference expansion already surface the topic's next spans and callers.
     pub fn effective_query(&mut self, id: &str, prompt: &str) -> String {
         let s = self.get(id);
         match &s.topic {
-            Some(topic) if laya_rank::is_follow_up(prompt) => format!("{prompt}\n{topic}"),
+            Some(topic) if laya_rank::is_follow_up(prompt) => {
+                let sig = laya_rank::extract_signals(prompt);
+                let named: Vec<String> = sig.identifiers.into_iter().chain(sig.paths).collect();
+                if named.is_empty() { topic.clone() } else { format!("{topic}\n{}", named.join(" ")) }
+            }
             _ => {
                 s.topic = Some(prompt.to_string());
                 prompt.to_string()
@@ -172,12 +178,15 @@ mod tests {
         let task = "fix(vector): address three post-review issues in mmap budget accounting";
         assert_eq!(s.effective_query("a", task), task);
         let follow = "Now, for the same change, identify the tests that cover this code.";
-        let q = s.effective_query("a", follow);
-        assert!(q.starts_with(follow) && q.contains(task), "{q}");
+        assert_eq!(s.effective_query("a", follow), task, "a follow-up's prose is not searched");
+        let named = "now where is enforce_budget() called from src/vector/store.rs?";
+        let q = s.effective_query("a", named);
+        assert!(q.starts_with(task) && q.contains("enforce_budget") && q.contains("src/vector/store.rs"), "{q}");
+        assert!(!q.contains("called"), "{q}");
         // A new self-contained task replaces the topic.
         let other = "gate unused graph merge params under graph feature in shard autovacuum";
         assert_eq!(s.effective_query("a", other), other);
-        assert!(s.effective_query("a", follow).contains(other));
+        assert_eq!(s.effective_query("a", follow), other);
         // Other sessions are unaffected.
         assert_eq!(s.effective_query("b", follow), follow);
     }

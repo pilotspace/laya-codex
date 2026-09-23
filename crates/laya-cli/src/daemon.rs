@@ -371,11 +371,13 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     }
     let state_tokens = env_num::<usize>("LAYA_STATE_TOKENS").unwrap_or(128);
     eprintln!("[laya] retriever config {base:?} state_tokens={state_tokens}");
-    // Tuned for laya-code on the dev set (bench/size_sweep.py): tau_full 0.45 halves inlined code
-    // vs 0.40 for -0.02 gold recall; map entries are cheap, so tau_map 0.10 keeps map recall.
+    // Rank-based by default (thresholds 0 = full code for the top spans by fused rank, capped by
+    // scope). Laya's P scale shifts with prompt wording, so on agent-wrapped prompts every P
+    // threshold lost gold coverage vs the fused rank at equal code volume (bench/size_sweep.py on
+    // --template bench/alt dumps). Adaptive's gain is the session delta, not P thresholds.
     let sizing = SizingPolicy {
-        tau_full: env_num::<f32>("LAYA_TAU_FULL").unwrap_or(0.45),
-        tau_map: env_num::<f32>("LAYA_TAU_MAP").unwrap_or(0.10),
+        tau_full: env_num::<f32>("LAYA_TAU_FULL").unwrap_or(0.0),
+        tau_map: env_num::<f32>("LAYA_TAU_MAP").unwrap_or(0.0),
         ..SizingPolicy::default()
     };
     let scope_p = env_num::<f32>("LAYA_SCOPE_P").unwrap_or(0.4);
