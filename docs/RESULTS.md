@@ -198,6 +198,17 @@ read is not re-sent, and the next-ranked spans take its place).
 - Query (warm): lexical 13 ms p50; with Laya (24 candidates × 128 tokens, F16 Metal) ~0.77 s.
 - Laya Rust port parity with the Python reference: CPU f32 logits |Δ| ≤ 7.3e-6; Metal f16 ≤ 9e-3.
 - Hooks: UserPromptSubmit injection 16 ms client-side; every hook fails open.
+- **Soak** (`bench/soak.py`, release binary, 15 min, 4 concurrent Claude-like sessions over 2
+  repos, faults injected):
+  - 151,326 hook calls with 0 failures (no non-zero exits, no invalid output).
+  - A file changed under the index at 270 s and was restored at 540 s: handled.
+  - The daemon was killed at 450 s: hooks failed open, and it autostarted within 30 s.
+  - Latency p50 / p95 / max: prompt 22 / 86 / 1,240 ms, Read 7 / 19 / 230 ms, re-index on edit
+    27 / 74 / 264 ms.
+  - Daemon RSS stayed flat at 935–987 MB (about 843 MB is the F16 model), so no leak.
+  - At about 48 prompts/s (far above human use) the single model scored about 2 prompts/s. The
+    rest fell back to lexical ranking immediately instead of queueing, by design (busy flag):
+    under overload quality degrades, latency does not.
 - 320 tests green, `cargo clippy --workspace --all-targets -D warnings` and `cargo fmt --check`
   clean. The workspace also builds and tests on Linux (arm64 native, x86_64 emulated).
 
