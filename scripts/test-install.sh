@@ -75,4 +75,54 @@ grep -q "unsafe path" "$T/out4" || { cat "$T/out4"; fail "no unsafe-path error";
 [ ! -e "$T/home/escape" ] && [ ! -e "$T/escape" ] || fail "file written outside the model dir"
 pass "unsafe manifest path refused"
 
+# 5. A stalled download is abandoned quickly and retried, instead of waiting for the time limit.
+if command -v python3 >/dev/null 2>&1; then
+    printf '#!/bin/sh\necho "laya stub $*"\n' >"$T/pkg/laya-$V-$target/laya"
+    tar -C "$T/pkg" -czf "$rel/laya-$V-$target.tar.gz" "laya-$V-$target"
+    echo "$(sum "$rel/laya-$V-$target.tar.gz")  laya-$V-$target.tar.gz" >"$rel/laya-$V-$target.tar.gz.sha256"
+    cat >"$T/stall.py" <<'EOF'
+# Serves a directory over HTTP; the first request for each .tar.gz sends a few bytes and stalls.
+import http.server, os, sys, threading, time
+root, port_file = sys.argv[1], sys.argv[2]
+seen, lock = set(), threading.Lock()
+class H(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *a, **k):
+        super().__init__(*a, directory=root, **k)
+    def log_message(self, *a):
+        pass
+    def do_GET(self):
+        with lock:
+            first = self.path.endswith(".tar.gz") and self.path not in seen
+            seen.add(self.path)
+        if first:
+            self.send_response(200)
+            self.send_header("Content-Length", str(os.path.getsize(root + self.path)))
+            self.end_headers()
+            self.wfile.write(b"\x1f\x8b")
+            self.wfile.flush()
+            time.sleep(120)
+            return
+        super().do_GET()
+s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+s.daemon_threads = True
+open(port_file, "w").write(str(s.server_address[1]))
+s.serve_forever()
+EOF
+    python3 "$T/stall.py" "$T" "$T/port" &
+    srv=$!
+    i=0
+    while [ ! -s "$T/port" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    t0=$(date +%s)
+    LAYA_RELEASES_URL="http://127.0.0.1:$(cat "$T/port")/releases" LAYA_STALL_SECONDS=2 \
+        LAYA_HOME="$T/home" sh "$here/install.sh" --version "$V" --dir "$T/bin" --no-model >"$T/out5" 2>&1
+    rc=$?
+    elapsed=$(($(date +%s) - t0))
+    kill "$srv" 2>/dev/null
+    [ $rc -eq 0 ] || { cat "$T/out5"; fail "install over a stalling server failed"; }
+    [ $elapsed -lt 60 ] || fail "stalled download took ${elapsed}s; it should be abandoned within seconds"
+    pass "stalled download retried (${elapsed}s)"
+else
+    echo "skip - stalled download (no python3)"
+fi
+
 echo "all installer tests passed"

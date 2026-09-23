@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-09-23
+
+Fixes found by installing v0.1.0 from the public release.
+
+### Fixed
+
+- **Linux:** the v0.1.0 Linux Moon never answered a request, so laya reported that Moon did not
+  answer. It was built with Moon's Tokio runtime, whose Linux path waits for per-shard listeners
+  that fail to bind. Moon is now built with its default monoio runtime on every platform. That
+  runtime also works where io_uring is blocked, as in containers.
+- **Installer:** a stalled download was only abandoned after 10 minutes, and the retry appended
+  to the partial file, so the checksum check failed the install. Downloads now go to a file
+  that curl truncates before retrying, and a transfer slower than 10 KB/s for 30 s is retried.
+- A spawned Moon now gets 30 s to answer instead of 3 s, since a large index replay or a slow
+  machine needs longer. Set `LAYA_MOON_START_SECS` to change it.
+
+### Added
+
+- The release workflow smoke-tests the built `laya` and `moon` together on macOS and Linux
+  (index, query, doctor) before publishing.
+
 ## [0.1.0] — 2026-09-23
 
 First public release: a proof of concept for ranked code retrieval in Claude Code, supported on
@@ -119,4 +140,5 @@ prompts per session, paired bootstrap 95% CIs, Claude Sonnet, Laya scored cold i
 - Instruction-heavy benchmark prompts no longer outrank the task terms in retrieval.
 - Long follow-up prompts are no longer treated as new tasks.
 
+[0.1.1]: https://github.com/pilotspace/laya-codex/releases/tag/v0.1.1
 [0.1.0]: https://github.com/pilotspace/laya-codex/releases/tag/v0.1.0

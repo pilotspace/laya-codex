@@ -129,6 +129,7 @@ Every hook fails open: if the daemon, Moon or the model is unavailable, Claude C
 | `LAYA_WEIGHT` / `LAYA_STATE_TOKENS` / `LAYA_K` / `LAYA_P_THRESHOLD` | `0.5` / `128` / `24` / `0` | ranking knobs (daemon start) |
 | `LAYA_ADAPTIVE` | on | `0` = fixed compact injection; default skips code already sent or read in the session |
 | `LAYA_SCOPE` | off | `1` = let a Laya scope classifier size the injection (measured no-op; see RESULTS) |
+| `LAYA_MOON_START_SECS` | `30` | how long a freshly started Moon may take to answer |
 | `LAYA_MOON_PORT` / `LAYA_MOON_BIN` | `16379` / `moon` beside `laya`, else on `PATH` | Moon sidecar; a missing binary is reported with every path tried |
 
 ## Reproduce the benchmark
