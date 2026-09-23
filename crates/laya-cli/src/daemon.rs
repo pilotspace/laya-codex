@@ -2,10 +2,12 @@
 //! per-session state in memory. Clients speak the JSON-lines protocol in `protocol.rs`.
 
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
 use laya_core::QueryResult;
@@ -14,7 +16,9 @@ use laya_rank::{Retriever, RetrieverConfig, Scope, SizingPolicy, SpanKey};
 
 use crate::config::{Config, rel_path, repo_root};
 use crate::indexer;
-use crate::protocol::{ReadPlan, RenderReq, Request, Response};
+use crate::protocol::{
+    MAX_BUDGET_MS, MAX_RENDER_TOKENS, MAX_TOP_N, ReadPlan, RenderReq, Request, Response,
+};
 use crate::session::Sessions;
 
 /// Caches Laya probabilities in the store, keyed by (task, chunk content), so repeated or
@@ -256,12 +260,7 @@ impl Daemon {
             .ok()
             .and_then(|c| c.clone())
             .and_then(|c| c.classify(prompt));
-        let Ok(mut sessions) = self.sessions.lock() else {
-            return (
-                laya_rank::render_compact_opts(result, 3, req.budget_tokens, req.related),
-                scope,
-            );
-        };
+        let mut sessions = self.sessions();
         let already: Vec<SpanKey> = session
             .map(|s| sessions.already(s))
             .unwrap_or_default()
@@ -290,6 +289,13 @@ impl Daemon {
         (text, scope)
     }
 
+    /// The session table. A panic under the lock (see `serve_conn`) leaves it poisoned; the
+    /// table is only a cache of what each session has seen, so it is used as is rather than
+    /// failing every later request.
+    fn sessions(&self) -> MutexGuard<'_, Sessions> {
+        lock(&self.sessions)
+    }
+
     fn repo(&self, repo: &str) -> (PathBuf, String) {
         let root = repo_root(Path::new(repo));
         let id = laya_store::repo_id(&root);
@@ -313,29 +319,33 @@ impl Daemon {
                 let (_, id) = self.repo(&repo);
                 let mut cfg = self.base_cfg.clone();
                 if let Some(b) = budget_ms {
-                    cfg.laya_budget = Duration::from_millis(b);
+                    cfg.laya_budget = Duration::from_millis(b.min(MAX_BUDGET_MS));
                     if b == 0 {
                         cfg.use_laya = false; // lexical-only request (used by the ablation arm)
                     }
                 }
                 if let Some(n) = top_n {
-                    cfg.top_n = n;
+                    cfg.top_n = n.clamp(1, MAX_TOP_N);
                 }
                 let scorer = self.scorer.read().ok().and_then(|s| s.clone());
                 let retriever = Retriever::new(self.store.as_ref(), scorer, cfg);
-                let query = match (&session, self.sessions.lock()) {
-                    (Some(s), Ok(mut sessions)) => sessions.effective_query(s, &prompt),
-                    _ => prompt.clone(),
+                let query = match &session {
+                    Some(s) => self.sessions().effective_query(s, &prompt),
+                    None => prompt.clone(),
                 };
                 match retriever.query(&id, &query) {
                     Ok(result) => {
-                        if let (Some(s), Ok(mut sessions)) = (&session, self.sessions.lock()) {
-                            sessions.record_query(s, &result);
+                        if let Some(s) = &session {
+                            self.sessions().record_query(s, &result);
                         }
                         let (rendered, scope) = match &render {
                             Some(r) => {
+                                let r = RenderReq {
+                                    budget_tokens: r.budget_tokens.min(MAX_RENDER_TOKENS),
+                                    ..r.clone()
+                                };
                                 let (text, scope) =
-                                    self.render(session.as_deref(), &prompt, &result, r);
+                                    self.render(session.as_deref(), &prompt, &result, &r);
                                 (Some(text), scope.map(scope_name))
                             }
                             None => (None, None),
@@ -355,27 +365,18 @@ impl Daemon {
                 session,
                 path,
                 full,
-            } => match self.sessions.lock() {
-                Ok(mut s) => Response::Count {
-                    count: s.note_read(&session, &path, full),
-                },
-                Err(_) => Response::Error {
-                    message: "session lock poisoned".into(),
-                },
+            } => Response::Count {
+                count: self.sessions().note_read(&session, &path, full),
             },
-            Request::Session { session, reset } => match self.sessions.lock() {
-                Ok(mut s) => {
-                    if reset {
-                        s.reset_context(&session);
-                    }
-                    Response::Session {
-                        view: s.view(&session),
-                    }
+            Request::Session { session, reset } => {
+                let mut s = self.sessions();
+                if reset {
+                    s.reset_context(&session);
                 }
-                Err(_) => Response::Error {
-                    message: "session lock poisoned".into(),
-                },
-            },
+                Response::Session {
+                    view: s.view(&session),
+                }
+            }
             Request::ReindexFile { repo, path } => {
                 let (root, id) = self.repo(&repo);
                 let Some(rel) = rel_path(&root, &path) else {
@@ -390,18 +391,29 @@ impl Daemon {
             }
             Request::IndexRepo { repo } => {
                 let (root, id) = self.repo(&repo);
-                let fresh = self
-                    .indexing
-                    .lock()
-                    .map(|mut s| s.insert(id.clone()))
-                    .unwrap_or(false);
+                if !root.is_dir() {
+                    return Response::Error {
+                        message: format!("{} is not a directory", root.display()),
+                    };
+                }
+                let fresh = lock(&self.indexing).insert(id.clone());
                 if fresh {
-                    let me = Arc::clone(self);
+                    let slot = IndexingSlot {
+                        daemon: Arc::clone(self),
+                        id,
+                    };
                     std::thread::spawn(move || {
-                        let r = indexer::index_repo(&root, me.store.as_ref(), &id);
-                        eprintln!("[laya] background index {}: {r:?}", root.display());
-                        if let Ok(mut s) = me.indexing.lock() {
-                            s.remove(&id);
+                        // `slot` clears the indexing flag when this thread ends, panic or not.
+                        let store = slot.daemon.store.as_ref();
+                        match catch_unwind(AssertUnwindSafe(|| {
+                            indexer::index_repo(&root, store, &slot.id)
+                        })) {
+                            Ok(r) => eprintln!("[laya] background index {}: {r:?}", root.display()),
+                            Err(p) => eprintln!(
+                                "[laya] background index {} panicked: {}",
+                                root.display(),
+                                panic_message(p.as_ref())
+                            ),
                         }
                     });
                 }
@@ -446,14 +458,12 @@ impl Daemon {
         if chunks.is_empty() {
             return None;
         }
-        let (ranking, query) = self.sessions.lock().ok()?.read_context(session);
+        let (ranking, query) = self.sessions().read_context(session);
         let signals = laya_rank::extract_signals(query.as_deref().unwrap_or_default());
         let (offset, limit, basis) =
             policy.read_region(ranking.as_ref(), &rel, &chunks, &signals, total_lines)?;
         let outline = policy.outline(&chunks, &signals, (offset, limit));
-        self.sessions
-            .lock()
-            .ok()?
+        self.sessions()
             .narrowed_read(session, &rel, offset, offset + limit - 1);
         Some(ReadPlan {
             offset,
@@ -465,25 +475,120 @@ impl Daemon {
     }
 }
 
+/// Lock `m`, recovering the guard if a panicking thread poisoned it.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| {
+        m.clear_poison();
+        e.into_inner()
+    })
+}
+
+/// A repo marked as being indexed; unmarked on drop, including when the index job panics.
+struct IndexingSlot {
+    daemon: Arc<Daemon>,
+    id: String,
+}
+
+impl Drop for IndexingSlot {
+    fn drop(&mut self) {
+        lock(&self.daemon.indexing).remove(&self.id);
+    }
+}
+
+/// The message of a caught panic payload (`panic!` with a literal or a formatted string).
+fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".into())
+}
+
+/// Handle one request, turning a panic (a parser, store or model bug on a strange input) into
+/// an error reply so the connection, and the daemon, keep serving.
+fn handle_guarded(daemon: &Arc<Daemon>, req: Request) -> Response {
+    catch_unwind(AssertUnwindSafe(|| daemon.handle(req))).unwrap_or_else(|p| {
+        let message = format!("internal error: {}", panic_message(p.as_ref()));
+        eprintln!("[laya] request panicked: {message}");
+        Response::Error { message }
+    })
+}
+
 fn env_num<T: std::str::FromStr>(key: &str) -> Option<T> {
     std::env::var(key).ok()?.parse().ok()
 }
 
+/// Longest request line the daemon reads (the newline excluded). A prompt is the only large
+/// field; a longer line is refused before it is buffered.
+pub const MAX_REQUEST_BYTES: usize = 1 << 20;
+
+/// Per-connection resource bounds of the daemon's socket server.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Connections served at once; more get an immediate "busy" error and are closed.
+    pub max_conns: usize,
+    /// Longest request line, see [`MAX_REQUEST_BYTES`].
+    pub max_request_bytes: usize,
+    /// How long a connection may sit without sending (idle clients are dropped).
+    pub read_timeout: Duration,
+    /// How long one reply may take to write (a client that never reads is dropped).
+    pub write_timeout: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            max_conns: 64,
+            max_request_bytes: MAX_REQUEST_BYTES,
+            read_timeout: Duration::from_secs(30),
+            write_timeout: Duration::from_secs(10),
+        }
+    }
+}
+
+/// Write one response line; `false` if the client is gone or too slow to read it.
+fn send(mut w: &UnixStream, resp: &Response) -> bool {
+    let Ok(mut s) = serde_json::to_string(resp) else {
+        return false;
+    };
+    s.push('\n');
+    w.write_all(s.as_bytes()).and_then(|()| w.flush()).is_ok()
+}
+
 /// Serve one client connection. After acknowledging `Request::Shutdown` it calls `shutdown`
 /// (which exits the process in the real daemon).
-fn serve_conn(daemon: Arc<Daemon>, stream: UnixStream, shutdown: &dyn Fn()) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-    let mut writer = match stream.try_clone() {
-        Ok(w) => w,
-        Err(_) => return,
-    };
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let Ok(line) = line else { return };
-        let (resp, stop) = match serde_json::from_str::<Request>(&line) {
+fn serve_conn(daemon: Arc<Daemon>, stream: UnixStream, shutdown: &dyn Fn(), limits: &Limits) {
+    if stream.set_read_timeout(Some(limits.read_timeout)).is_err()
+        || stream
+            .set_write_timeout(Some(limits.write_timeout))
+            .is_err()
+    {
+        return;
+    }
+    let mut reader = BufReader::new(&stream);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        // Read at most one byte past the cap: enough to tell an oversized line from a full one.
+        let cap = limits.max_request_bytes as u64 + 1;
+        match reader.by_ref().take(cap).read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => return, // closed, reset, or idle past the read timeout
+            Ok(_) => {}
+        }
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+        } else if buf.len() > limits.max_request_bytes {
+            let message = format!(
+                "request too long (over {} bytes); connection closed",
+                limits.max_request_bytes
+            );
+            eprintln!("[laya] {message}");
+            send(&stream, &Response::Error { message });
+            return;
+        }
+        let (resp, stop) = match serde_json::from_slice::<Request>(&buf) {
             Ok(req) => {
                 let stop = req == Request::Shutdown;
-                (daemon.handle(req), stop)
+                (handle_guarded(&daemon, req), stop)
             }
             Err(e) => (
                 Response::Error {
@@ -492,17 +597,86 @@ fn serve_conn(daemon: Arc<Daemon>, stream: UnixStream, shutdown: &dyn Fn()) {
                 false,
             ),
         };
-        let Ok(mut s) = serde_json::to_string(&resp) else {
-            return;
-        };
-        s.push('\n');
-        let written = writer.write_all(s.as_bytes()).and_then(|()| writer.flush());
+        let written = send(&stream, &resp);
         if stop {
             shutdown();
             return;
         }
-        if written.is_err() {
+        if !written {
             return;
+        }
+    }
+}
+
+/// One of `Limits::max_conns` connection slots; released on drop (however the handler ends).
+struct ConnSlot(Arc<AtomicUsize>);
+
+impl ConnSlot {
+    fn try_take(active: &Arc<AtomicUsize>, max: usize) -> Option<Self> {
+        active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < max).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| ConnSlot(Arc::clone(active)))
+    }
+}
+
+impl Drop for ConnSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Refuse a connection without ever blocking the accept loop: one short error line into the
+/// new socket's empty send buffer (non-blocking), then close.
+fn refuse(s: UnixStream, message: &str) {
+    if s.set_nonblocking(true).is_ok() {
+        send(
+            &s,
+            &Response::Error {
+                message: message.to_string(),
+            },
+        );
+    }
+}
+
+/// Accept loop: one thread per connection, at most `limits.max_conns` at a time.
+fn serve(
+    listener: UnixListener,
+    daemon: Arc<Daemon>,
+    shutdown: Arc<dyn Fn() + Send + Sync>,
+    limits: Limits,
+) {
+    let active = Arc::new(AtomicUsize::new(0));
+    for stream in listener.incoming() {
+        let s = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                // Out of fds or similar: back off instead of spinning on the error.
+                eprintln!("[laya] accept error: {e}");
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+        };
+        if !peer_allowed(&s) {
+            eprintln!("[laya] rejected a connection from another user");
+            continue;
+        }
+        let Some(slot) = ConnSlot::try_take(&active, limits.max_conns) else {
+            refuse(s, "daemon busy: too many connections");
+            continue;
+        };
+        let d = Arc::clone(&daemon);
+        let stop = Arc::clone(&shutdown);
+        let spawned = std::thread::Builder::new()
+            .name("laya-conn".into())
+            .spawn(move || {
+                let _slot = slot;
+                serve_conn(d, s, &*stop, &limits);
+            });
+        if let Err(e) = spawned {
+            eprintln!("[laya] cannot start a connection thread: {e}");
         }
     }
 }
@@ -661,19 +835,7 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
         });
     }
     eprintln!("[laya] daemon listening on {}", cfg.socket_path().display());
-    for stream in listener.incoming() {
-        match stream {
-            Ok(s) if !peer_allowed(&s) => {
-                eprintln!("[laya] rejected a connection from another user");
-            }
-            Ok(s) => {
-                let d = Arc::clone(&daemon);
-                let stop = Arc::clone(&shutdown);
-                std::thread::spawn(move || serve_conn(d, s, &*stop));
-            }
-            Err(e) => eprintln!("[laya] accept error: {e}"),
-        }
-    }
+    serve(listener, daemon, shutdown, Limits::default());
     Ok(())
 }
 
@@ -1136,7 +1298,12 @@ mod tests {
         let fired = Arc::new(AtomicBool::new(false));
         let f = Arc::clone(&fired);
         let t = std::thread::spawn(move || {
-            serve_conn(d, server, &move || f.store(true, Ordering::SeqCst));
+            serve_conn(
+                d,
+                server,
+                &move || f.store(true, Ordering::SeqCst),
+                &Limits::default(),
+            );
         });
         (&client)
             .write_all(b"{\"op\":\"ping\"}\n{\"op\":\"shutdown\"}\n")
@@ -1152,6 +1319,319 @@ mod tests {
     fn peers_of_the_same_user_are_allowed() {
         let (a, _b) = UnixStream::pair().unwrap();
         assert!(peer_allowed(&a));
+    }
+
+    /// A store that panics in `bm25` (every query) and `ensure_index` (every index job), as a
+    /// parser or store bug on a strange input would.
+    #[derive(Default)]
+    struct PanicStore(MemStore);
+    impl Store for PanicStore {
+        fn ensure_index(&self, _: &str) -> laya_core::Result<()> {
+            panic!("injected ensure_index panic")
+        }
+        fn put_file(&self, r: &str, p: &str, h: &str, c: &[Chunk]) -> laya_core::Result<()> {
+            self.0.put_file(r, p, h, c)
+        }
+        fn delete_file(&self, r: &str, p: &str) -> laya_core::Result<()> {
+            self.0.delete_file(r, p)
+        }
+        fn file_hash(&self, r: &str, p: &str) -> laya_core::Result<Option<String>> {
+            self.0.file_hash(r, p)
+        }
+        fn list_files(&self, r: &str) -> laya_core::Result<Vec<String>> {
+            self.0.list_files(r)
+        }
+        fn bm25(&self, _: &str, _: &[String], _: usize) -> laya_core::Result<Vec<(String, f32)>> {
+            panic!("injected bm25 panic")
+        }
+        fn chunks_defining(
+            &self,
+            r: &str,
+            i: &[String],
+            l: usize,
+        ) -> laya_core::Result<Vec<String>> {
+            self.0.chunks_defining(r, i, l)
+        }
+        fn get_chunks(&self, r: &str, ids: &[String]) -> laya_core::Result<Vec<Chunk>> {
+            self.0.get_chunks(r, ids)
+        }
+        fn memo_get(&self, k: &str) -> laya_core::Result<Option<String>> {
+            self.0.memo_get(k)
+        }
+        fn memo_put(&self, k: &str, v: &str, t: u64) -> laya_core::Result<()> {
+            self.0.memo_put(k, v, t)
+        }
+    }
+
+    fn query_line(repo: &str) -> String {
+        let q = Request::Query {
+            repo: repo.into(),
+            session: Some("s".into()),
+            prompt: "replay wal".into(),
+            budget_ms: Some(0),
+            top_n: None,
+            render: None,
+        };
+        format!("{}\n", serde_json::to_string(&q).unwrap())
+    }
+
+    #[test]
+    fn a_panicking_request_gets_an_error_and_the_connection_keeps_serving() {
+        let d = Daemon::new(Arc::new(PanicStore::default()), RetrieverConfig::default());
+        let repo = std::env::temp_dir().to_string_lossy().into_owned();
+        let (client, server) = UnixStream::pair().unwrap();
+        let t = std::thread::spawn(move || serve_conn(d, server, &|| {}, &Limits::default()));
+        (&client).write_all(query_line(&repo).as_bytes()).unwrap();
+        (&client).write_all(b"{\"op\":\"ping\"}\n").unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut lines = BufReader::new(client.try_clone().unwrap()).lines();
+        let first = lines
+            .next()
+            .expect("a reply to the panicking request")
+            .unwrap();
+        assert!(
+            first.contains("\"error\"") && first.contains("internal error"),
+            "{first}"
+        );
+        let second = lines.next().expect("the connection still serves").unwrap();
+        assert!(second.contains("pong"), "{second}");
+        t.join().expect("serve_conn does not propagate the panic");
+    }
+
+    #[test]
+    fn a_panic_while_holding_the_session_lock_does_not_wedge_sessions() {
+        let d = Daemon::new(Arc::new(MemoStore::default()), RetrieverConfig::default());
+        let d2 = Arc::clone(&d);
+        let _ = std::thread::spawn(move || {
+            let _g = d2.sessions.lock().unwrap();
+            panic!("injected panic under the session lock");
+        })
+        .join();
+        assert_eq!(
+            d.handle(Request::NoteRead {
+                session: "s".into(),
+                path: "a.rs".into(),
+                full: false
+            }),
+            Response::Count { count: 1 }
+        );
+    }
+
+    #[test]
+    fn a_panicking_index_job_clears_the_indexing_flag() {
+        let d = Daemon::new(Arc::new(PanicStore::default()), RetrieverConfig::default());
+        let root = tempfile_dir("idxpanic");
+        let repo = root.to_string_lossy().into_owned();
+        assert_eq!(
+            d.handle(Request::IndexRepo { repo: repo.clone() }),
+            Response::Ok
+        );
+        let t0 = std::time::Instant::now();
+        while !d
+            .indexing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+        {
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "indexing flag never cleared after the job panicked"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn index_repo_of_a_missing_directory_is_an_error() {
+        let d = Daemon::new(Arc::new(MemoStore::default()), RetrieverConfig::default());
+        let missing = std::env::temp_dir().join(format!("laya-no-repo-{}", std::process::id()));
+        let r = d.handle(Request::IndexRepo {
+            repo: missing.to_string_lossy().into_owned(),
+        });
+        assert!(
+            matches!(&r, Response::Error { message } if message.contains("not a directory")),
+            "{r:?}"
+        );
+        assert!(d.indexing.lock().unwrap().is_empty());
+    }
+
+    /// Read one reply line (the test fails instead of hanging if none comes).
+    fn reply(s: &UnixStream) -> String {
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut line = String::new();
+        BufReader::new(s).read_line(&mut line).unwrap();
+        line
+    }
+
+    fn ping(s: &UnixStream) -> String {
+        let mut w = s;
+        w.write_all(b"{\"op\":\"ping\"}\n").unwrap();
+        reply(s)
+    }
+
+    #[test]
+    fn an_oversized_request_line_is_refused_without_buffering_it() {
+        let (d, _) = daemon_with_code();
+        let (client, server) = UnixStream::pair().unwrap();
+        let t = std::thread::spawn(move || serve_conn(d, server, &|| {}, &Limits::default()));
+        // 8 MiB with no newline, from another thread: the daemon must answer after reading at
+        // most MAX_REQUEST_BYTES + 1 of it and close, not wait for the end of the line.
+        let w = client.try_clone().unwrap();
+        w.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+        let writer = std::thread::spawn(move || {
+            let chunk = vec![b'a'; 64 * 1024];
+            for _ in 0..128 {
+                if (&w).write_all(&chunk).is_err() {
+                    return false; // the daemon closed the connection
+                }
+            }
+            true
+        });
+        let r = reply(&client);
+        assert!(r.contains("\"error\"") && r.contains("too long"), "{r}");
+        t.join().unwrap();
+        assert!(
+            !writer.join().unwrap(),
+            "the daemon read the whole oversized line"
+        );
+        assert_eq!(MAX_REQUEST_BYTES, 1 << 20);
+    }
+
+    #[test]
+    fn a_request_just_under_the_cap_is_served() {
+        let (d, _) = daemon_with_code();
+        let (client, server) = UnixStream::pair().unwrap();
+        let limits = Limits {
+            max_request_bytes: 64,
+            ..Limits::default()
+        };
+        let t = std::thread::spawn(move || serve_conn(d, server, &|| {}, &limits));
+        let pad = " ".repeat(64 - "{\"op\":\"ping\"}".len());
+        (&client)
+            .write_all(format!("{{\"op\":\"ping\"}}{pad}\n").as_bytes())
+            .unwrap();
+        assert!(reply(&client).contains("pong"));
+        client.shutdown(std::net::Shutdown::Both).unwrap();
+        t.join().unwrap();
+    }
+
+    fn start_server(tag: &str, limits: Limits) -> (PathBuf, PathBuf) {
+        let dir = tempfile_dir(tag);
+        let sock = dir.join("laya.sock");
+        let listener = bind_single(&sock).unwrap().unwrap();
+        let (d, _) = daemon_with_code();
+        std::thread::spawn(move || serve(listener, d, Arc::new(|| {}), limits));
+        (dir, sock)
+    }
+
+    #[test]
+    fn connections_over_the_cap_get_an_immediate_error() {
+        let limits = Limits {
+            max_conns: 2,
+            ..Limits::default()
+        };
+        let (dir, sock) = start_server("cap", limits);
+        let a = UnixStream::connect(&sock).unwrap();
+        let b = UnixStream::connect(&sock).unwrap();
+        assert!(ping(&a).contains("pong") && ping(&b).contains("pong"));
+        let c = UnixStream::connect(&sock).unwrap();
+        let r = reply(&c);
+        assert!(r.contains("\"error\"") && r.contains("busy"), "{r}");
+        drop(a);
+        // The freed slot is reused once the daemon sees `a` close.
+        let t0 = std::time::Instant::now();
+        loop {
+            let d = UnixStream::connect(&sock).unwrap();
+            if ping(&d).contains("pong") {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(5), "slot never freed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(b);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn idle_and_unread_connections_time_out_and_free_their_slot() {
+        let limits = Limits {
+            max_conns: 1,
+            read_timeout: Duration::from_millis(200),
+            write_timeout: Duration::from_millis(200),
+            ..Limits::default()
+        };
+        let (dir, sock) = start_server("timeouts", limits);
+        // Idle: the daemon closes it after the read timeout.
+        let idle = UnixStream::connect(&sock).unwrap();
+        assert_eq!(reply(&idle), "", "idle connection closed");
+        // A client that sends requests but never reads replies: once the socket buffer is full
+        // the daemon's write times out and the connection is dropped.
+        let greedy = UnixStream::connect(&sock).unwrap();
+        greedy
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let line = b"{\"op\":\"ping\"}\n".repeat(64);
+        let t0 = std::time::Instant::now();
+        while (&greedy).write_all(&line).is_ok() {
+            assert!(
+                t0.elapsed() < Duration::from_secs(20),
+                "daemon never gave up"
+            );
+        }
+        let t0 = std::time::Instant::now();
+        loop {
+            let d = UnixStream::connect(&sock).unwrap();
+            if ping(&d).contains("pong") {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(5), "slot never freed");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(greedy);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn query_sizes_are_clamped_to_the_mcp_bounds() {
+        let cfg = RetrieverConfig {
+            k_candidates: 100,
+            max_total_lines: 100_000,
+            ..RetrieverConfig::default()
+        };
+        let d = Daemon::new(Arc::new(MemoStore::default()), cfg);
+        let repo = std::env::temp_dir().to_string_lossy().into_owned();
+        let (_, id) = d.repo(&repo);
+        for i in 0..40 {
+            let c = Chunk {
+                path: format!("src/f{i}.rs"),
+                start_line: 1,
+                end_line: 3,
+                lang: Lang::Rust,
+                symbol: format!("fn flush_page{i}"),
+                kind: "function_item".into(),
+                defines: vec![format!("flush_page{i}")],
+                refs: vec![],
+                text: format!("fn flush_page{i}() {{\n    flush page\n}}"),
+            };
+            d.store
+                .put_file(&id, &c.path, "h", std::slice::from_ref(&c))
+                .unwrap();
+        }
+        let spans = |top_n| match d.handle(Request::Query {
+            repo: repo.clone(),
+            session: None,
+            prompt: "flush page".into(),
+            budget_ms: Some(0),
+            top_n: Some(top_n),
+            render: None,
+        }) {
+            Response::Query { result, .. } => result.spans.len(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(spans(1_000_000), crate::protocol::MAX_TOP_N);
+        assert_eq!(spans(0), 1);
+        assert_eq!(spans(5), 5);
     }
 
     fn tempfile_dir(tag: &str) -> PathBuf {

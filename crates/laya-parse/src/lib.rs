@@ -85,6 +85,22 @@ pub enum ParseError {
     NotUtf8 { path: String },
     #[error("minified or single-line generated content: {path}")]
     Minified { path: String },
+    /// Chunking panicked (a bug on this input); the file is skipped, the batch goes on.
+    #[error("chunking panicked on {path}: {message}")]
+    Panicked { path: String, message: String },
+}
+
+/// Run `f` (chunking of `path`), turning a panic into [`ParseError::Panicked`] so one strange
+/// file cannot take down an index run or the process hosting it.
+fn guard_chunking<T>(path: &str, f: impl FnOnce() -> T) -> Result<T, ParseError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|p| ParseError::Panicked {
+        path: path.to_string(),
+        message: p
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_default(),
+    })
 }
 
 /// One chunked file.
@@ -211,7 +227,7 @@ pub fn parse_file_with(
     if looks_minified(&source) {
         return Err(ParseError::Minified { path: rel });
     }
-    let chunks = chunk_source_with(cfg, &rel, &source);
+    let chunks = guard_chunking(&rel, || chunk_source_with(cfg, &rel, &source))?;
     Ok(ParsedFile {
         path: rel,
         lang,
@@ -236,4 +252,21 @@ pub fn chunk_files_with(
         .par_iter()
         .map(|p| parse_file_with(cfg, root, p))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_while_chunking_is_a_per_file_error() {
+        let r: Result<(), ParseError> = guard_chunking("src/x.rs", || panic!("boom {}", 7));
+        match r {
+            Err(ParseError::Panicked { path, message }) => {
+                assert_eq!((path.as_str(), message.as_str()), ("src/x.rs", "boom 7"))
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(guard_chunking("a.rs", || 1).unwrap(), 1);
+    }
 }
