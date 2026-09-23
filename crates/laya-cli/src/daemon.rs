@@ -111,7 +111,7 @@ impl Daemon {
                 model_ready: self.scorer.read().map(|s| s.is_some()).unwrap_or(false),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
-            Request::Query { repo, session, prompt, budget_ms, top_n } => {
+            Request::Query { repo, session, prompt, budget_ms, top_n, render: _ } => {
                 let (_, id) = self.repo(&repo);
                 let mut cfg = self.base_cfg.clone();
                 if let Some(b) = budget_ms {
@@ -130,13 +130,13 @@ impl Daemon {
                         if let (Some(s), Ok(mut sessions)) = (session, self.sessions.lock()) {
                             sessions.record_query(&s, &result);
                         }
-                        Response::Query { result }
+                        Response::Query { result, rendered: None, scope: None }
                     }
                     Err(e) => Response::Error { message: e.to_string() },
                 }
             }
-            Request::NoteRead { session, path } => match self.sessions.lock() {
-                Ok(mut s) => Response::Count { count: s.note_read(&session, &path) },
+            Request::NoteRead { session, path, full } => match self.sessions.lock() {
+                Ok(mut s) => Response::Count { count: s.note_read(&session, &path, full) },
                 Err(_) => Response::Error { message: "session lock poisoned".into() },
             },
             Request::Session { session } => match self.sessions.lock() {
@@ -329,8 +329,8 @@ mod tests {
     #[test]
     fn daemon_tracks_reads_and_sessions() {
         let d = Daemon::new(Arc::new(MemoStore::default()), RetrieverConfig::default());
-        assert_eq!(d.handle(Request::NoteRead { session: "s".into(), path: "a.rs".into() }), Response::Count { count: 1 });
-        assert_eq!(d.handle(Request::NoteRead { session: "s".into(), path: "a.rs".into() }), Response::Count { count: 2 });
+        assert_eq!(d.handle(Request::NoteRead { session: "s".into(), path: "a.rs".into(), full: false }), Response::Count { count: 1 });
+        assert_eq!(d.handle(Request::NoteRead { session: "s".into(), path: "a.rs".into(), full: false }), Response::Count { count: 2 });
         assert!(matches!(d.handle(Request::Ping), Response::Pong { model_ready: false, .. }));
         assert!(matches!(d.handle(Request::Session { session: "s".into() }), Response::Session { .. }));
     }

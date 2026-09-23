@@ -120,10 +120,10 @@ fn cmd_query(cfg: &Config, prompt: &str, repo: Option<PathBuf>, top: Option<usiz
     let c = Client::new(&cfg.socket_path(), Duration::from_secs(60), true);
     wait_ready(&c, cfg.use_model && cfg.model_dir.is_some(), Duration::from_secs(90));
     let req = Request::Query { repo: root.to_string_lossy().into_owned(), session: None, prompt: prompt.to_string(),
-        budget_ms: Some(cfg.budget_ms), top_n: top };
+        budget_ms: Some(cfg.budget_ms), top_n: top, render: None };
     match c.call(req)? {
-        Response::Query { result } if as_json => println!("{}", serde_json::to_string_pretty(&result)?),
-        Response::Query { result } => {
+        Response::Query { result, .. } if as_json => println!("{}", serde_json::to_string_pretty(&result)?),
+        Response::Query { result, .. } => {
             println!("mode={:?} candidates={} elapsed={}ms", result.mode, result.candidates, result.elapsed_ms);
             println!("{}", laya_rank::render_context(&result, 100_000));
         }

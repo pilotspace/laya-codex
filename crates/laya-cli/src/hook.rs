@@ -79,9 +79,10 @@ fn user_prompt(prompt: &str, session: &str, ctx: &HookCtx) -> Outcome {
         prompt: prompt.to_string(),
         budget_ms: Some(ctx.budget_ms),
         top_n: None,
+        render: None,
     };
     let result = match ctx.api.call(req) {
-        Ok(Response::Query { result }) => result,
+        Ok(Response::Query { result, .. }) => result,
         _ => return Outcome::skip("query_failed"),
     };
     if result.spans.is_empty() {
@@ -109,11 +110,11 @@ fn session_view(session: &str, ctx: &HookCtx) -> Option<SessionView> {
 fn pre_read(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
     let Some(file) = tool_input["file_path"].as_str() else { return Outcome::skip("no_path") };
     let Some(rel) = rel_path(&ctx.root, file) else { return Outcome::skip("outside_repo") };
-    let count = match ctx.api.call(Request::NoteRead { session: session.to_string(), path: rel.clone() }) {
+    let ranged = !tool_input["offset"].is_null() || !tool_input["limit"].is_null();
+    let count = match ctx.api.call(Request::NoteRead { session: session.to_string(), path: rel.clone(), full: !ranged }) {
         Ok(Response::Count { count }) => count,
         _ => return Outcome::skip("daemon_unavailable"),
     };
-    let ranged = !tool_input["offset"].is_null() || !tool_input["limit"].is_null();
     if ranged || count > 1 {
         return Outcome::skip(if ranged { "already_ranged" } else { "escape_hatch" });
     }
@@ -210,7 +211,7 @@ mod tests {
             self.calls.borrow_mut().push(req.clone());
             Ok(match req {
                 Request::Query { .. } => match &self.result {
-                    Some(r) => Response::Query { result: r.clone() },
+                    Some(r) => Response::Query { result: r.clone(), rendered: None, scope: None },
                     None => anyhow::bail!("down"),
                 },
                 Request::NoteRead { .. } => Response::Count { count: self.read_count },

@@ -56,9 +56,9 @@ fn call_tool(params: &Value, api: &dyn DaemonApi, root: &std::path::Path, inject
         return text_result("query must not be empty".into(), true);
     }
     let top_n = params["arguments"]["top_n"].as_u64().map(|n| n.clamp(1, 20) as usize);
-    let req = Request::Query { repo: root.to_string_lossy().into_owned(), session: None, prompt: query, budget_ms: Some(budget_ms), top_n };
+    let req = Request::Query { repo: root.to_string_lossy().into_owned(), session: None, prompt: query, budget_ms: Some(budget_ms), top_n, render: None };
     match api.call(req) {
-        Ok(Response::Query { result }) if !result.spans.is_empty() => text_result(laya_rank::render_context(&result, inject_tokens), false),
+        Ok(Response::Query { result, .. }) if !result.spans.is_empty() => text_result(laya_rank::render_context(&result, inject_tokens), false),
         Ok(Response::Query { .. }) => text_result("no matching code found; fall back to Grep/Glob".into(), false),
         Ok(other) => text_result(format!("unexpected daemon response: {other:?}"), true),
         Err(e) => text_result(format!("laya daemon unavailable ({e}); fall back to Grep/Glob"), true),
@@ -99,7 +99,7 @@ mod tests {
             Ok(Response::Query { result: QueryResult {
                 spans: vec![RankedSpan { path: "src/a.rs".into(), start_line: 3, end_line: 9, symbol: "fn a".into(),
                     p_relevant: Some(0.8), score: 0.8, text: "fn a() {}".into() }],
-                mode: RankMode::Laya, elapsed_ms: 3, candidates: 5, related: vec![] } })
+                mode: RankMode::Laya, elapsed_ms: 3, candidates: 5, related: vec![] }, rendered: None, scope: None })
         }
     }
 

@@ -1,7 +1,7 @@
 //! Per-session state held by the daemon: last ranking, working set and Read counts.
 //! Bounded (LRU by last touch) so a long-running daemon cannot grow without limit.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use laya_core::{QueryResult, RankedSpan};
@@ -10,12 +10,17 @@ use crate::protocol::SessionView;
 
 const MAX_SESSIONS: usize = 256;
 const MAX_WORKING_SET: usize = 40;
+const MAX_SENT: usize = 200;
 
 #[derive(Default)]
 struct Session {
     last: Option<QueryResult>,
     working_set: Vec<RankedSpan>,
     reads: HashMap<String, u32>,
+    /// Spans whose full code was already injected this session: (path, start, end).
+    sent: Vec<(String, u32, u32)>,
+    /// Files read without offset/limit: entirely in the agent's context.
+    full_reads: HashSet<String>,
     touched: Option<Instant>,
 }
 
@@ -57,11 +62,35 @@ impl Sessions {
         s.working_set.truncate(MAX_WORKING_SET);
     }
 
-    /// Increment and return the Read count for `path` in the session.
-    pub fn note_read(&mut self, id: &str, path: &str) -> u32 {
-        let c = self.get(id).reads.entry(path.to_string()).or_insert(0);
+    /// Increment and return the Read count for `path` in the session; `full` marks a whole-file read.
+    pub fn note_read(&mut self, id: &str, path: &str, full: bool) -> u32 {
+        let s = self.get(id);
+        if full {
+            s.full_reads.insert(path.to_string());
+        }
+        let c = s.reads.entry(path.to_string()).or_insert(0);
         *c += 1;
         *c
+    }
+
+    /// Record spans whose full code was injected (deduplicated, bounded to the newest `MAX_SENT`).
+    pub fn mark_sent(&mut self, id: &str, keys: &[(String, u32, u32)]) {
+        let s = self.get(id);
+        for k in keys {
+            if !s.sent.contains(k) {
+                s.sent.push(k.clone());
+            }
+        }
+        let overflow = s.sent.len().saturating_sub(MAX_SENT);
+        s.sent.drain(..overflow);
+    }
+
+    /// Everything already in the agent's context: sent spans plus whole files it read.
+    pub fn already(&mut self, id: &str) -> Vec<(String, u32, u32)> {
+        let s = self.get(id);
+        let mut out = s.sent.clone();
+        out.extend(s.full_reads.iter().map(|p| (p.clone(), 1, u32::MAX)));
+        out
     }
 
     pub fn view(&mut self, id: &str) -> SessionView {
@@ -86,10 +115,32 @@ mod tests {
     #[test]
     fn read_counts_are_per_session_and_path() {
         let mut s = Sessions::default();
-        assert_eq!(s.note_read("a", "x.rs"), 1);
-        assert_eq!(s.note_read("a", "x.rs"), 2);
-        assert_eq!(s.note_read("a", "y.rs"), 1);
-        assert_eq!(s.note_read("b", "x.rs"), 1);
+        assert_eq!(s.note_read("a", "x.rs", false), 1);
+        assert_eq!(s.note_read("a", "x.rs", false), 2);
+        assert_eq!(s.note_read("a", "y.rs", false), 1);
+        assert_eq!(s.note_read("b", "x.rs", false), 1);
+    }
+
+    #[test]
+    fn already_combines_sent_spans_and_full_reads_per_session() {
+        let mut s = Sessions::default();
+        s.mark_sent("a", &[("x.rs".into(), 1, 20), ("x.rs".into(), 1, 20)]);
+        s.note_read("a", "y.rs", true);
+        s.note_read("a", "z.rs", false);
+        let mut got = s.already("a");
+        got.sort();
+        assert_eq!(got, vec![("x.rs".to_string(), 1, 20), ("y.rs".to_string(), 1, u32::MAX)]);
+        assert!(s.already("b").is_empty());
+    }
+
+    #[test]
+    fn sent_is_bounded_to_newest() {
+        let mut s = Sessions::default();
+        let keys: Vec<_> = (0..(MAX_SENT as u32 + 5)).map(|i| ("f.rs".to_string(), i, i)).collect();
+        s.mark_sent("a", &keys);
+        let got = s.already("a");
+        assert_eq!(got.len(), MAX_SENT);
+        assert_eq!(got[0].1, 5);
     }
 
     #[test]
@@ -108,7 +159,7 @@ mod tests {
     fn session_count_is_bounded() {
         let mut s = Sessions::default();
         for i in 0..(MAX_SESSIONS + 10) {
-            s.note_read(&format!("s{i}"), "x");
+            s.note_read(&format!("s{i}"), "x", false);
         }
         assert_eq!(s.map.len(), MAX_SESSIONS);
     }
