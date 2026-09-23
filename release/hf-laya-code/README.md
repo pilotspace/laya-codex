@@ -18,7 +18,7 @@ question: Is this source code relevant to the software change: "{task}"?
 state:    file: <path> (lines a-b)\n<code>        (truncated to 128 tokens in production)
 ```
 
-It is the default re-ranker of [laya-codex](https://github.com/OWNER/laya-codex), which feeds
+It is the default re-ranker of [laya-codex](https://github.com/pilotspace/laya-codex), which feeds
 Claude Code the most relevant code spans for a prompt (tree-sitter chunks, then Moon BM25
 candidates, then laya-code re-ranking).
 
@@ -54,8 +54,19 @@ Weak supervision from git history. Nothing was hand-labelled.
   other files (label 0).
 - **Size**: 50,926 pairs, split by commit hash into 45,790 train and 5,136 validation pairs.
   Train pairs: 2,779 candidate positives, 5,609 candidate same-file, 24,768 candidate negatives,
-  4,656 extra positives, 2,392 same-file, 5,586 random negatives. Per-repo counts:
-  **TODO** (copy `per_repo` from the `build_data.py` summary JSON on the training machine).
+  4,656 extra positives, 2,392 same-file, 5,586 random negatives. Per-repo counts (v2 data;
+  the warm start used v1 data from the same repos):
+
+  | repo | train commits | val commits | train pairs | val pairs |
+  |---|---|---|---|---|
+  | PraisonAI | 231 | 18 | 3,711 | 280 |
+  | ai-guard | 460 | 40 | 7,404 | 665 |
+  | ai-proxy | 200 | 23 | 3,293 | 380 |
+  | codex | 446 | 54 | 7,676 | 932 |
+  | dispatch | 447 | 53 | 7,347 | 863 |
+  | pi-mono | 439 | 61 | 7,386 | 1,013 |
+  | python-dependency-injector | 453 | 47 | 7,066 | 744 |
+  | velos | 117 | 16 | 1,907 | 259 |
 - **Training**: top 8 of 28 encoder layers, the final norm and the decision head. fp32 on an
   M4 Pro (MPS). AdamW; learning rate 2e-5 for the encoder and 1e-4 for the head. 32 sequences
   per update. Log loss against soft targets. 536 updates on v2 data, warm-started from 300

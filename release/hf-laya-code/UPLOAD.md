@@ -6,7 +6,7 @@ Nothing here has been run. These are the commands to run by hand. They were chec
 Set the target repo once. Replace `<hf-user-or-org>` with your account or organisation:
 
 ```sh
-export HF_REPO=<hf-user-or-org>/laya-code
+export HF_REPO=tindang/laya-code     # done 2026-09-23: created private, uploaded, verified
 export CKPT=~/.cache/laya-codex/models/laya-code
 export PKG=release/hf-laya-code        # run from the laya-codex repo root
 ```

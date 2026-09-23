@@ -30,8 +30,11 @@ verified facts: [docs/build-context.md](docs/build-context.md).
 - Rust 1.90+ (edition 2024); macOS arm64 for Metal (Linux runs the model on CPU — too slow
   for interactive re-ranking; set `LAYA_NO_MODEL=1` there).
 - A Moon server binary (`moon` on PATH or `LAYA_MOON_BIN`); `laya` starts and supervises it.
-- Model weights in `~/.cache/laya-codex/models/laya-code` (fine-tuned, preferred) or
-  `laya-base` (`hf download convaiinnovations/laya --local-dir ~/.cache/laya-codex/models/laya-base`).
+- Model weights: the fine-tuned re-ranker (preferred),
+  `hf download tindang/laya-code --local-dir ~/.cache/laya-codex/models/laya-code`
+  ([model card](https://huggingface.co/tindang/laya-code)), or the base model,
+  `hf download convaiinnovations/laya --local-dir ~/.cache/laya-codex/models/laya-base`.
+  Without either, laya runs lexical-only.
 
 ## Build
 

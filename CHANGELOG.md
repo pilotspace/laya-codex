@@ -69,4 +69,4 @@ macOS arm64 (Laya on Metal) and Linux x86_64 (Laya on CPU, or lexical-only with
 - Instruction-heavy benchmark prompts no longer outrank the task terms in retrieval.
 - Long follow-up prompts are no longer treated as new tasks.
 
-[Unreleased]: https://github.com/OWNER/laya-codex/commits/HEAD
+[Unreleased]: https://github.com/pilotspace/laya-codex/commits/HEAD
