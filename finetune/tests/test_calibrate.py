@@ -37,3 +37,12 @@ def test_paired_bootstrap_detects_clear_improvement_and_noise():
     assert abs(r["mean_diff"] - 0.2) < 1e-9 and r["ci95"][0] > 0 and r["p_diff_le_0"] == 0.0
     r2 = ev.paired_bootstrap(a, a[::-1])
     assert r2["ci95"][0] < 0 < r2["ci95"][1]
+
+
+def test_fit_temperature_multiclass_recovers_scale():
+    rng = np.random.default_rng(1)
+    z = rng.normal(0, 1.5, (20000, 4))
+    p = np.exp(z) / np.exp(z).sum(1, keepdims=True)
+    y = np.array([rng.choice(4, p=pp) for pp in p])
+    T = calibrate.fit_temperature_k(z * 3.0, y)
+    assert abs(T - 3.0) / 3.0 < 0.05

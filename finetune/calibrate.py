@@ -47,6 +47,31 @@ def fit_temperature(logits, y):
     return float(np.exp((lo + hi) / 2))
 
 
+def nll_k(logits, y, T):
+    z = np.asarray(logits, np.float64) / T
+    z = z - z.max(1, keepdims=True)
+    lse = np.log(np.exp(z).sum(1))
+    return float((lse - z[np.arange(len(y)), y]).mean())
+
+
+def fit_temperature_k(logits, y):
+    """Multi-class (choice) temperature: argmin_T mean NLL of softmax(logits/T) at hard labels y."""
+    y = np.asarray(y, int)
+    f = lambda lt: nll_k(logits, y, np.exp(lt))  # noqa: E731
+    grid = np.linspace(np.log(T_MIN), np.log(T_MAX), 121)
+    i = int(np.argmin([f(g) for g in grid]))
+    lo, hi = grid[max(0, i - 1)], grid[min(len(grid) - 1, i + 1)]
+    g = (np.sqrt(5) - 1) / 2
+    a, b = hi - g * (hi - lo), lo + g * (hi - lo)
+    for _ in range(60):
+        if f(a) < f(b):
+            hi = b
+        else:
+            lo = a
+        a, b = hi - g * (hi - lo), lo + g * (hi - lo)
+    return float(np.exp((lo + hi) / 2))
+
+
 def report(logits, rows, T):
     from rl_common import auroc, ece_score
     y = np.array([float(r["label"]) for r in rows])
