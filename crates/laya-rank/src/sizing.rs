@@ -296,18 +296,28 @@ fn select_lexical(
         .take(map_budget)
         .map(|i| candidates[i].clone())
         .collect();
-    (full_idx.iter().map(|&i| candidates[i].clone()).collect(), map)
+    (
+        full_idx.iter().map(|&i| candidates[i].clone()).collect(),
+        map,
+    )
 }
 
 /// Up to `k` of `indices` (in order), at most one per file: full code for one span in each of
 /// several files covers more of what the task needs than several spans of one file.
-fn distinct_files(candidates: &[RankedSpan], indices: impl Iterator<Item = usize>, k: usize) -> Vec<usize> {
+fn distinct_files(
+    candidates: &[RankedSpan],
+    indices: impl Iterator<Item = usize>,
+    k: usize,
+) -> Vec<usize> {
     let mut out: Vec<usize> = Vec::new();
     for i in indices {
         if out.len() == k {
             break;
         }
-        if !out.iter().any(|&j| candidates[j].path == candidates[i].path) {
+        if !out
+            .iter()
+            .any(|&j| candidates[j].path == candidates[i].path)
+        {
             out.push(i);
         }
     }
@@ -342,11 +352,14 @@ pub fn render_sized_with_keys(ctx: &SizedContext, budget_tokens: usize) -> (Stri
 
     let mut used = estimate_tokens(&out) + estimate_tokens(COMPACT_FOOTER);
     let mut rendered_keys = Vec::new();
+    let mut inlined: Vec<&RankedSpan> = ctx.already.iter().collect();
     for span in &ctx.full {
         let block = render_span(span);
         let t = estimate_tokens(&block);
         // Reserve room for the footer and the "Already provided" line after the code blocks.
-        if used + t > budget_tokens || !crate::render::fits(&out, &block, COMPACT_FOOTER.len() + 400) {
+        if used + t > budget_tokens
+            || !crate::render::fits(&out, &block, COMPACT_FOOTER.len() + 400)
+        {
             // Degrade to a map entry: it's already in the "Ranked locations:" listing above, so
             // simply not inlining its code block is exactly that degradation — no truncated code.
             continue;
@@ -354,21 +367,30 @@ pub fn render_sized_with_keys(ctx: &SizedContext, budget_tokens: usize) -> (Stri
         out.push_str(&block);
         used += t;
         rendered_keys.push(SpanKey::of(span));
+        inlined.push(span);
     }
     out.push_str(COMPACT_FOOTER);
 
     if !ctx.already.is_empty() {
-        let locations: Vec<String> = ctx
-            .already
-            .iter()
-            .map(|s| format!("{}:{}-{}", s.path, s.start_line, s.end_line))
-            .collect();
-        out.push_str(ALREADY_PREFIX);
-        out.push_str(&locations.join(", "));
+        let mut line = String::from(ALREADY_PREFIX);
+        for (i, s) in ctx.already.iter().enumerate() {
+            let loc = format!(
+                "{}{}:{}-{}",
+                if i > 0 { ", " } else { "" },
+                s.path,
+                s.start_line,
+                s.end_line
+            );
+            if !crate::render::fits(&out, &format!("{line}{loc}"), 1) {
+                break;
+            }
+            line.push_str(&loc);
+        }
+        out.push_str(&line);
         out.push('\n');
     }
 
-    append_related(&mut out, &ctx.related);
+    append_related(&mut out, &ctx.related, &inlined);
 
     (out, rendered_keys)
 }
@@ -436,13 +458,35 @@ mod tests {
             span("b.rs", 1, 20, "", Some(0.9), 0.8),
             span("c.rs", 1, 20, "", Some(0.9), 0.7),
         ];
-        let lexical: Vec<RankedSpan> = spans.iter().map(|s| RankedSpan { p_relevant: None, ..s.clone() }).collect();
-        let policy = SizingPolicy { tau_full: 0.0, tau_map: 0.0, ..SizingPolicy::default() };
-        for r in [result(RankMode::Laya, spans, vec![]), result(RankMode::Lexical, lexical, vec![])] {
+        let lexical: Vec<RankedSpan> = spans
+            .iter()
+            .map(|s| RankedSpan {
+                p_relevant: None,
+                ..s.clone()
+            })
+            .collect();
+        let policy = SizingPolicy {
+            tau_full: 0.0,
+            tau_map: 0.0,
+            ..SizingPolicy::default()
+        };
+        for r in [
+            result(RankMode::Laya, spans, vec![]),
+            result(RankMode::Lexical, lexical, vec![]),
+        ] {
             let ctx = size_context(&r, None, &policy, &[]);
-            let full: Vec<(&str, u32)> = ctx.full.iter().map(|s| (s.path.as_str(), s.start_line)).collect();
+            let full: Vec<(&str, u32)> = ctx
+                .full
+                .iter()
+                .map(|s| (s.path.as_str(), s.start_line))
+                .collect();
             assert_eq!(full, vec![("a.rs", 1), ("b.rs", 1), ("c.rs", 1)]);
-            assert!(ctx.map.iter().any(|s| s.path == "a.rs" && s.start_line == 40), "second a.rs span stays in the map");
+            assert!(
+                ctx.map
+                    .iter()
+                    .any(|s| s.path == "a.rs" && s.start_line == 40),
+                "second a.rs span stays in the map"
+            );
         }
     }
 
@@ -450,13 +494,31 @@ mod tests {
     fn sized_render_stays_under_the_hook_cap_and_reports_only_inlined_keys() {
         let spans: Vec<RankedSpan> = ["a.rs", "b.rs", "c.rs"]
             .iter()
-            .map(|p| RankedSpan { text: "z".repeat(4_000), ..span(p, 1, 200, "", Some(0.9), 1.0) })
+            .map(|p| RankedSpan {
+                text: "z".repeat(4_000),
+                ..span(p, 1, 200, "", Some(0.9), 1.0)
+            })
             .collect();
-        let related: Vec<Related> = (0..100).map(|i| related(&format!("r{i}.rs"), 1, 9, "calls `x` (#1)")).collect();
-        let ctx = size_context(&result(RankMode::Laya, spans, related), None, &SizingPolicy::default(), &[]);
+        let related: Vec<Related> = (0..100)
+            .map(|i| related(&format!("r{i}.rs"), 1, 9, "calls `x` (#1)"))
+            .collect();
+        let ctx = size_context(
+            &result(RankMode::Laya, spans, related),
+            None,
+            &SizingPolicy::default(),
+            &[],
+        );
         let (out, keys) = render_sized_with_keys(&ctx, 100_000);
-        assert!(out.len() <= crate::render::MAX_INJECT_CHARS, "{} chars", out.len());
-        assert_eq!(keys.len(), out.matches("```").count() / 2, "keys = inlined blocks only");
+        assert!(
+            out.len() <= crate::render::MAX_INJECT_CHARS,
+            "{} chars",
+            out.len()
+        );
+        assert_eq!(
+            keys.len(),
+            out.matches("```").count() / 2,
+            "keys = inlined blocks only"
+        );
         assert!(keys.len() < 3, "not every 4k-char block fits");
     }
 

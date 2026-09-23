@@ -113,8 +113,20 @@ impl<'a> Retriever<'a> {
         // merges same-file spans together (a merge loses `defines`/`refs`).
         let seeds: Vec<Chunk> = scored.iter().take(3).map(|s| s.chunk.clone()).collect();
         let spans = shape_spans(scored, self.cfg.top_n, self.cfg.max_total_lines);
-        let related = expand_related(self.store, repo_id, &seeds, &spans, self.cfg.max_related)
+        let mut related = expand_related(self.store, repo_id, &seeds, &spans, self.cfg.max_related)
             .unwrap_or_default();
+        if self.cfg.max_related > 0 {
+            // Task-named identifiers first, then what the top chunks define. Fails open.
+            let mut idents: Vec<String> = signals.identifiers.clone();
+            for d in seeds.iter().flat_map(|s| s.defines.iter()) {
+                if !idents.contains(d) {
+                    idents.push(d.clone());
+                }
+            }
+            related.extend(
+                crate::related::usage_list(self.store, repo_id, &idents).unwrap_or_default(),
+            );
+        }
 
         Ok(QueryResult {
             spans,
@@ -536,6 +548,44 @@ mod tests {
             "related: {:?}",
             out.related
         );
+    }
+
+    #[test]
+    fn query_lists_definition_and_use_lines_of_task_identifiers() {
+        let def = chunk_with_refs(
+            "src/shard/recovery.rs",
+            10,
+            14,
+            &["recover_shard_v3"],
+            &[],
+            "/// Replays the WAL.\npub fn recover_shard_v3(dir: &Path) -> Lsn {\n    todo!()\n}\n",
+        );
+        let caller = chunk_with_refs(
+            "src/shard/mod.rs",
+            200,
+            204,
+            &["open_shard"],
+            &["recover_shard_v3"],
+            "fn open_shard(dir: &Path) {\n    let cfg = load();\n    let lsn = recover_shard_v3(&dir)?;\n    start(lsn);\n}\n",
+        );
+        let store = FakeStore::new(vec![def, caller]);
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        let out = r
+            .query("repo", "wire recover_shard_v3 to honor target_lsn")
+            .unwrap();
+        let line = |path: &str, n: u32| {
+            out.related
+                .iter()
+                .find(|x| x.path == path && x.start_line == n && x.end_line == n)
+        };
+        let d = line("src/shard/recovery.rs", 11)
+            .unwrap_or_else(|| panic!("definition line missing: {:?}", out.related));
+        assert_eq!(d.symbol, "pub fn recover_shard_v3(dir: &Path) -> Lsn {");
+        assert_eq!(d.relation, "definition of `recover_shard_v3`");
+        let u = line("src/shard/mod.rs", 202)
+            .unwrap_or_else(|| panic!("use line missing: {:?}", out.related));
+        assert_eq!(u.symbol, "let lsn = recover_shard_v3(&dir)?;");
+        assert_eq!(u.relation, "use of `recover_shard_v3`");
     }
 
     #[test]

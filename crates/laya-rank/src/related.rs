@@ -236,6 +236,98 @@ fn overlaps(r: &Related, other_start: u32, other_end: u32, other_path: &str) -> 
     r.path == other_path && r.start_line <= other_end && other_start <= r.end_line
 }
 
+/// Identifiers looked up for the usage list, total lines listed, lines per identifier, and the
+/// referencing-chunk lookup limit. About 10 grep-style lines (~300 tokens).
+const USAGE_IDENTS: usize = 6;
+const USAGE_LINES: usize = 10;
+const USAGE_PER_IDENT: usize = 4;
+const USAGE_REF_LIMIT: usize = 8;
+const USAGE_LINE_CHARS: usize = 120;
+
+/// Grep-style usage list: for each identifier (task-named ones first), the line that defines it
+/// and lines that use it, as single-line [`Related`] items (`symbol` = the trimmed source line,
+/// relation `definition of `x`` / `use of `x``). Agents otherwise spend about one turn per task
+/// grepping for the definition and call sites of identifiers they were already shown.
+/// Ambiguous identifiers (defined in more than [`AMBIGUOUS_ABOVE`] places) are skipped.
+pub(crate) fn usage_list(
+    store: &dyn Store,
+    repo_id: &str,
+    idents: &[String],
+) -> Result<Vec<Related>> {
+    let mut out: Vec<Related> = Vec::new();
+    for id in idents.iter().take(USAGE_IDENTS) {
+        if out.len() >= USAGE_LINES {
+            break;
+        }
+        let one = std::slice::from_ref(id);
+        let defs = store.chunks_defining(repo_id, one, AMBIGUOUS_ABOVE + 1)?;
+        if defs.len() > AMBIGUOUS_ABOVE {
+            continue;
+        }
+        let uses = store.chunks_referencing(repo_id, one, USAGE_REF_LIMIT)?;
+        if defs.is_empty() && uses.is_empty() {
+            continue;
+        }
+        let ids: Vec<String> = defs.iter().chain(uses.iter()).cloned().collect();
+        let by_id: HashMap<String, Chunk> = store
+            .get_chunks(repo_id, &ids)?
+            .into_iter()
+            .map(|c| (c.id(), c))
+            .collect();
+        let tagged = defs
+            .iter()
+            .map(|d| (d, "definition of"))
+            .chain(uses.iter().map(|u| (u, "use of")));
+        let mut listed = 0;
+        for (cid, kind) in tagged {
+            if listed >= USAGE_PER_IDENT || out.len() >= USAGE_LINES {
+                break;
+            }
+            let Some(chunk) = by_id.get(cid) else {
+                continue;
+            };
+            let Some((line, text)) = first_line_with(chunk, id) else {
+                continue;
+            };
+            if out
+                .iter()
+                .any(|r| r.path == chunk.path && r.start_line == line)
+            {
+                continue;
+            }
+            out.push(Related {
+                path: chunk.path.clone(),
+                start_line: line,
+                end_line: line,
+                symbol: text,
+                relation: format!("{kind} `{id}`"),
+            });
+            listed += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// First line of `chunk` containing `ident` as a whole word: (absolute line number, trimmed text
+/// cut to [`USAGE_LINE_CHARS`]).
+fn first_line_with(chunk: &Chunk, ident: &str) -> Option<(u32, String)> {
+    chunk.text.lines().enumerate().find_map(|(i, line)| {
+        contains_word(line, ident).then(|| {
+            let text: String = line.trim().chars().take(USAGE_LINE_CHARS).collect();
+            (chunk.start_line + i as u32, text)
+        })
+    })
+}
+
+fn contains_word(line: &str, word: &str) -> bool {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    line.match_indices(word).any(|(at, _)| {
+        let before = line[..at].chars().next_back();
+        let after = line[at + word.len()..].chars().next();
+        !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

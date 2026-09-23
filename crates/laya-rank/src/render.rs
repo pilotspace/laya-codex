@@ -33,6 +33,7 @@ pub fn render_context_opts(
     let mut out = String::new();
     out.push_str(HEADER);
     let mut used = estimate_tokens(&out);
+    let mut inlined: Vec<&RankedSpan> = Vec::new();
 
     for span in &result.spans {
         let block = render_span(span);
@@ -42,9 +43,10 @@ pub fn render_context_opts(
         }
         out.push_str(&block);
         used += block_tokens;
+        inlined.push(span);
     }
     if include_related {
-        append_related(&mut out, &result.related);
+        append_related(&mut out, &result.related, &inlined);
     }
     out
 }
@@ -77,6 +79,7 @@ pub fn render_compact_opts(
     let listed: Vec<&RankedSpan> = result.spans.iter().collect();
     append_ranked_locations(&mut out, &listed);
     let mut used = estimate_tokens(&out) + estimate_tokens(COMPACT_FOOTER);
+    let mut inlined: Vec<&RankedSpan> = Vec::new();
     for span in distinct_file_spans(&result.spans, full_spans) {
         let block = render_span(span);
         let t = estimate_tokens(&block);
@@ -85,10 +88,11 @@ pub fn render_compact_opts(
         }
         out.push_str(&block);
         used += t;
+        inlined.push(span);
     }
     out.push_str(COMPACT_FOOTER);
     if include_related {
-        append_related(&mut out, &result.related);
+        append_related(&mut out, &result.related, &inlined);
     }
     out
 }
@@ -149,22 +153,40 @@ pub(crate) fn append_ranked_locations(out: &mut String, spans: &[&RankedSpan]) {
 const RELATED_HEADER: &str = "\nRelated by references:\n";
 const USAGES_HEADER: &str = "\nDefinitions and uses:\n";
 
-/// A single-line `Related` produced by the usage list (`defines`/`uses` an identifier at one
-/// line, `symbol` holding that source line), as opposed to a span-level reference neighbour.
+/// A single-line `Related` produced by the usage list (the definition or a use of an identifier
+/// at one line, `symbol` holding that source line), as opposed to a span-level neighbour.
 pub(crate) fn is_usage(r: &Related) -> bool {
     r.start_line == r.end_line
-        && (r.relation.starts_with("defines `") || r.relation.starts_with("uses `"))
+        && (r.relation.starts_with("definition of `") || r.relation.starts_with("use of `"))
 }
 
 /// Append the "Definitions and uses:" (grep-style lines) and "Related by references:" sections,
 /// in that order, each omitted when empty. Lines are added while the output stays within
 /// [`MAX_INJECT_CHARS`]; usages go first because they answer the Greps an agent would run next.
-pub(crate) fn append_related(out: &mut String, related: &[Related]) {
-    let (usages, neighbours): (Vec<&Related>, Vec<&Related>) = related.iter().partition(|r| is_usage(r));
-    append_section(out, USAGES_HEADER, usages.iter().map(|r| {
-        format!("- {}:{}: {} — {}\n", r.path, r.start_line, r.symbol, r.relation)
-    }));
-    append_section(out, RELATED_HEADER, neighbours.iter().map(|r| render_related_line(r)));
+/// Usage lines inside `inlined` code blocks are skipped: the agent already sees them.
+pub(crate) fn append_related(out: &mut String, related: &[Related], inlined: &[&RankedSpan]) {
+    let (usages, neighbours): (Vec<&Related>, Vec<&Related>) =
+        related.iter().partition(|r| is_usage(r));
+    let visible = |r: &Related| {
+        inlined
+            .iter()
+            .any(|s| s.path == r.path && (s.start_line..=s.end_line).contains(&r.start_line))
+    };
+    append_section(
+        out,
+        USAGES_HEADER,
+        usages.iter().filter(|r| !visible(r)).map(|r| {
+            format!(
+                "- {}:{}: {} — {}\n",
+                r.path, r.start_line, r.symbol, r.relation
+            )
+        }),
+    );
+    append_section(
+        out,
+        RELATED_HEADER,
+        neighbours.iter().map(|r| render_related_line(r)),
+    );
 }
 
 fn append_section(out: &mut String, header: &str, lines: impl Iterator<Item = String>) {
@@ -340,16 +362,31 @@ mod compact_tests {
     }
 
     fn big(path: &str, a: u32) -> RankedSpan {
-        RankedSpan { text: "y".repeat(3_000), ..sp(path, a, "fn big") }
+        RankedSpan {
+            text: "y".repeat(3_000),
+            ..sp(path, a, "fn big")
+        }
     }
 
     #[test]
     fn compact_output_never_exceeds_the_hook_char_cap() {
         let related: Vec<Related> = (0..80)
-            .map(|i| rel(&format!("src/r{i}.rs"), 10, "fn caller_with_a_long_name", "calls `bar` (#1)"))
+            .map(|i| {
+                rel(
+                    &format!("src/r{i}.rs"),
+                    10,
+                    "fn caller_with_a_long_name",
+                    "calls `bar` (#1)",
+                )
+            })
             .collect();
         let r = QueryResult {
-            spans: vec![big("a.rs", 1), big("b.rs", 1), big("c.rs", 1), sp("d.rs", 1, "fn d")],
+            spans: vec![
+                big("a.rs", 1),
+                big("b.rs", 1),
+                big("c.rs", 1),
+                sp("d.rs", 1, "fn d"),
+            ],
             mode: RankMode::Laya,
             elapsed_ms: 1,
             candidates: 4,
@@ -365,7 +402,12 @@ mod compact_tests {
     #[test]
     fn compact_inlines_the_top_distinct_files() {
         let r = QueryResult {
-            spans: vec![sp("a.rs", 1, "fn a"), sp("a.rs", 40, "fn a2"), sp("b.rs", 5, "fn b"), sp("c.rs", 1, "fn c")],
+            spans: vec![
+                sp("a.rs", 1, "fn a"),
+                sp("a.rs", 40, "fn a2"),
+                sp("b.rs", 5, "fn b"),
+                sp("c.rs", 1, "fn c"),
+            ],
             mode: RankMode::Laya,
             elapsed_ms: 1,
             candidates: 4,
@@ -375,7 +417,10 @@ mod compact_tests {
         for inlined in ["### a.rs:1-21", "### b.rs:5-25", "### c.rs:1-21"] {
             assert!(out.contains(inlined), "{inlined} missing");
         }
-        assert!(!out.contains("### a.rs:40-60"), "second span of an inlined file is map-only");
+        assert!(
+            !out.contains("### a.rs:40-60"),
+            "second span of an inlined file is map-only"
+        );
     }
 
     #[test]
@@ -385,7 +430,7 @@ mod compact_tests {
             start_line: 212,
             end_line: 212,
             symbol: "let lsn = recover_shard_v3(&dir, target_lsn)?;".into(),
-            relation: "uses `recover_shard_v3`".into(),
+            relation: "use of `recover_shard_v3`".into(),
         };
         let r = QueryResult {
             spans: vec![sp("a.rs", 1, "fn a")],
@@ -395,8 +440,11 @@ mod compact_tests {
             related: vec![rel("src/x.rs", 10, "fn foo", "calls `bar` (#1)"), usage],
         };
         let out = render_compact(&r, 1, 10_000);
-        assert!(out.contains("Definitions and uses:\n- src/shard/mod.rs:212: let lsn = recover_shard_v3(&dir, target_lsn)?; — uses `recover_shard_v3`"), "{out}");
-        assert!(out.find("Definitions and uses:").unwrap() < out.find("Related by references:").unwrap());
+        assert!(out.contains("Definitions and uses:\n- src/shard/mod.rs:212: let lsn = recover_shard_v3(&dir, target_lsn)?; — use of `recover_shard_v3`"), "{out}");
+        assert!(
+            out.find("Definitions and uses:").unwrap()
+                < out.find("Related by references:").unwrap()
+        );
         assert!(!out.contains("212-212"));
     }
 
