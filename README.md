@@ -62,18 +62,6 @@ helping from the next prompt. To check the setup, run `laya-codex doctor --repo 
 
 </details>
 
-## Upgrading from 0.1.x
-
-v0.2.0 renames the CLI from `laya` to `laya-codex` and every environment variable from `LAYA_*`
-to `LAYA_CODEX_*`. There are no aliases: the old names stop working. Your index and model in
-`~/.cache/laya-codex` are kept. The exact steps are in the
-[CHANGELOG](CHANGELOG.md#breaking-renamed-laya--laya-codex); in short:
-
-1. Reinstall (the installer stops the old daemon): `curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh`, then `rm ~/.local/bin/laya`. Homebrew: `brew upgrade laya-codex`.
-2. Plugin users: run `/plugin marketplace update laya-codex`, then `/plugin update laya-codex@laya-codex` in Claude Code (from a shell: `claude plugin marketplace update laya-codex && claude plugin update laya-codex@laya-codex`).
-3. In each repository where you ran `laya init`: run `laya-codex init --repo .`, then delete the old `laya hook` entries from `.claude/settings.local.json` and the `"laya"` server from `.mcp.json`.
-4. Rename any `LAYA_*` variables you set to `LAYA_CODEX_*` (for example `LAYA_HOME` becomes `LAYA_CODEX_HOME`).
-
 ## What changes for Claude: one example
 
 **You ask Claude:**
@@ -186,6 +174,47 @@ your prompt ─► laya-codex hook ─► local daemon ─► BM25 keyword searc
 What gets injected, when and why, with real hook input and output:
 [docs/how-it-works.md](docs/how-it-works.md). Design and decisions:
 [docs/architecture.md](docs/architecture.md).
+
+### Why a Laya model on top of keyword search?
+
+Keyword search is fast and finds the right neighbourhood, but it ranks by shared words. A
+function that mentions `password` five times outranks the one that actually decides whether a
+server is trusted. Picking the right piece of code needs a judgment about the task.
+
+- **It judges relevance directly.** [Laya](https://huggingface.co/convaiinnovations/laya) is a
+  decision model: it reads your task and one piece of code together and answers *"is this code
+  relevant to this task?"* with a probability. That is a cross-encoder, which reads both texts
+  at once. It is more precise than embedding search, where the task and the code are turned
+  into vectors separately and only their similarity is compared.
+- **It stays cheap.** A cross-encoder is too slow to run over a whole repository, so laya-codex
+  uses it only where it counts. Keyword search narrows the repository to 24 candidates, and the
+  model scores just those, in about 0.8 s on the Metal GPU. Indexing needs no model and no
+  vector database, so a repository indexes in seconds (Moon's source: 485 files in about 1.2 s).
+- **It has to be tuned for code.** Laya was trained for triage, moderation and routing, not code,
+  and out of the box it ranks code no better than keywords. laya-code is Laya fine-tuned on the
+  git history of 8 open-source repositories, where each commit's changed files are the right
+  answers for its message. The two repositories used for evaluation were excluded from training.
+- **The two rankings are blended, not replaced.** The final score is
+  `0.5 × keyword rank + 0.5 × model probability`. The keyword rank keeps documentation and prose
+  from crowding out code, and the model reorders the code candidates.
+
+How well each stage ranks the files a real change touched, over the 40 most recent Moon commits
+(24 keyword candidates per task, [model card](https://huggingface.co/tindang/laya-code)):
+
+| ranking | MRR (higher is better) | share of the top 10 that is right (P@10) | calibration error (lower is better) |
+|---|---|---|---|
+| keyword search (BM25) alone | 0.480 | 0.340 | – |
+| base Laya, not tuned for code | 0.479 | 0.348 | 0.362 |
+| **laya-code** | **0.702** | **0.405** | **0.049** |
+
+On a separate development set, the full blended pipeline reached an MRR of 0.724, against
+0.602 for the model alone and 0.678 with the model weighted more heavily.
+
+**What isn't proven yet:** in the end-to-end Claude Code benchmark, 20 tasks aren't enough to
+separate the model's contribution from keyword ranking alone, and the two have traded places
+between runs. Benchmark v2 (three repositories, including a keyword-only arm) is measuring
+exactly that. Without the model, for example with `--no-model` or on Linux, laya-codex still
+works on keyword ranking, as in the examples above.
 
 ## FAQ
 
