@@ -14,7 +14,7 @@ laya-rank.workspace = true
 laya-parse.workspace = true
 laya-store.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
 anyhow.workspace = true
 blake3.workspace = true
 clap = { version = "4", features = ["derive"] }

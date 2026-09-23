@@ -17,6 +17,8 @@ pub struct Config {
     pub home: PathBuf,
     pub model_dir: Option<PathBuf>,
     pub moon_bin: PathBuf,
+    /// Every location considered for the Moon binary, in order (for diagnostics).
+    pub moon_tried: Vec<PathBuf>,
     pub moon_port: u16,
     pub use_model: bool,
     pub budget_ms: u64,
@@ -28,15 +30,14 @@ impl Config {
         let home = std::env::var_os("LAYA_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home_dir().join(".cache/laya-codex"));
-        let model_dir = std::env::var_os("LAYA_MODEL_DIR").map(PathBuf::from).or_else(|| {
-            ["laya-code", "laya-base"]
-                .iter()
-                .map(|m| home.join("models").join(m))
-                .find(|p| p.join("model.safetensors").exists())
-        });
-        let moon_bin = std::env::var_os("LAYA_MOON_BIN").map(PathBuf::from).unwrap_or_else(|| {
-            which("moon").unwrap_or_else(|| home_dir().join("workspaces/tind-repo/moon/target/release/moon"))
-        });
+        let model_dir = std::env::var_os("LAYA_MODEL_DIR")
+            .map(PathBuf::from)
+            .or_else(|| model_candidates(&home).into_iter().find(|p| p.join("model.safetensors").exists()));
+        let (moon_bin, moon_tried) = resolve_moon(
+            std::env::var_os("LAYA_MOON_BIN").map(PathBuf::from),
+            std::env::var_os("PATH").as_deref(),
+            &home_dir(),
+        );
         Config {
             moon_port: env_parse("LAYA_MOON_PORT").unwrap_or(16379),
             use_model: std::env::var("LAYA_NO_MODEL").map(|v| v != "1").unwrap_or(true),
@@ -45,6 +46,7 @@ impl Config {
             home,
             model_dir,
             moon_bin,
+            moon_tried,
         }
     }
 
@@ -69,12 +71,67 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
-fn which(bin: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")?
-        .to_str()?
-        .split(':')
-        .map(|d| Path::new(d).join(bin))
-        .find(|p| p.is_file())
+/// Locate the Moon binary: `LAYA_MOON_BIN` alone when set, else `moon` on each `PATH` entry, then
+/// a sibling checkout (`~/workspaces/tind-repo/moon/target/release/moon`). Returns the chosen path
+/// (the last candidate when none exists, so the spawn error names it) and every path tried.
+pub fn resolve_moon(env_bin: Option<PathBuf>, path_var: Option<&std::ffi::OsStr>, home: &Path) -> (PathBuf, Vec<PathBuf>) {
+    if let Some(bin) = env_bin {
+        return (bin.clone(), vec![bin]);
+    }
+    let mut tried: Vec<PathBuf> = path_var.map(|v| std::env::split_paths(v).map(|d| d.join("moon")).collect()).unwrap_or_default();
+    tried.push(home.join("workspaces/tind-repo/moon/target/release/moon"));
+    match tried.iter().position(|p| is_executable(p)) {
+        Some(i) => {
+            tried.truncate(i + 1);
+            (tried[i].clone(), tried)
+        }
+        None => (tried.last().cloned().unwrap_or_default(), tried),
+    }
+}
+
+/// Is `p` a regular file with an execute bit?
+pub fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+/// Model directories searched, in order, when `LAYA_MODEL_DIR` is unset.
+pub fn model_candidates(home: &Path) -> Vec<PathBuf> {
+    ["laya-code", "laya-base"].iter().map(|m| home.join("models").join(m)).collect()
+}
+
+/// How to get a Moon binary.
+pub const MOON_FIX: &str = "install moon (https://github.com/pilotspace/moon, `cargo build --release`) and put it on PATH, \
+     or set LAYA_MOON_BIN=/path/to/moon";
+
+/// Actionable error for a Moon binary that cannot be found, naming every path tried.
+pub fn moon_missing_message(tried: &[PathBuf]) -> String {
+    let list: Vec<String> = tried.iter().map(|p| format!("  - {}", p.display())).collect();
+    format!(
+        "moon binary not found (Moon is the BM25 store laya runs as a sidecar). Tried:\n{}\nFix: {MOON_FIX}",
+        list.join("\n")
+    )
+}
+
+/// Cheap pre-flight (nothing is spawned): Moon answers on its port, or a runnable binary exists.
+pub fn moon_available(cfg: &Config) -> anyhow::Result<()> {
+    if is_executable(&cfg.moon_bin) || laya_store::MoonSupervisor::new(&cfg.moon_bin, cfg.moon_port, cfg.moon_dir()).is_running() {
+        return Ok(());
+    }
+    anyhow::bail!("{}", moon_missing_message(&cfg.moon_tried))
+}
+
+/// Make sure Moon answers on its port, spawning it if needed; errors say what was tried and how
+/// to fix it. A Moon already answering on the port is used even if no binary is found.
+pub fn ensure_moon(cfg: &Config) -> anyhow::Result<()> {
+    let sup = laya_store::MoonSupervisor::new(&cfg.moon_bin, cfg.moon_port, cfg.moon_dir());
+    if sup.is_running() {
+        return Ok(());
+    }
+    moon_available(cfg)?;
+    sup.ensure_running().map(|_| ()).map_err(|e| {
+        anyhow::anyhow!("moon: {e} (binary {}; log {}). Set LAYA_MOON_BIN to a working moon build", cfg.moon_bin.display(), sup.logfile().display())
+    })
 }
 
 /// Repository root for `start`: nearest ancestor containing `.git`, else `start` itself.
@@ -105,6 +162,59 @@ mod tests {
         let root = repo_root(here);
         assert!(root.join("Cargo.toml").exists());
         assert!(here.canonicalize().unwrap().starts_with(&root));
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("laya-cfg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn exe(p: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn resolve_moon_prefers_env_then_path_then_sibling_checkout() {
+        let d = scratch("moon");
+        let home = d.join("home");
+        let sibling = home.join("workspaces/tind-repo/moon/target/release/moon");
+        let (a, b) = (d.join("a"), d.join("b"));
+        let path_var = std::env::join_paths([&a, &b]).unwrap();
+
+        // Env wins and is the only candidate, even when missing.
+        let env = d.join("custom/moon");
+        let (bin, tried) = resolve_moon(Some(env.clone()), Some(&path_var), &home);
+        assert_eq!((bin, tried), (env.clone(), vec![env]));
+
+        // Nothing exists: every candidate is reported, the last one is returned.
+        let (bin, tried) = resolve_moon(None, Some(&path_var), &home);
+        assert_eq!(tried, vec![a.join("moon"), b.join("moon"), sibling.clone()]);
+        assert_eq!(bin, sibling);
+
+        // A non-executable file on PATH is skipped; an executable one is chosen.
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::write(a.join("moon"), "").unwrap();
+        exe(&b.join("moon"));
+        let (bin, tried) = resolve_moon(None, Some(&path_var), &home);
+        assert_eq!(bin, b.join("moon"));
+        assert_eq!(tried, vec![a.join("moon"), b.join("moon")]);
+
+        // No PATH at all: the sibling checkout is still tried.
+        exe(&sibling);
+        assert_eq!(resolve_moon(None, None, &home).0, sibling);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn missing_moon_message_names_paths_and_fixes() {
+        let m = moon_missing_message(&[PathBuf::from("/x/moon"), PathBuf::from("/y/moon")]);
+        assert!(m.contains("/x/moon") && m.contains("/y/moon"), "{m}");
+        assert!(m.contains("LAYA_MOON_BIN") && m.contains("install"), "{m}");
     }
 
     #[test]

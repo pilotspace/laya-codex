@@ -3,7 +3,9 @@
 mod client;
 mod config;
 mod daemon;
+mod doctor;
 mod hook;
+mod init;
 mod indexer;
 mod mcp;
 mod protocol;
@@ -56,6 +58,36 @@ enum Cmd {
         #[arg(long)]
         repo: Option<PathBuf>,
     },
+    /// Enable laya for a repo: merge the hooks into .claude/settings.local.json, add the MCP
+    /// server to .mcp.json, then start indexing in the background.
+    Init {
+        /// Repository (any path inside it; the git root is used). Default: current directory.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Hooks size the injected context adaptively (sets LAYA_ADAPTIVE=1 on the hook command).
+        #[arg(long)]
+        adaptive: bool,
+        /// Show what would change; write nothing and do not index.
+        #[arg(long)]
+        dry_run: bool,
+        /// Replace unparseable settings/.mcp.json files (the original is kept as *.bak).
+        #[arg(long)]
+        force: bool,
+        /// Do not start indexing.
+        #[arg(long)]
+        no_index: bool,
+    },
+    /// Diagnose the install: Moon, model, LAYA_HOME, daemon, index and hooks (exit 1 on failure).
+    Doctor {
+        /// Repository to check. Default: current directory.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+        /// Start the daemon if it is not running (otherwise it is only pinged).
+        #[arg(long)]
+        start: bool,
+    },
 }
 
 #[global_allocator]
@@ -81,6 +113,8 @@ fn main() {
             let c = Client::new(&cfg.socket_path(), Duration::from_millis(cfg.budget_ms + 3000), true);
             mcp::serve(&c, root, INJECT_TOKENS, cfg.budget_ms)
         }
+        Cmd::Init { repo, adaptive, dry_run, force, no_index } => cmd_init(&cfg, repo, adaptive, dry_run, force, no_index),
+        Cmd::Doctor { repo, json, start } => cmd_doctor(&cfg, repo, json, start),
     };
     if let Err(e) = res {
         eprintln!("laya: {e:#}");
@@ -90,8 +124,7 @@ fn main() {
 
 fn cmd_index(cfg: &Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     let root = repo_root(&path.unwrap_or_else(|| PathBuf::from(".")));
-    let sup = laya_store::MoonSupervisor::new(&cfg.moon_bin, cfg.moon_port, cfg.moon_dir());
-    sup.ensure_running().map_err(|e| anyhow::anyhow!("moon: {e}"))?;
+    config::ensure_moon(cfg)?;
     let mut sc = laya_store::StoreConfig::local(cfg.moon_port);
     sc.bulk_timeout = Duration::from_secs(30);
     let store = laya_store::MoonStore::new(sc)?;
@@ -152,6 +185,78 @@ fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
     println!("{}", json!({"socket": cfg.socket_path(), "model_dir": cfg.model_dir, "moon_port": cfg.moon_port,
         "daemon": match r { Ok(Response::Pong { model_ready, version }) => json!({"up": true, "model_ready": model_ready, "version": version}),
                             _ => json!({"up": false}) }}));
+    Ok(())
+}
+
+fn cmd_init(cfg: &Config, repo: Option<PathBuf>, adaptive: bool, dry_run: bool, force: bool, no_index: bool) -> anyhow::Result<()> {
+    let start = repo.unwrap_or_else(|| PathBuf::from("."));
+    anyhow::ensure!(start.is_dir(), "{} is not a directory", start.display());
+    let root = repo_root(&start);
+    let exe = std::env::current_exe().and_then(|p| p.canonicalize()).context("locate the laya executable")?;
+    let plans = init::run(&root, &exe, adaptive, dry_run, force)?;
+    println!("laya init{}: {}", if dry_run { " (dry run, nothing written)" } else { "" }, root.display());
+    for p in &plans {
+        let what = match (&p.action, dry_run) {
+            (init::Action::Unchanged, _) => "unchanged".to_string(),
+            (init::Action::Create, true) => "would create".to_string(),
+            (init::Action::Create, false) => "created".to_string(),
+            (init::Action::Update, true) => "would update".to_string(),
+            (init::Action::Update, false) => "updated".to_string(),
+            (init::Action::Replace { backup }, d) => format!("{} (backup {})", if d { "would replace" } else { "replaced" }, backup.display()),
+        };
+        println!("  {what:<12} {}", p.path.display());
+        if dry_run && p.action != init::Action::Unchanged {
+            for line in p.content.lines() {
+                println!("      {line}");
+            }
+        }
+    }
+    println!("  hook command: {}", init::hook_command(&exe, adaptive));
+    if dry_run {
+        return Ok(());
+    }
+    if no_index {
+        println!("indexing skipped; run `laya index {}` before the first session", root.display());
+        return Ok(());
+    }
+    // Fail open: the hooks work (as no-ops) without an index, so a setup problem is a hint here.
+    match kick_index(cfg, &root) {
+        Ok(()) => println!("indexing {} in the background; `laya doctor --repo {}` shows progress", root.display(), root.display()),
+        Err(e) => {
+            println!("indexing not started: {e:#}");
+            println!("the hooks fail open (Claude Code runs unchanged) until then; after fixing it run `laya index {}`", root.display());
+        }
+    }
+    Ok(())
+}
+
+/// Ask the daemon (starting it if needed) to index `root` in the background.
+fn kick_index(cfg: &Config, root: &std::path::Path) -> anyhow::Result<()> {
+    config::moon_available(cfg)?;
+    // Autostart on the first attempt only: polling with an autostarting client would spawn a
+    // daemon per failed connect while the first one is still starting.
+    let _ = Client::new(&cfg.socket_path(), Duration::from_secs(2), true).call(Request::Ping);
+    let c = Client::new(&cfg.socket_path(), Duration::from_secs(2), false);
+    anyhow::ensure!(wait_ready(&c, false, Duration::from_secs(15)), "daemon did not come up within 15 s (log: {})", cfg.daemon_log().display());
+    c.call(Request::IndexRepo { repo: root.to_string_lossy().into_owned() })?;
+    Ok(())
+}
+
+fn cmd_doctor(cfg: &Config, repo: Option<PathBuf>, as_json: bool, start: bool) -> anyhow::Result<()> {
+    let root = repo_root(&repo.unwrap_or_else(|| PathBuf::from(".")));
+    let checks = doctor::run(cfg, &root, start);
+    let code = doctor::exit_code(&checks);
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&json!({"repo": root, "ok": code == 0, "checks": checks}))?);
+    } else {
+        println!("laya doctor: {}", root.display());
+        print!("{}", doctor::render(&checks));
+    }
+    use std::io::Write;
+    std::io::stdout().flush()?;
+    if code != 0 {
+        std::process::exit(code);
+    }
     Ok(())
 }
 

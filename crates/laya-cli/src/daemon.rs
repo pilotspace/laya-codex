@@ -346,8 +346,7 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
         eprintln!("[laya] daemon already running at {}", cfg.socket_path().display());
         return Ok(());
     };
-    let sup = laya_store::MoonSupervisor::new(&cfg.moon_bin, cfg.moon_port, cfg.moon_dir());
-    sup.ensure_running().map_err(|e| anyhow::anyhow!("moon: {e}"))?;
+    crate::config::ensure_moon(cfg)?;
     let store: Arc<dyn Store> = Arc::new(laya_store::MoonStore::new(laya_store::StoreConfig::local(cfg.moon_port))?);
     // Defaults are the configuration that won the paired benchmark (bench/results/claude-v2):
     // weighted fusion w=0.5, no probability gate, 128 state tokens. Env vars override them

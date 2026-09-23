@@ -27,9 +27,10 @@ impl Client {
         match UnixStream::connect(&self.socket) {
             Ok(s) => Ok(s),
             Err(e) => {
-                if self.autostart {
-                    spawn_daemon()?;
+                if !self.autostart {
+                    return Err(e).context("daemon not reachable");
                 }
+                spawn_daemon()?;
                 Err(e).context("daemon not reachable (starting it in the background)")
             }
         }

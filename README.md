@@ -43,12 +43,29 @@ cargo test --workspace --release
 ## Use
 
 ```sh
+laya init --repo /path/to/repo           # enable laya in Claude Code for this repo + start indexing
+laya doctor --repo /path/to/repo         # check Moon, model, LAYA_HOME, daemon, index, hooks
+```
+
+`laya init` merges the four hooks into `<repo>/.claude/settings.local.json` and the `laya` server
+into `<repo>/.mcp.json`, using the absolute path of the `laya` binary you ran. It keeps every other
+key, hook and server and only replaces earlier laya entries, so re-running it is safe (and a
+no-op). Flags: `--dry-run` prints the result without writing, `--adaptive` turns on adaptive
+context sizing (`LAYA_ADAPTIVE=1` on the hook command), `--no-index` skips indexing, `--force`
+replaces a file that is not valid JSON (the original is kept as `*.bak`; without `--force` such
+files are left untouched and init exits 1). Any path inside the repo works; the git root is used.
+Re-run `laya init` if you move the binary. Claude Code asks once to approve the project MCP server.
+
+`laya doctor` prints PASS/WARN/FAIL with a fix for each problem and exits 1 if anything fails
+(`--json` for scripts, `--start` to start the daemon if it is down). Every check has a time limit.
+
+```sh
 laya index /path/to/repo                 # incremental; re-run any time
 laya query "where is WAL replay implemented" --repo /path/to/repo
 laya status | laya stop
 ```
 
-Enable in Claude Code for a repo — `.claude/settings.local.json`:
+Manual setup (what `laya init` writes) — `.claude/settings.local.json`:
 
 ```json
 {
@@ -75,7 +92,8 @@ Every hook fails open: if the daemon, Moon or the model is unavailable, Claude C
 | `LAYA_RENDER` | `compact` | `full` injects every span's code |
 | `LAYA_WEIGHT` / `LAYA_STATE_TOKENS` / `LAYA_K` / `LAYA_P_THRESHOLD` | `0.5` / `128` / `24` / `0` | ranking knobs (daemon start) |
 | `LAYA_READ_P` | `0.4` | min Laya P to narrow a full-file Read |
-| `LAYA_MOON_PORT` / `LAYA_MOON_BIN` | `16379` / `moon` | Moon sidecar |
+| `LAYA_ADAPTIVE` | unset | `1` = size injected context by task scope, skip spans already sent (`laya init --adaptive`) |
+| `LAYA_MOON_PORT` / `LAYA_MOON_BIN` | `16379` / `moon` on `PATH` | Moon sidecar; a missing binary is reported with every path tried |
 
 ## Reproduce the benchmark
 
