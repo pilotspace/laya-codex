@@ -90,6 +90,7 @@ pub(crate) fn chunk_text(cfg: &ChunkConfig, path: &str, lines: &Lines<'_>) -> Ve
                 symbol: current_heading.clone(),
                 kind: "window".to_string(),
                 defines: Vec::new(),
+                refs: Vec::new(),
                 text: lines.text(s, e).to_string(),
             }
         })

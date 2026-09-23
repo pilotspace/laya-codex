@@ -13,8 +13,9 @@ use laya_core::{Chunk, Lang};
 use tree_sitter::{Node, Tree};
 
 use crate::ChunkConfig;
-use crate::defs::{Def, KindTable, node_rows};
+use crate::defs::{Def, KindTable, Symbols, node_rows};
 use crate::lines::Lines;
+use crate::refs::{MAX_REFS, RefOcc, admissible};
 
 /// Beyond this nesting depth, big nodes are cut by rows instead of descended (stack safety).
 const MAX_DEPTH: usize = 256;
@@ -491,8 +492,9 @@ pub(crate) fn chunk_tree(
     lines: &Lines<'_>,
     tree: &Tree,
     table: &KindTable,
-    defs: &[Def],
+    symbols: &Symbols<'_>,
 ) -> Vec<Chunk> {
+    let defs = symbols.defs.as_slice();
     if lines.len() == 0 {
         return Vec::new();
     }
@@ -507,15 +509,40 @@ pub(crate) fn chunk_tree(
     let segs = finish(seg.out, lines, cfg);
     let paths = def_paths(defs);
     segs.into_iter()
-        .map(|s| Chunk {
-            path: path.to_string(),
-            start_line: (s.start + 1) as u32,
-            end_line: (s.end + 1) as u32,
-            lang,
-            symbol: chunk_symbol(defs, &paths, lines, s.start, s.end),
-            kind: s.kind.to_string(),
-            defines: chunk_defines(defs, s.start, s.end),
-            text: lines.text(s.start, s.end).to_string(),
+        .map(|s| {
+            let defines = chunk_defines(defs, s.start, s.end);
+            let refs = chunk_refs(&symbols.refs, &defines, s.start, s.end);
+            Chunk {
+                path: path.to_string(),
+                start_line: (s.start + 1) as u32,
+                end_line: (s.end + 1) as u32,
+                lang,
+                symbol: chunk_symbol(defs, &paths, lines, s.start, s.end),
+                kind: s.kind.to_string(),
+                defines,
+                refs,
+                text: lines.text(s.start, s.end).to_string(),
+            }
         })
         .collect()
+}
+
+/// Names referenced on rows `s..=e`: document order, deduplicated, admissible, not defined
+/// by the chunk itself, capped at [`MAX_REFS`]. `refs` is sorted by position.
+fn chunk_refs(refs: &[RefOcc<'_>], defines: &[String], s: usize, e: usize) -> Vec<String> {
+    let lo = refs.partition_point(|r| r.row < s);
+    let mut out: Vec<String> = Vec::new();
+    for r in refs[lo..].iter().take_while(|r| r.row <= e) {
+        if !admissible(r.name)
+            || defines.iter().any(|d| d == r.name)
+            || out.iter().any(|o| o == r.name)
+        {
+            continue;
+        }
+        out.push(r.name.to_string());
+        if out.len() == MAX_REFS {
+            break;
+        }
+    }
+    out
 }

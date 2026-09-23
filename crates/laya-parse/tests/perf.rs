@@ -88,6 +88,30 @@ fn moon_parse_and_chunk_timing() {
         100.0 * with_symbol as f64 / sizes.len() as f64
     );
     println!("by lang: {by_lang:?}");
+
+    // Refs: density, cap pressure and how many resolve to a definition somewhere in the repo.
+    let defined: std::collections::HashSet<&str> = chunks
+        .iter()
+        .flat_map(|c| c.defines.iter().map(String::as_str))
+        .collect();
+    let total_refs: usize = chunks.iter().map(|c| c.refs.len()).sum();
+    let with_refs = chunks.iter().filter(|c| !c.refs.is_empty()).count();
+    let capped = chunks
+        .iter()
+        .filter(|c| c.refs.len() == laya_parse::MAX_REFS)
+        .count();
+    let resolvable = chunks
+        .iter()
+        .flat_map(|c| &c.refs)
+        .filter(|r| defined.contains(r.as_str()))
+        .count();
+    println!(
+        "refs: {:.1}/chunk | chunks with refs {:.1}% | at cap {:.1}% | resolvable to a repo define {:.1}%",
+        total_refs as f64 / chunks.len().max(1) as f64,
+        100.0 * with_refs as f64 / chunks.len().max(1) as f64,
+        100.0 * capped as f64 / chunks.len().max(1) as f64,
+        100.0 * resolvable as f64 / total_refs.max(1) as f64
+    );
     assert!(
         single.as_secs_f64() < 3.0,
         "single-threaded chunking took {single:?}"

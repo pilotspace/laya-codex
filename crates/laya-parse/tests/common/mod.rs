@@ -70,6 +70,27 @@ pub fn assert_invariants(cfg: &ChunkConfig, path: &str, src: &str, chunks: &[Chu
             i + 1
         );
     }
+    // Refs: disjoint from defines, capped, unique, >= 3 chars, never stoplisted.
+    for c in chunks {
+        assert!(
+            c.refs.len() <= laya_parse::MAX_REFS,
+            "{path}: too many refs"
+        );
+        for (i, r) in c.refs.iter().enumerate() {
+            assert!(
+                !c.defines.contains(r),
+                "{path}: ref {r} is also defined in {}-{}",
+                c.start_line,
+                c.end_line
+            );
+            assert!(r.chars().count() >= 3, "{path}: short ref {r}");
+            assert!(
+                !laya_parse::REF_STOPLIST.contains(&r.as_str()),
+                "{path}: stoplisted ref {r}"
+            );
+            assert!(!c.refs[..i].contains(r), "{path}: duplicate ref {r}");
+        }
+    }
     // Undersized chunks exist only when merging with either neighbour would exceed max_lines.
     for (i, c) in chunks.iter().enumerate() {
         if (c.line_count() as usize) >= cfg.min_lines {

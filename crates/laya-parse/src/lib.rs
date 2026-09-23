@@ -22,6 +22,7 @@ mod cast;
 mod defs;
 mod lang;
 mod lines;
+mod refs;
 mod text;
 mod walk;
 
@@ -35,6 +36,7 @@ use rayon::prelude::*;
 use tree_sitter::{ParseOptions, ParseState, Parser, Tree};
 
 pub use lang::{MAX_FILE_BYTES, detect_lang, lang_for_path};
+pub use refs::{MAX_REFS, REF_STOPLIST};
 pub use walk::{file_hash, walk_repo};
 
 use lang::{LANG_COUNT, grammar, lang_index};
@@ -159,8 +161,8 @@ pub fn chunk_source_with(cfg: &ChunkConfig, path: &str, source: &str) -> Vec<Chu
         && let Some(tree) = parse(lang, source)
     {
         let table = defs::kind_table(lang, &language);
-        let defs = defs::collect_defs(table, tree.root_node(), source);
-        return cast::chunk_tree(&cfg, lang, &path, &lines, &tree, table, &defs);
+        let symbols = defs::collect_symbols(table, tree.root_node(), source);
+        return cast::chunk_tree(&cfg, lang, &path, &lines, &tree, table, &symbols);
     }
     text::chunk_text(&cfg, &path, &lines)
 }

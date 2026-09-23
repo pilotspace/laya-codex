@@ -9,6 +9,7 @@ use laya_core::Lang;
 use tree_sitter::{Language, Node};
 
 use crate::lang::{LANG_COUNT, lang_index};
+use crate::refs::{self, Ctx, RefOcc, RefRule};
 
 /// How to find the defined name of a node.
 #[derive(Debug, Clone, Copy)]
@@ -177,6 +178,7 @@ fn rule_for(lang: Lang, kind: &str) -> Option<DefRule> {
 /// Dense per-language lookup tables indexed by `kind_id`.
 pub(crate) struct KindTable {
     rules: Vec<Option<DefRule>>,
+    refs: Vec<Option<RefRule>>,
     trivia: Vec<bool>,
 }
 
@@ -184,6 +186,7 @@ impl KindTable {
     fn build(lang: Lang, language: &Language) -> Self {
         let n = language.node_kind_count();
         let mut rules = vec![None; n];
+        let mut refs = vec![None; n];
         let mut trivia = vec![false; n];
         for id in 0..n {
             let Ok(id16) = u16::try_from(id) else { break };
@@ -194,11 +197,20 @@ impl KindTable {
                 continue;
             };
             rules[id] = rule_for(lang, kind);
+            refs[id] = refs::rule_for(lang, kind);
             trivia[id] = kind.contains("comment")
                 || kind == "attribute_item"
                 || kind == "inner_attribute_item";
         }
-        Self { rules, trivia }
+        Self {
+            rules,
+            refs,
+            trivia,
+        }
+    }
+
+    fn ref_rule(&self, node: Node<'_>) -> Option<RefRule> {
+        self.refs.get(node.kind_id() as usize).copied().flatten()
     }
 
     /// Comments and attributes: attached to the following item when chunking.
@@ -244,13 +256,31 @@ pub(crate) fn node_rows(node: Node<'_>) -> (usize, usize) {
 }
 
 /// Pre-order list of definitions with parent links (iterative walk: no recursion limit).
-pub(crate) fn collect_defs(table: &KindTable, root: Node<'_>, src: &str) -> Vec<Def> {
+/// Definitions and reference occurrences of a file, from one iterative tree walk.
+pub(crate) struct Symbols<'s> {
+    /// Pre-order (sorted by start row), with parent links.
+    pub defs: Vec<Def>,
+    /// Sorted by byte offset (document order).
+    pub refs: Vec<RefOcc<'s>>,
+}
+
+/// One pre-order walk (iterative: no recursion limit) collecting definitions and references.
+pub(crate) fn collect_symbols<'s>(table: &KindTable, root: Node<'_>, src: &'s str) -> Symbols<'s> {
     let mut defs: Vec<Def> = Vec::new();
+    let mut refs: Vec<RefOcc<'s>> = Vec::new();
     let mut open: Vec<usize> = Vec::new(); // defs on the current root->node path
     let mut pushed: Vec<bool> = Vec::new(); // per cursor depth: did that node open a def
+    let mut ancestors: Vec<Node<'_>> = Vec::new(); // root->parent path of the current node
     let mut cursor = root.walk();
     loop {
         let node = cursor.node();
+        if let Some(rule) = table.ref_rule(node) {
+            let ctx = Ctx {
+                ancestors: &ancestors,
+                field: cursor.field_name(),
+            };
+            refs::extract(rule, node, &ctx, src, &mut refs);
+        }
         let mut opened = false;
         if let Some(rule) = table.rule(node)
             && let Some((label, name, name_row)) = describe(rule, node, src)
@@ -269,6 +299,7 @@ pub(crate) fn collect_defs(table: &KindTable, root: Node<'_>, src: &str) -> Vec<
         }
         if cursor.goto_first_child() {
             pushed.push(opened);
+            ancestors.push(node);
             continue;
         }
         if opened {
@@ -279,8 +310,11 @@ pub(crate) fn collect_defs(table: &KindTable, root: Node<'_>, src: &str) -> Vec<
                 break;
             }
             if !cursor.goto_parent() {
-                return defs;
+                // Nested extraction (imports, callees) can emit slightly out of order.
+                refs.sort_by_key(|r| r.byte);
+                return Symbols { defs, refs };
             }
+            ancestors.pop();
             if pushed.pop().unwrap_or(false) {
                 open.pop();
             }

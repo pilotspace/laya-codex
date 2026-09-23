@@ -18,14 +18,15 @@ fn main() -> ExitCode {
     };
     for c in laya_parse::chunk_source(&path, &src) {
         println!(
-            "L{}-{} ({} lines) [{}] {} | {} | defines: {}",
+            "L{}-{} ({} lines) [{}] {} | {} | defines: {} | refs: {}",
             c.start_line,
             c.end_line,
             c.line_count(),
             c.lang.as_str(),
             c.kind,
             c.symbol,
-            c.defines.join(", ")
+            c.defines.join(", "),
+            c.refs.join(", ")
         );
         if show_text {
             println!("{}\n", c.text);
