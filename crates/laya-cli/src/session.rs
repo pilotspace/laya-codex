@@ -179,10 +179,12 @@ mod tests {
         assert_eq!(s.effective_query("a", task), task);
         let follow = "Now, for the same change, identify the tests that cover this code.";
         assert_eq!(s.effective_query("a", follow), task, "a follow-up's prose is not searched");
+        // A terse follow-up naming code keeps the topic and adds the name…
+        let q = s.effective_query("a", "and enforce_budget()?");
+        assert!(q.starts_with(task) && q.contains("enforce_budget"), "{q}");
+        // …while a question that names code with real content is self-contained.
         let named = "now where is enforce_budget() called from src/vector/store.rs?";
-        let q = s.effective_query("a", named);
-        assert!(q.starts_with(task) && q.contains("enforce_budget") && q.contains("src/vector/store.rs"), "{q}");
-        assert!(!q.contains("called"), "{q}");
+        assert_eq!(s.effective_query("a", named), named);
         // A new self-contained task replaces the topic.
         let other = "gate unused graph merge params under graph feature in shard autovacuum";
         assert_eq!(s.effective_query("a", other), other);

@@ -63,18 +63,22 @@ pub fn content_terms(prompt: &str) -> usize {
     t.len()
 }
 
-/// Words that refer back to earlier conversation ("the same change", "where is it called").
-const CONTINUATION_MARKERS: &[&str] = &[
-    "same", "this", "that", "these", "those", "it", "its", "them", "above", "previous", "earlier",
-    "also", "again", "now", "there",
-];
+/// Words that unambiguously point back to earlier conversation ("for the same change", "the
+/// previous function"). Pronouns like "it"/"this" are not enough: new tasks use them too
+/// ("fix it so that the wal replay…").
+const BACK_REFERENCES: &[&str] = &["same", "above", "previous", "earlier", "aforementioned"];
 
-/// Whether `prompt` reads as a follow-up that depends on earlier context: almost no task
-/// content, or little content plus a word pointing back ("now find the tests for the same change").
+/// Whether `prompt` is a follow-up that depends on the session topic: almost no task content,
+/// or an explicit back-reference without naming any code (identifiers or paths make a prompt
+/// self-contained). Content-term counts alone do not work: agent prompts carry long instruction
+/// tails ("End your answer with … FILES: <comma-separated paths>").
 pub fn is_follow_up(prompt: &str) -> bool {
-    let content = content_terms(prompt);
-    let refers_back = ident::words(prompt).any(|w| CONTINUATION_MARKERS.contains(&w.to_ascii_lowercase().as_str()));
-    content < 4 || (content < 10 && refers_back)
+    if content_terms(prompt) < 4 {
+        return true;
+    }
+    let sig = extract_signals(prompt);
+    let refers_back = ident::words(prompt).any(|w| BACK_REFERENCES.contains(&w.to_ascii_lowercase().as_str()));
+    refers_back && sig.identifiers.is_empty() && sig.paths.is_empty()
 }
 
 /// Extract [`PromptSignals`] from a raw user prompt.
@@ -240,6 +244,16 @@ mod tests {
 
     #[test]
     fn follow_ups_are_recognised() {
+        let bench_follow_up = "Now, for the same change, identify the tests that cover this code and the main call sites \
+            that invoke it. Be efficient: read only what you need. End your answer with one line exactly of the form\n\
+            FILES: <comma-separated repo-relative paths of the most relevant source files>";
+        assert!(is_follow_up(bench_follow_up));
+        assert!(is_follow_up("what about the previous function's error handling and its retry loop timing budget"));
+        // New tasks that merely use "it"/"this" are not follow-ups.
+        assert!(!is_follow_up("fix it so that the wal replay handles torn writes in segment headers"));
+        assert!(!is_follow_up("this crashes: the replica sync loop deadlocks when the primary restarts mid snapshot"));
+        // Naming code makes a prompt self-contained even with a back-reference.
+        assert!(!is_follow_up("same issue but in parse_config() inside src/config.rs"));
         assert!(is_follow_up("Now, for the same change, identify the tests that cover this code and the main call sites that invoke it."));
         assert!(is_follow_up("where is it called?"));
         assert!(is_follow_up("add tests"));
