@@ -1,0 +1,22 @@
+laya-code
+Copyright 2026 Tin Dang
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+laya-code is a fine-tuned derivative of Laya:
+  convaiinnovations/laya (revision 1c5edc17a7acd8701df6fc341c0d179f1c62c982)
+  Copyright Convai Innovations, Apache License 2.0
+  https://huggingface.co/convaiinnovations/laya
+
+Laya uses the ModernBERT-large encoder configuration and tokenizer:
+  answerdotai/ModernBERT-large, Apache License 2.0
+  https://huggingface.co/answerdotai/ModernBERT-large
+
+Modified from the base checkpoint (Apache-2.0 section 4(b)):
+  model.safetensors      fine-tuned weights (same keys, shapes and dtypes)
+  rl_agent_config.json   model_name, noul:2 temperature, finetune block
+
+Unchanged from the base checkpoint:
+  encoder/config.json, tokenizer/tokenizer.json, tokenizer/tokenizer_config.json,
+  rl_agent_api.py, rl_common.py (reference code from https://github.com/NandhaKishorM/laya,
+  Apache License 2.0)
