@@ -14,7 +14,25 @@ session, paired, Claude Sonnet, Laya scored cold):
 - answer recall 0.93 vs 0.98, a difference that is not significant.
 
 The −30% time goal is not met yet. See [docs/RESULTS.md](docs/RESULTS.md) for the evidence,
-ablations and caveats.
+ablations and caveats, and [ROADMAP.md](ROADMAP.md) for what comes next.
+
+## Install
+
+macOS on Apple Silicon or Linux x86_64:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh
+laya init --repo /path/to/repo     # adds laya's hooks and MCP server to that repo, then indexes it
+laya doctor --repo /path/to/repo   # checks that everything is wired up
+```
+
+The installer puts `laya` and its [Moon](https://github.com/pilotspace/moon) sidecar in
+`~/.local/bin`, and on macOS downloads the ~850 MB
+[laya-code](https://huggingface.co/tindang/laya-code) re-ranker to `~/.cache/laya-codex/models`.
+Every download is checked against a SHA-256, and re-running the installer upgrades in place.
+Options: `--version vX.Y.Z`, `--dir DIR`, `--no-model` (lexical ranking only), `--model` (also
+download the model on Linux, where it runs on CPU and is slow). Other platforms:
+[build from source](#build).
 
 ## How it works
 
@@ -32,11 +50,13 @@ MCP tool `laya_search` for follow-up queries
 Architecture and decisions: [docs/architecture.md](docs/architecture.md). Build notes and
 verified facts: [docs/build-context.md](docs/build-context.md).
 
-## Requirements
+## Requirements (building from source)
 
 - Rust 1.90+ (edition 2024); macOS arm64 for Metal (Linux runs the model on CPU — too slow
   for interactive re-ranking; set `LAYA_NO_MODEL=1` there).
-- A Moon server binary (`moon` on PATH or `LAYA_MOON_BIN`); `laya` starts and supervises it.
+- A Moon server binary built with its `text-index` feature: `moon` beside the `laya` binary, on
+  PATH, or at `LAYA_MOON_BIN`. `laya` starts and supervises it, protected by a generated
+  password.
 - Model weights: the fine-tuned re-ranker (preferred),
   `hf download tindang/laya-code --local-dir ~/.cache/laya-codex/models/laya-code`
   ([model card](https://huggingface.co/tindang/laya-code)), or the base model,
@@ -58,13 +78,19 @@ laya doctor --repo /path/to/repo         # check Moon, model, LAYA_HOME, daemon,
 ```
 
 `laya init` merges the four hooks into `<repo>/.claude/settings.local.json` and the `laya` server
-into `<repo>/.mcp.json`, using the absolute path of the `laya` binary you ran. It keeps every other
-key, hook and server and only replaces earlier laya entries, so re-running it is safe (and a
-no-op). Flags: `--dry-run` prints the result without writing, `--adaptive` pins adaptive
-injection on the hook command (already the default), `--no-index` skips indexing, `--force`
+into `<repo>/.mcp.json`. It writes the bare `laya` command when `laya` on `PATH` is the binary
+you ran, and its absolute path otherwise. It keeps every other key, hook and server and only
+replaces earlier laya entries, so re-running it is safe (and a no-op). It refuses to write
+through a symlinked `.claude` directory or settings file. Flags: `--dry-run` prints the result
+without writing, `--adaptive` pins adaptive injection on the hook command (already the
+default), `--no-index` skips indexing, `--force`
 replaces a file that is not valid JSON (the original is kept as `*.bak`; without `--force` such
 files are left untouched and init exits 1). Any path inside the repo works; the git root is used.
 Re-run `laya init` if you move the binary. Claude Code asks once to approve the project MCP server.
+
+The daemon, its socket and Moon's data live in `LAYA_HOME` (private to your user). Moon only
+serves clients that know the password in `LAYA_HOME/moon.acl`, which laya generates on first
+start; `laya doctor` fails if something else answers on Moon's port.
 
 `laya doctor` prints PASS/WARN/FAIL with a fix for each problem and exits 1 if anything fails
 (`--json` for scripts, `--start` to start the daemon if it is down). Every check has a time limit.
@@ -95,7 +121,7 @@ Every hook fails open: if the daemon, Moon or the model is unavailable, Claude C
 
 | var | default | meaning |
 |---|---|---|
-| `LAYA_HOME` | `~/.cache/laya-codex` | socket, logs, Moon data, models |
+| `LAYA_HOME` | `~/.cache/laya-codex` | socket, logs, Moon data and password (`moon.acl`), models (mode 0700) |
 | `LAYA_MODEL_DIR` | `laya-code`, else `laya-base` | model directory |
 | `LAYA_NO_MODEL` | unset | `1` = lexical-only ranking |
 | `LAYA_BUDGET_MS` | `1200` | Laya time budget per prompt (falls back to lexical) |
@@ -103,7 +129,7 @@ Every hook fails open: if the daemon, Moon or the model is unavailable, Claude C
 | `LAYA_WEIGHT` / `LAYA_STATE_TOKENS` / `LAYA_K` / `LAYA_P_THRESHOLD` | `0.5` / `128` / `24` / `0` | ranking knobs (daemon start) |
 | `LAYA_ADAPTIVE` | on | `0` = fixed compact injection; default skips code already sent or read in the session |
 | `LAYA_SCOPE` | off | `1` = let a Laya scope classifier size the injection (measured no-op; see RESULTS) |
-| `LAYA_MOON_PORT` / `LAYA_MOON_BIN` | `16379` / `moon` on `PATH` | Moon sidecar; a missing binary is reported with every path tried |
+| `LAYA_MOON_PORT` / `LAYA_MOON_BIN` | `16379` / `moon` beside `laya`, else on `PATH` | Moon sidecar; a missing binary is reported with every path tried |
 
 ## Reproduce the benchmark
 
@@ -126,5 +152,6 @@ python3 bench/read_accuracy.py /tmp/bench-run bench/tasks.jsonl
 | `crates/laya-model` | Laya (ModernBERT-large + decision head) in candle, parity-tested |
 | `crates/laya-rank` | candidate generation, Laya gate, fusion, span shaping, rendering |
 | `crates/laya-cli` | `laya` binary: daemon, hooks, MCP, indexer |
+| `install.sh`, `scripts/test-install.sh` | the installer and its offline test (run in CI) |
 | `finetune/`, `spike/` | Laya fine-tuning and the zero-shot spike (Python) |
 | `bench/` | paired Claude Code benchmark, retrieval eval, results |

@@ -23,8 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -40,16 +40,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: ${{ matrix.os }}
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # Tests that need a Moon binary (MOON_BIN) or Laya weights (LAYA_MODEL_DIR /
+      # Tests that need a Moon binary (LAYA_TEST_MOON_BIN) or Laya weights (LAYA_MODEL_DIR /
       # ~/.cache/laya-codex/models/laya-base) print "SKIP: ..." and return when those are absent,
       # which is always the case here; ignored perf/bench tests stay ignored.
       - name: test
@@ -58,3 +58,5 @@ jobs:
         run: cargo build --release --locked -p laya-cli
       - name: smoke
         run: ./target/release/laya --help
+      - name: installer
+        run: sh scripts/test-install.sh

@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — 0.1.0
+## [0.1.0] — 2026-09-23
 
 First public release: a proof of concept for ranked code retrieval in Claude Code, supported on
 macOS arm64 (Laya on Metal) and Linux x86_64 (Laya on CPU, or lexical-only with
@@ -73,16 +73,50 @@ prompts per session, paired bootstrap 95% CIs, Claude Sonnet, Laya scored cold i
   (`docs/release/LICENSES.md`), CI (fmt, clippy, tests on macOS arm64 and Linux) and a draft
   release workflow producing tarballs with checksums and third-party licenses; Hugging Face
   package for `laya-code` (`release/hf-laya-code/`).
+- **Installer** (`install.sh`): one-line install of `laya` and its pinned Moon sidecar from
+  GitHub Releases plus the `laya-code` model from Hugging Face; SHA-256-verified downloads,
+  retries and time limits, atomic binary swap, idempotent re-runs, offline test in CI
+  (`scripts/test-install.sh`). The release workflow now also builds Moon (pinned commit
+  `8bba3ced`, `text-index` enabled) as a separate asset with Moon's own license.
+- `ROADMAP.md`: goals, distribution channels and the plan to 1.0.
+
+### Security
+
+- Moon is password-protected: laya generates a password on first start (`$LAYA_HOME/moon.acl`,
+  mode 0600), authenticates every connection, and refuses a server on its port that answers
+  without the password. An unprotected Moon left by an earlier laya is replaced automatically;
+  `laya doctor` has a new `auth` check.
+- `$LAYA_HOME` and Moon's data directory are private (0700), the daemon socket is 0600, and
+  connections from other users are rejected.
+- `laya init` never writes through symlinks or outside the repository (temp files are created
+  exclusively and renamed into place); a symlinked `.claude` directory or settings file is now
+  refused.
+- The Read hook never reads files over 1 MiB or non-regular files; re-index-on-edit applies the
+  same gitignore, hidden-file and size filters as a full index.
+- CI and release actions are pinned to commit SHAs; release builds use no shared cache.
 
 ### Changed
 
 - Laya gate is `Arc`-based (no `unsafe` transmute).
 - Tuned defaults from the benchmark: compact rendering, 0.5 fusion weight, 128 state tokens,
   adaptive sizing thresholds.
+- Only one daemon runs per `LAYA_HOME` (a lock file); `laya stop` asks the daemon to exit over
+  its socket and only signals a verified `laya` process.
+- `laya` looks for `moon` beside its own binary first, then on `PATH` (`LAYA_MOON_BIN` still
+  overrides both).
+- `laya init` writes the bare `laya` command when `laya` on `PATH` is the same binary, so a
+  committed `.mcp.json` no longer contains a machine-specific path; it only removes hooks whose
+  program is `laya hook`.
+
+### Known limitations
+
+- At the pinned Moon commit the password must also be passed as `--requirepass`, so other local
+  users can see it in the process list. Fixing this needs a Moon change (tracked in ROADMAP).
+- Linux runs the re-ranker on CPU; the installer skips the model there by default.
 
 ### Fixed
 
 - Instruction-heavy benchmark prompts no longer outrank the task terms in retrieval.
 - Long follow-up prompts are no longer treated as new tasks.
 
-[Unreleased]: https://github.com/pilotspace/laya-codex/commits/HEAD
+[0.1.0]: https://github.com/pilotspace/laya-codex/releases/tag/v0.1.0
