@@ -80,15 +80,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS: Moon's default features, the exact build laya was benchmarked on.
+          # Moon's default features everywhere: the exact build laya was benchmarked on. laya needs
+          # `text-index` (FT.CREATE / FT.SEARCH). Not runtime-tokio: at this commit its Linux path
+          # leaves accepting to per-shard SO_REUSEPORT listeners that fail to bind, so it never
+          # answers. monoio accepts centrally and works without io_uring (e.g. in containers).
           - target: aarch64-apple-darwin
             os: macos-14
             features: runtime-monoio,jemalloc,graph,text-index
-          # Linux: Tokio rather than io_uring, which containers and seccomp profiles often block.
-          # laya needs `text-index` (FT.CREATE / FT.SEARCH) on every platform.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
-            features: runtime-tokio,jemalloc,text-index
+            features: runtime-monoio,jemalloc,graph,text-index
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -128,8 +129,46 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
-  release:
+  # The built laya and moon together, as install.sh lays them out: index a repo, query it and
+  # run doctor. `--help` alone once let a Moon that never answered a request through.
+  smoke:
+    name: smoke (${{ matrix.target }})
     needs: [build, moon]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: index, query, doctor
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          LAYA_NO_MODEL: "1"
+          LAYA_HOME: ${{ runner.temp }}/laya-home
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          for p in laya moon; do tar -xzf dist/$p-*-"$TARGET".tar.gz -C dist; cp dist/$p-*-"$TARGET"/$p bin/; done
+          ./bin/laya index crates/laya-store
+          ./bin/laya query "where is the moon password generated" --repo crates/laya-store | tee query.txt
+          grep -q "secure.rs\|supervisor.rs" query.txt
+          ./bin/laya doctor --repo crates/laya-store | tee doctor.txt || true
+          grep -q "PASS  auth" doctor.txt
+          ./bin/laya stop
+
+  release:
+    needs: [build, moon, smoke]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 10
