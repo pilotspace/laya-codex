@@ -7,7 +7,7 @@ import subprocess
 import sys
 from collections import Counter
 
-ROOT = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser(os.environ.get("LAYA_REPOS_ROOT", "~/src"))
+ROOT = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser(os.environ.get("LAYA_CODEX_REPOS_ROOT", "~/src"))
 MIN = int(sys.argv[2]) if len(sys.argv) > 2 else 300
 EXT = {".rs", ".py", ".ts", ".tsx", ".js", ".go", ".java", ".kt", ".c", ".cpp", ".swift", ".rb"}
 
