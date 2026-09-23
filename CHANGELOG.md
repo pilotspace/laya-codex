@@ -4,6 +4,86 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-09-23
+
+One name everywhere. The tool is **laya-codex**; "Laya" now only means the upstream
+[Laya model](https://huggingface.co/convaiinnovations/laya) that laya-codex re-ranks code with
+(through its fine-tune, [laya-code](https://huggingface.co/tindang/laya-code)).
+
+### Breaking: renamed `laya` → `laya-codex`
+
+This is a clean break: there are no aliases and no fallbacks, so the old names stop working.
+
+| 0.1.x | 0.2.0 |
+|---|---|
+| command `laya` | `laya-codex` |
+| environment variables `LAYA_*` | `LAYA_CODEX_*` (every one, e.g. `LAYA_CODEX_HOME`) |
+| hook command `laya hook` | `laya-codex hook` |
+| MCP server `laya` in `.mcp.json` | `laya-codex` |
+| MCP tool `laya_search` | `search` (Claude sees `mcp__laya-codex__search`) |
+| release asset `laya-<version>-<target>.tar.gz` | `laya-codex-<version>-<target>.tar.gz` |
+| installer output `laya-install:`, installer variables `LAYA_VERSION`, `LAYA_INSTALL_DIR`, ... | `laya-codex-install:`, `LAYA_CODEX_VERSION`, `LAYA_CODEX_INSTALL_DIR`, ... |
+| plugin scripts `laya-hook` / `laya-mcp`, override `LAYA_BIN` | `laya-codex-hook` / `laya-codex-mcp`, `LAYA_CODEX_BIN` |
+
+Unchanged: the data directory `~/.cache/laya-codex` (your index, Moon password and models are
+kept), the Moon port 16379, the model name `laya-code`, the plugin `laya-codex@laya-codex`, the
+Homebrew formula `pilotspace/tap/laya-codex` and the `moon` release asset.
+
+#### Upgrade guide
+
+1. **Reinstall.**
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh
+   rm ~/.local/bin/laya
+   ```
+   The installer stops the running daemon (a 0.1.x one too) and installs `laya-codex` next to
+   `moon`. It leaves the old `laya` binary alone and prints the `rm` command for it; if you
+   installed with `--dir DIR`, pass the same `--dir` and remove `DIR/laya`. With Homebrew, run
+   `brew update && brew upgrade laya-codex`, then `laya-codex stop` so the next hook starts the
+   new daemon.
+2. **Plugin users**, inside Claude Code: run `/plugin marketplace update laya-codex`, then
+   `/plugin update laya-codex@laya-codex`, then restart Claude Code. From a shell:
+   `claude plugin marketplace update laya-codex && claude plugin update laya-codex@laya-codex`.
+3. **Repositories set up with `laya init`:** run `laya-codex init --repo /path/to/repo`, then
+   delete what 0.1.x wrote, which `laya-codex init` does not touch:
+   - in `.claude/settings.local.json`, every hook whose command ends in `laya hook` (for example
+     `laya hook` or `LAYA_ADAPTIVE=1 /Users/me/.local/bin/laya hook`);
+   - in `.mcp.json`, the `"laya"` entry under `mcpServers`.
+
+   Left in place, the old hooks fail on every event because `laya` no longer exists, and they no
+   longer make the plugin step aside. `laya-codex doctor --repo /path/to/repo` should then pass
+   the `hooks` and `mcp` checks.
+4. **Environment variables:** rename every `LAYA_*` you set, in your shell profile, CI,
+   `env` blocks of `.claude/settings*.json` or custom hook commands, to `LAYA_CODEX_*`: for
+   example `LAYA_HOME` → `LAYA_CODEX_HOME`, `LAYA_NO_MODEL` → `LAYA_CODEX_NO_MODEL`,
+   `LAYA_MOON_PORT` → `LAYA_CODEX_MOON_PORT`, `LAYA_BIN` → `LAYA_CODEX_BIN`. Old names are ignored
+   without a warning.
+5. **Scripts and permissions:** replace `laya <command>` with `laya-codex <command>`, and any
+   permission rule or instruction that names the `laya_search` tool with the `search` tool of the
+   `laya-codex` server.
+
+### Fixed
+
+- **Homebrew and other symlinked installs:** `laya-codex` looks for `moon` next to its real
+  location (after resolving symlinks), then in `../libexec` relative to it, then on `PATH`.
+  Before, a symlinked binary never found the Moon installed with it.
+- **`init` under Homebrew** writes the bare `laya-codex` command instead of a versioned Cellar
+  path that broke on the next `brew upgrade`: the formula now links the binary itself rather
+  than a wrapper script, so `laya-codex` on `PATH` resolves to the running binary.
+- **`doctor`'s missing-model hint** now points at the laya-code re-ranker: `curl -fsSL
+  https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh -s -- --model-only`,
+  or `hf download tindang/laya-code --local-dir ~/.cache/laya-codex/models/laya-code`. It used to
+  suggest downloading the upstream base model.
+
+### Changed
+
+- The Homebrew formula installs `laya-codex` into `bin` and `moon` into `libexec` (homebrew-core's
+  unrelated `moon` owns `bin/moon`), and `scripts/update-formula.sh` generates formulas for
+  laya-codex releases only.
+- The installer stops the daemon with the newly downloaded binary, so an upgrade from any version
+  restarts it, and it reports a leftover 0.1.x `laya` binary with the command to remove it.
+- Daemon log lines and the injected context header say `laya-codex`.
+
 ## [0.1.2] — 2026-09-23
 
 A Claude Code plugin, plus hardening items from the v0.1.0 release review.
@@ -185,6 +265,7 @@ prompts per session, paired bootstrap 95% CIs, Claude Sonnet, Laya scored cold i
 - Instruction-heavy benchmark prompts no longer outrank the task terms in retrieval.
 - Long follow-up prompts are no longer treated as new tasks.
 
+[0.2.0]: https://github.com/pilotspace/laya-codex/releases/tag/v0.2.0
 [0.1.2]: https://github.com/pilotspace/laya-codex/releases/tag/v0.1.2
 [0.1.1]: https://github.com/pilotspace/laya-codex/releases/tag/v0.1.1
 [0.1.0]: https://github.com/pilotspace/laya-codex/releases/tag/v0.1.0
