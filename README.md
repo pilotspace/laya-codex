@@ -6,9 +6,10 @@ Ranked code retrieval for Claude Code. `laya` indexes a repository with tree-sit
 typed-decision model running natively in Rust (candle, Metal), and hands Claude Code the most
 relevant spans through hooks and an MCP tool.
 
-**Measured effect** (20 held-out tasks, paired, Claude Sonnet): −47% code-reading tokens,
-−32% total input tokens, −21% wall-clock, −28% turns. See [docs/RESULTS.md](docs/RESULTS.md)
-for the full evidence, ablations and caveats.
+**Measured effect** (20 held-out tasks, paired, Claude Sonnet, all significant): −45% code-reading
+tokens, −42% total input tokens, −25% wall-clock, −37% turns, −29% cost, with answer recall
+0.95 vs 0.94 and read precision 0.66 vs 0.55. See [docs/RESULTS.md](docs/RESULTS.md) for the
+full evidence, ablations and caveats.
 
 ## How it works
 

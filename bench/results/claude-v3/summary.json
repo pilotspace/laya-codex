@@ -1,0 +1,49 @@
+{
+ "n_tasks_paired": 20,
+ "arms": {
+  "baseline": {
+   "reading_tokens": 12089.65,
+   "injected_tokens": 0.0,
+   "total_input_tokens": 241377.9,
+   "output_tokens": 3078.6,
+   "wall_s": 34.757999999999996,
+   "num_turns": 10.4,
+   "cost_usd": 0.19658313,
+   "recall": 0.9375,
+   "precision": 0.3373809523809524,
+   "hit_any": 1.0
+  },
+  "laya-compact": {
+   "reading_tokens": 6790.55,
+   "injected_tokens": 1638.55,
+   "total_input_tokens": 169756.75,
+   "output_tokens": 2528.6,
+   "wall_s": 29.8915,
+   "num_turns": 7.65,
+   "cost_usd": 0.15448768,
+   "recall": 0.9333333333333333,
+   "precision": 0.39982323232323236,
+   "hit_any": 1.0,
+   "reading_cost_change_pct": -30.3,
+   "wall_change_pct": -14.0,
+   "median_wall_ratio": 0.933,
+   "median_total_input_ratio": 0.767
+  },
+  "laya-refs": {
+   "reading_tokens": 6684.45,
+   "injected_tokens": 1829.55,
+   "total_input_tokens": 139973.3,
+   "output_tokens": 2108.15,
+   "wall_s": 26.206,
+   "num_turns": 6.6,
+   "cost_usd": 0.14045025,
+   "recall": 0.95,
+   "precision": 0.41986111111111113,
+   "hit_any": 1.0,
+   "reading_cost_change_pct": -29.6,
+   "wall_change_pct": -24.6,
+   "median_wall_ratio": 0.74,
+   "median_total_input_ratio": 0.678
+  }
+ }
+}
