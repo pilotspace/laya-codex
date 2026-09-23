@@ -63,6 +63,11 @@ pub struct Chunk {
     pub kind: String,
     /// Identifiers *defined* in this chunk (function/type/const names).
     pub defines: Vec<String>,
+    /// Identifiers *referenced* in this chunk (callees, macros, used types, imported names),
+    /// excluding its own `defines`; first-occurrence order, deduplicated, capped. Extracted with
+    /// tree-sitter; resolved to definitions at query time via `Store::chunks_defining`.
+    #[serde(default)]
+    pub refs: Vec<String>,
     /// Exact source text of the span.
     pub text: String,
 }
@@ -120,12 +125,26 @@ pub enum RankMode {
     Lexical,
 }
 
+/// A location reached from a ranked span by one reference hop (no code text; shown as a pointer).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Related {
+    pub path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub symbol: String,
+    /// Human-readable edge, e.g. "defines `WalTailReader` (used by #1)" or "calls `fanout_tick` (#2)".
+    pub relation: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryResult {
     pub spans: Vec<RankedSpan>,
     pub mode: RankMode,
     pub elapsed_ms: u64,
     pub candidates: usize,
+    /// One-hop reference neighbours of the top spans (callees' definitions and callers).
+    #[serde(default)]
+    pub related: Vec<Related>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -162,6 +181,11 @@ pub trait Store: Send + Sync {
     fn bm25(&self, repo_id: &str, terms: &[String], limit: usize) -> Result<Vec<(String, f32)>>;
     /// Chunks whose `defines` contain any of `idents` (exact, case-sensitive).
     fn chunks_defining(&self, repo_id: &str, idents: &[String], limit: usize) -> Result<Vec<String>>;
+    /// Chunks whose `refs` contain any of `idents` (exact, case-sensitive): the callers/users.
+    /// Ordered by how many of `idents` they reference (desc), then id. Default: unsupported → empty.
+    fn chunks_referencing(&self, _repo_id: &str, _idents: &[String], _limit: usize) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
     fn get_chunks(&self, repo_id: &str, ids: &[String]) -> Result<Vec<Chunk>>;
     /// Generic memo cache (Laya scores, query results). TTL in seconds, 0 = no expiry.
     fn memo_get(&self, key: &str) -> Result<Option<String>>;
