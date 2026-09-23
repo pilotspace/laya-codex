@@ -2,10 +2,11 @@
 //! per-session state in memory. Clients speak the JSON-lines protocol in `protocol.rs`.
 
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
@@ -15,7 +16,9 @@ use laya_rank::{Retriever, RetrieverConfig, Scope, SizingPolicy, SpanKey};
 
 use crate::config::{Config, rel_path, repo_root};
 use crate::indexer;
-use crate::protocol::{ReadPlan, RenderReq, Request, Response};
+use crate::protocol::{
+    MAX_BUDGET_MS, MAX_RENDER_TOKENS, MAX_TOP_N, ReadPlan, RenderReq, Request, Response,
+};
 use crate::session::Sessions;
 
 /// Caches Laya probabilities in the store, keyed by (task, chunk content), so repeated or
@@ -316,13 +319,13 @@ impl Daemon {
                 let (_, id) = self.repo(&repo);
                 let mut cfg = self.base_cfg.clone();
                 if let Some(b) = budget_ms {
-                    cfg.laya_budget = Duration::from_millis(b);
+                    cfg.laya_budget = Duration::from_millis(b.min(MAX_BUDGET_MS));
                     if b == 0 {
                         cfg.use_laya = false; // lexical-only request (used by the ablation arm)
                     }
                 }
                 if let Some(n) = top_n {
-                    cfg.top_n = n;
+                    cfg.top_n = n.clamp(1, MAX_TOP_N);
                 }
                 let scorer = self.scorer.read().ok().and_then(|s| s.clone());
                 let retriever = Retriever::new(self.store.as_ref(), scorer, cfg);
@@ -337,8 +340,12 @@ impl Daemon {
                         }
                         let (rendered, scope) = match &render {
                             Some(r) => {
+                                let r = RenderReq {
+                                    budget_tokens: r.budget_tokens.min(MAX_RENDER_TOKENS),
+                                    ..r.clone()
+                                };
                                 let (text, scope) =
-                                    self.render(session.as_deref(), &prompt, &result, r);
+                                    self.render(session.as_deref(), &prompt, &result, &r);
                                 (Some(text), scope.map(scope_name))
                             }
                             None => (None, None),
@@ -510,18 +517,75 @@ fn env_num<T: std::str::FromStr>(key: &str) -> Option<T> {
     std::env::var(key).ok()?.parse().ok()
 }
 
+/// Longest request line the daemon reads (the newline excluded). A prompt is the only large
+/// field; a longer line is refused before it is buffered.
+pub const MAX_REQUEST_BYTES: usize = 1 << 20;
+
+/// Per-connection resource bounds of the daemon's socket server.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Connections served at once; more get an immediate "busy" error and are closed.
+    pub max_conns: usize,
+    /// Longest request line, see [`MAX_REQUEST_BYTES`].
+    pub max_request_bytes: usize,
+    /// How long a connection may sit without sending (idle clients are dropped).
+    pub read_timeout: Duration,
+    /// How long one reply may take to write (a client that never reads is dropped).
+    pub write_timeout: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            max_conns: 64,
+            max_request_bytes: MAX_REQUEST_BYTES,
+            read_timeout: Duration::from_secs(30),
+            write_timeout: Duration::from_secs(10),
+        }
+    }
+}
+
+/// Write one response line; `false` if the client is gone or too slow to read it.
+fn send(mut w: &UnixStream, resp: &Response) -> bool {
+    let Ok(mut s) = serde_json::to_string(resp) else {
+        return false;
+    };
+    s.push('\n');
+    w.write_all(s.as_bytes()).and_then(|()| w.flush()).is_ok()
+}
+
 /// Serve one client connection. After acknowledging `Request::Shutdown` it calls `shutdown`
 /// (which exits the process in the real daemon).
-fn serve_conn(daemon: Arc<Daemon>, stream: UnixStream, shutdown: &dyn Fn()) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-    let mut writer = match stream.try_clone() {
-        Ok(w) => w,
-        Err(_) => return,
-    };
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let Ok(line) = line else { return };
-        let (resp, stop) = match serde_json::from_str::<Request>(&line) {
+fn serve_conn(daemon: Arc<Daemon>, stream: UnixStream, shutdown: &dyn Fn(), limits: &Limits) {
+    if stream.set_read_timeout(Some(limits.read_timeout)).is_err()
+        || stream
+            .set_write_timeout(Some(limits.write_timeout))
+            .is_err()
+    {
+        return;
+    }
+    let mut reader = BufReader::new(&stream);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        // Read at most one byte past the cap: enough to tell an oversized line from a full one.
+        let cap = limits.max_request_bytes as u64 + 1;
+        match reader.by_ref().take(cap).read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => return, // closed, reset, or idle past the read timeout
+            Ok(_) => {}
+        }
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+        } else if buf.len() > limits.max_request_bytes {
+            let message = format!(
+                "request too long (over {} bytes); connection closed",
+                limits.max_request_bytes
+            );
+            eprintln!("[laya] {message}");
+            send(&stream, &Response::Error { message });
+            return;
+        }
+        let (resp, stop) = match serde_json::from_slice::<Request>(&buf) {
             Ok(req) => {
                 let stop = req == Request::Shutdown;
                 (handle_guarded(&daemon, req), stop)
@@ -533,17 +597,86 @@ fn serve_conn(daemon: Arc<Daemon>, stream: UnixStream, shutdown: &dyn Fn()) {
                 false,
             ),
         };
-        let Ok(mut s) = serde_json::to_string(&resp) else {
-            return;
-        };
-        s.push('\n');
-        let written = writer.write_all(s.as_bytes()).and_then(|()| writer.flush());
+        let written = send(&stream, &resp);
         if stop {
             shutdown();
             return;
         }
-        if written.is_err() {
+        if !written {
             return;
+        }
+    }
+}
+
+/// One of `Limits::max_conns` connection slots; released on drop (however the handler ends).
+struct ConnSlot(Arc<AtomicUsize>);
+
+impl ConnSlot {
+    fn try_take(active: &Arc<AtomicUsize>, max: usize) -> Option<Self> {
+        active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < max).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| ConnSlot(Arc::clone(active)))
+    }
+}
+
+impl Drop for ConnSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Refuse a connection without ever blocking the accept loop: one short error line into the
+/// new socket's empty send buffer (non-blocking), then close.
+fn refuse(s: UnixStream, message: &str) {
+    if s.set_nonblocking(true).is_ok() {
+        send(
+            &s,
+            &Response::Error {
+                message: message.to_string(),
+            },
+        );
+    }
+}
+
+/// Accept loop: one thread per connection, at most `limits.max_conns` at a time.
+fn serve(
+    listener: UnixListener,
+    daemon: Arc<Daemon>,
+    shutdown: Arc<dyn Fn() + Send + Sync>,
+    limits: Limits,
+) {
+    let active = Arc::new(AtomicUsize::new(0));
+    for stream in listener.incoming() {
+        let s = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                // Out of fds or similar: back off instead of spinning on the error.
+                eprintln!("[laya] accept error: {e}");
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+        };
+        if !peer_allowed(&s) {
+            eprintln!("[laya] rejected a connection from another user");
+            continue;
+        }
+        let Some(slot) = ConnSlot::try_take(&active, limits.max_conns) else {
+            refuse(s, "daemon busy: too many connections");
+            continue;
+        };
+        let d = Arc::clone(&daemon);
+        let stop = Arc::clone(&shutdown);
+        let spawned = std::thread::Builder::new()
+            .name("laya-conn".into())
+            .spawn(move || {
+                let _slot = slot;
+                serve_conn(d, s, &*stop, &limits);
+            });
+        if let Err(e) = spawned {
+            eprintln!("[laya] cannot start a connection thread: {e}");
         }
     }
 }
@@ -702,19 +835,7 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
         });
     }
     eprintln!("[laya] daemon listening on {}", cfg.socket_path().display());
-    for stream in listener.incoming() {
-        match stream {
-            Ok(s) if !peer_allowed(&s) => {
-                eprintln!("[laya] rejected a connection from another user");
-            }
-            Ok(s) => {
-                let d = Arc::clone(&daemon);
-                let stop = Arc::clone(&shutdown);
-                std::thread::spawn(move || serve_conn(d, s, &*stop));
-            }
-            Err(e) => eprintln!("[laya] accept error: {e}"),
-        }
-    }
+    serve(listener, daemon, shutdown, Limits::default());
     Ok(())
 }
 
@@ -1177,7 +1298,12 @@ mod tests {
         let fired = Arc::new(AtomicBool::new(false));
         let f = Arc::clone(&fired);
         let t = std::thread::spawn(move || {
-            serve_conn(d, server, &move || f.store(true, Ordering::SeqCst));
+            serve_conn(
+                d,
+                server,
+                &move || f.store(true, Ordering::SeqCst),
+                &Limits::default(),
+            );
         });
         (&client)
             .write_all(b"{\"op\":\"ping\"}\n{\"op\":\"shutdown\"}\n")
@@ -1254,7 +1380,7 @@ mod tests {
         let d = Daemon::new(Arc::new(PanicStore::default()), RetrieverConfig::default());
         let repo = std::env::temp_dir().to_string_lossy().into_owned();
         let (client, server) = UnixStream::pair().unwrap();
-        let t = std::thread::spawn(move || serve_conn(d, server, &|| {}));
+        let t = std::thread::spawn(move || serve_conn(d, server, &|| {}, &Limits::default()));
         (&client).write_all(query_line(&repo).as_bytes()).unwrap();
         (&client).write_all(b"{\"op\":\"ping\"}\n").unwrap();
         client.shutdown(std::net::Shutdown::Write).unwrap();
@@ -1328,6 +1454,184 @@ mod tests {
             "{r:?}"
         );
         assert!(d.indexing.lock().unwrap().is_empty());
+    }
+
+    /// Read one reply line (the test fails instead of hanging if none comes).
+    fn reply(s: &UnixStream) -> String {
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut line = String::new();
+        BufReader::new(s).read_line(&mut line).unwrap();
+        line
+    }
+
+    fn ping(s: &UnixStream) -> String {
+        let mut w = s;
+        w.write_all(b"{\"op\":\"ping\"}\n").unwrap();
+        reply(s)
+    }
+
+    #[test]
+    fn an_oversized_request_line_is_refused_without_buffering_it() {
+        let (d, _) = daemon_with_code();
+        let (client, server) = UnixStream::pair().unwrap();
+        let t = std::thread::spawn(move || serve_conn(d, server, &|| {}, &Limits::default()));
+        // 8 MiB with no newline, from another thread: the daemon must answer after reading at
+        // most MAX_REQUEST_BYTES + 1 of it and close, not wait for the end of the line.
+        let w = client.try_clone().unwrap();
+        w.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+        let writer = std::thread::spawn(move || {
+            let chunk = vec![b'a'; 64 * 1024];
+            for _ in 0..128 {
+                if (&w).write_all(&chunk).is_err() {
+                    return false; // the daemon closed the connection
+                }
+            }
+            true
+        });
+        let r = reply(&client);
+        assert!(r.contains("\"error\"") && r.contains("too long"), "{r}");
+        t.join().unwrap();
+        assert!(
+            !writer.join().unwrap(),
+            "the daemon read the whole oversized line"
+        );
+        assert_eq!(MAX_REQUEST_BYTES, 1 << 20);
+    }
+
+    #[test]
+    fn a_request_just_under_the_cap_is_served() {
+        let (d, _) = daemon_with_code();
+        let (client, server) = UnixStream::pair().unwrap();
+        let limits = Limits {
+            max_request_bytes: 64,
+            ..Limits::default()
+        };
+        let t = std::thread::spawn(move || serve_conn(d, server, &|| {}, &limits));
+        let pad = " ".repeat(64 - "{\"op\":\"ping\"}".len());
+        (&client)
+            .write_all(format!("{{\"op\":\"ping\"}}{pad}\n").as_bytes())
+            .unwrap();
+        assert!(reply(&client).contains("pong"));
+        client.shutdown(std::net::Shutdown::Both).unwrap();
+        t.join().unwrap();
+    }
+
+    fn start_server(tag: &str, limits: Limits) -> (PathBuf, PathBuf) {
+        let dir = tempfile_dir(tag);
+        let sock = dir.join("laya.sock");
+        let listener = bind_single(&sock).unwrap().unwrap();
+        let (d, _) = daemon_with_code();
+        std::thread::spawn(move || serve(listener, d, Arc::new(|| {}), limits));
+        (dir, sock)
+    }
+
+    #[test]
+    fn connections_over_the_cap_get_an_immediate_error() {
+        let limits = Limits {
+            max_conns: 2,
+            ..Limits::default()
+        };
+        let (dir, sock) = start_server("cap", limits);
+        let a = UnixStream::connect(&sock).unwrap();
+        let b = UnixStream::connect(&sock).unwrap();
+        assert!(ping(&a).contains("pong") && ping(&b).contains("pong"));
+        let c = UnixStream::connect(&sock).unwrap();
+        let r = reply(&c);
+        assert!(r.contains("\"error\"") && r.contains("busy"), "{r}");
+        drop(a);
+        // The freed slot is reused once the daemon sees `a` close.
+        let t0 = std::time::Instant::now();
+        loop {
+            let d = UnixStream::connect(&sock).unwrap();
+            if ping(&d).contains("pong") {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(5), "slot never freed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(b);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn idle_and_unread_connections_time_out_and_free_their_slot() {
+        let limits = Limits {
+            max_conns: 1,
+            read_timeout: Duration::from_millis(200),
+            write_timeout: Duration::from_millis(200),
+            ..Limits::default()
+        };
+        let (dir, sock) = start_server("timeouts", limits);
+        // Idle: the daemon closes it after the read timeout.
+        let idle = UnixStream::connect(&sock).unwrap();
+        assert_eq!(reply(&idle), "", "idle connection closed");
+        // A client that sends requests but never reads replies: once the socket buffer is full
+        // the daemon's write times out and the connection is dropped.
+        let greedy = UnixStream::connect(&sock).unwrap();
+        greedy
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let line = b"{\"op\":\"ping\"}\n".repeat(64);
+        let t0 = std::time::Instant::now();
+        while (&greedy).write_all(&line).is_ok() {
+            assert!(
+                t0.elapsed() < Duration::from_secs(20),
+                "daemon never gave up"
+            );
+        }
+        let t0 = std::time::Instant::now();
+        loop {
+            let d = UnixStream::connect(&sock).unwrap();
+            if ping(&d).contains("pong") {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(5), "slot never freed");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(greedy);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn query_sizes_are_clamped_to_the_mcp_bounds() {
+        let cfg = RetrieverConfig {
+            k_candidates: 100,
+            max_total_lines: 100_000,
+            ..RetrieverConfig::default()
+        };
+        let d = Daemon::new(Arc::new(MemoStore::default()), cfg);
+        let repo = std::env::temp_dir().to_string_lossy().into_owned();
+        let (_, id) = d.repo(&repo);
+        for i in 0..40 {
+            let c = Chunk {
+                path: format!("src/f{i}.rs"),
+                start_line: 1,
+                end_line: 3,
+                lang: Lang::Rust,
+                symbol: format!("fn flush_page{i}"),
+                kind: "function_item".into(),
+                defines: vec![format!("flush_page{i}")],
+                refs: vec![],
+                text: format!("fn flush_page{i}() {{\n    flush page\n}}"),
+            };
+            d.store
+                .put_file(&id, &c.path, "h", std::slice::from_ref(&c))
+                .unwrap();
+        }
+        let spans = |top_n| match d.handle(Request::Query {
+            repo: repo.clone(),
+            session: None,
+            prompt: "flush page".into(),
+            budget_ms: Some(0),
+            top_n: Some(top_n),
+            render: None,
+        }) {
+            Response::Query { result, .. } => result.spans.len(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(spans(1_000_000), crate::protocol::MAX_TOP_N);
+        assert_eq!(spans(0), 1);
+        assert_eq!(spans(5), 5);
     }
 
     fn tempfile_dir(tag: &str) -> PathBuf {

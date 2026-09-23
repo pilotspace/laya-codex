@@ -1,8 +1,18 @@
 //! Wire protocol between the short-lived `laya hook`/`laya mcp` clients and the `laya daemon`.
 //! One JSON object per line over a unix socket; one response line per request.
+//! The daemon bounds the connection (see `daemon::Limits`): at most 64 at once, request lines
+//! up to 1 MiB, 30 s idle and 10 s per reply write; size fields are clamped (constants below).
 
 use laya_core::{QueryResult, RankedSpan};
 use serde::{Deserialize, Serialize};
+
+/// Bounds the daemon applies to `Request::Query` size parameters, whatever the client sent
+/// (MCP `laya_search` documents the same `top_n` range).
+pub const MAX_TOP_N: usize = 20;
+/// Upper bound on `budget_ms` (the Laya time budget of one query).
+pub const MAX_BUDGET_MS: u64 = 60_000;
+/// Upper bound on `RenderReq::budget_tokens` (the hook asks for a few thousand).
+pub const MAX_RENDER_TOKENS: usize = 32_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
