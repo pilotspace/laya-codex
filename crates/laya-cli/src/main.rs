@@ -28,6 +28,7 @@ mod mcp;
 mod protocol;
 mod session;
 mod sys;
+mod trace;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -99,6 +100,12 @@ enum Cmd {
         #[arg(long)]
         no_index: bool,
     },
+    /// Record what Claude Code and laya-codex exchange (hook calls, MCP messages, daemon calls),
+    /// for debugging. Off by default: a trace contains your prompts and code.
+    Trace {
+        #[command(subcommand)]
+        cmd: TraceCmd,
+    },
     /// Diagnose the install: Moon, model, LAYA_CODEX_HOME, daemon, index and hooks (exit 1 on failure).
     Doctor {
         /// Repository to check. Default: current directory.
@@ -110,6 +117,36 @@ enum Cmd {
         #[arg(long)]
         start: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum TraceCmd {
+    /// Start tracing (also for hooks run by the plugin); LAYA_CODEX_TRACE=0 still overrides.
+    On,
+    /// Stop tracing (keeps the trace file).
+    Off,
+    /// Whether tracing is on, where the file is and how big it is.
+    Status,
+    /// Print recorded exchanges, oldest first.
+    Show {
+        /// Only this Claude Code session (a prefix of the session id is enough).
+        #[arg(long)]
+        session: Option<String>,
+        /// How many of the latest entries.
+        #[arg(long, default_value_t = 20)]
+        last: usize,
+        /// Include the complete request and response, e.g. the injected context.
+        #[arg(long)]
+        full: bool,
+        /// Raw JSON lines instead of the summary.
+        #[arg(long)]
+        json: bool,
+        /// Keep printing new entries as they are recorded (Ctrl-C to stop).
+        #[arg(long)]
+        follow: bool,
+    },
+    /// Delete the trace files.
+    Clear,
 }
 
 #[global_allocator]
@@ -142,8 +179,22 @@ fn main() {
                 Duration::from_millis(cfg.budget_ms + 3000),
                 true,
             );
-            mcp::serve(&c, root, INJECT_TOKENS, cfg.budget_ms)
+            let tracer = trace::Tracer::from_env(&cfg.home);
+            mcp::serve(&c, root, INJECT_TOKENS, cfg.budget_ms, tracer.as_ref())
         }
+        Cmd::Trace { cmd } => match cmd {
+            TraceCmd::On => trace::cmd_on(&cfg.home),
+            TraceCmd::Off => trace::cmd_off(&cfg.home),
+            TraceCmd::Status => trace::cmd_status(&cfg.home),
+            TraceCmd::Show {
+                session,
+                last,
+                full,
+                json,
+                follow,
+            } => trace::cmd_show(&cfg.home, session.as_deref(), last, full, json, follow),
+            TraceCmd::Clear => trace::cmd_clear(&cfg.home),
+        },
         Cmd::Init {
             repo,
             adaptive,
@@ -427,10 +478,29 @@ fn hook_inner(cfg: &Config) {
             .map(|v| v != "0")
             .unwrap_or(true),
     };
+    let tracer = trace::Tracer::from_env(&cfg.home);
+    let recording = trace::Recording::new(&client);
+    let ctx = HookCtx {
+        api: if tracer.is_some() {
+            &recording as &dyn DaemonApi
+        } else {
+            &client
+        },
+        ..ctx
+    };
     let outcome = hook::handle(&input, &ctx);
     if let Some(out) = &outcome.output {
         use std::io::Write;
         let _ = writeln!(std::io::stdout(), "{out}");
+    }
+    if let Some(t) = &tracer {
+        t.record(&trace::hook_entry(
+            &input,
+            outcome.output.as_ref(),
+            outcome.action,
+            t0.elapsed().as_millis() as u64,
+            recording.take(),
+        ));
     }
     if let Some(log) = &cfg.hook_log {
         let line = json!({"ts_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),

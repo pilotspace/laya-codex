@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`laya-codex trace`** records what Claude Code and laya-codex exchange, for debugging: per hook
+  call, the JSON Claude Code sent and the JSON laya-codex returned; per MCP message, the message and
+  the reply; and for both, every daemon call behind it (request, response with ranked spans and
+  `p` scores, time). `trace on` / `trace off` (a marker file, so it also reaches plugin hooks) or
+  `LAYA_CODEX_TRACE=1|<path>|0`; `trace show [--session S] [--last N] [--full] [--json]
+  [--follow]`, `trace status`, `trace clear`. Off by default because a trace contains prompts and
+  code; the file is private (0600 in a 0700 directory) and rotates at 64 MiB. Writing a trace
+  never changes a hook's output: its errors are ignored.
+
 ## [0.2.0] — 2026-09-23
 
 One name everywhere. The tool is **laya-codex**; "Laya" now only means the upstream
