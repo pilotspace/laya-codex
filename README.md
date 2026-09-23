@@ -62,32 +62,36 @@ helping from the next prompt. To check the setup, run `laya doctor --repo .`.
 
 </details>
 
-## What changes for Claude
+## What changes for Claude: one example
 
-Without laya, Claude starts every task by searching: grep, open a file, open another. With
-laya, the relevant code is already in the conversation when Claude starts. This is a real
-excerpt of what laya adds for the prompt *"Where does laya decide that a Moon server is safe to
-use, and what happens if it answers without a password?"* in this repository:
+**You ask Claude:**
+
+> Bug: `init` writes through a symlinked `.claude` folder into another repo. Find the check and fix it.
+
+| | Stock Claude Code | With laya-codex |
+|---|---|---|
+| **What Claude has before its first turn** | Only your prompt | Your prompt, plus the function that does the check (`check_target`), its code, and the line that calls it |
+| **What Claude does first** | Searches with grep and opens files until it finds the check | Reads the check it was given and starts fixing it |
+| **Turn at which a correct file is in context** (benchmark median, 20 tasks) | 6.5 | **0** (15 of 20 tasks) |
+
+What laya-codex added to the prompt, trimmed from real output on this repository:
 
 ````markdown
 Ranked locations:
-1. crates/laya-cli/src/doctor.rs — 107-148 fn check_auth
-2. crates/laya-store/src/conn.rs — 142-178 impl Executor > fn verify_server
-3. crates/laya-store/src/supervisor.rs — 276-306 fn stop; 119-158 impl MoonSupervisor; …
-4. crates/laya-cli/src/config.rs — 186-229
+1. crates/laya-cli/src/init.rs — 394-425 fn apply; 285-325 fn check_target; …
 
-### crates/laya-store/src/conn.rs:142-178 — impl Executor > fn verify_server
+### crates/laya-cli/src/init.rs:394-425 — fn apply
 ```rust
-    /// With a password configured, refuse a server that answers anonymous clients: Moon without
-    /// a password accepts any `AUTH`, so a successful `AUTH` alone does not prove the server is
-    /// laya's. Runs once per new connection (pooled connections are reused).
-    …
+pub fn apply(p: &Planned) -> anyhow::Result<()> { …
 ```
+
+Definitions and uses:
+- crates/laya-cli/src/init.rs:288: fn check_target(root: &Path, root_canon: &Path, path: &Path) … — definition of `check_target`
+- crates/laya-cli/src/init.rs:472: check_target(root, &root_canon, path)?; — use of `check_target`
 ````
 
-Claude then answers from the right functions, with far fewer file reads. Over the whole
-benchmark, a correct file was already in Claude's context before its first turn in 15 of 20
-tasks. Stock Claude Code first reached one at turn 4 at the earliest, with a median of 6.5:
+Across the whole benchmark, stock Claude Code reached a correct file at turn 4 at the earliest.
+laya-codex had one in context before Claude's first turn in most tasks:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-journey-dark.svg">
@@ -98,6 +102,13 @@ tasks. Stock Claude Code first reached one at turn 4 at the earliest, with a med
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-reads-dark.svg">
   <img alt="Read behaviour: precision 0.37 → 0.55, relevant code found 87% → 93%, first relevant Read at turn 8.2 → 4.0, wasted read tokens 4,993 → 2,118" src="docs/assets/benchmark-reads-light.svg" width="760">
 </picture>
+
+**More examples** in [docs/use-cases.md](docs/use-cases.md):
+- a follow-up in the same session that doesn't resend code;
+- impact analysis before changing a signature;
+- a first look at an unfamiliar codebase;
+- large files, subagents and teams;
+- where laya-codex helps less.
 
 ## Why you might want it
 
