@@ -136,6 +136,17 @@ pub mod mem {
         fn get_chunks(&self, _: &str, _: &[String]) -> Result<Vec<Chunk>> {
             Ok(vec![])
         }
+        fn chunks_of_file(&self, _: &str, path: &str) -> Result<Vec<Chunk>> {
+            let mut v = self
+                .files
+                .lock()
+                .unwrap()
+                .get(path)
+                .map(|(_, c)| c.clone())
+                .unwrap_or_default();
+            v.sort_by_key(|c| (c.start_line, c.end_line));
+            Ok(v)
+        }
         fn memo_get(&self, _: &str) -> Result<Option<String>> {
             Ok(None)
         }
@@ -183,6 +194,27 @@ mod tests {
                 .text
                 .contains("42")
         );
+    }
+
+    #[test]
+    fn mem_store_lists_a_files_chunks_in_line_order() {
+        let root = tmp_repo("chunks");
+        std::fs::write(
+            root.join("src/a.rs"),
+            "fn alpha() -> u32 {\n    1\n}\n\nfn beta() -> u32 {\n    2\n}\n",
+        )
+        .unwrap();
+        let s = MemStore::default();
+        index_repo(&root, &s, "r").unwrap();
+        let chunks = s.chunks_of_file("r", "src/a.rs").unwrap();
+        assert!(!chunks.is_empty());
+        assert!(chunks.iter().all(|c| c.path == "src/a.rs"));
+        assert!(
+            chunks
+                .windows(2)
+                .all(|w| w[0].start_line <= w[1].start_line)
+        );
+        assert!(s.chunks_of_file("r", "src/none.rs").unwrap().is_empty());
     }
 
     #[test]

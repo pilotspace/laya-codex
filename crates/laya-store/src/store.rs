@@ -570,6 +570,14 @@ impl Store for MoonStore {
             .collect())
     }
 
+    /// The file record's chunk list, then one pipelined `HGETALL`: two round trips.
+    fn chunks_of_file(&self, repo_id: &str, path: &str) -> Result<Vec<Chunk>> {
+        let ids = self.file_record(repo_id, path)?.ids;
+        let mut chunks = self.get_chunks(repo_id, &ids)?;
+        chunks.sort_by_key(|c| (c.start_line, c.end_line));
+        Ok(chunks)
+    }
+
     fn memo_get(&self, key: &str) -> Result<Option<String>> {
         let key = keys::memo(key);
         self.exec

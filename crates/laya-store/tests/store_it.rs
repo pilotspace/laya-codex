@@ -243,6 +243,30 @@ fn reput_replaces_chunks() {
 }
 
 #[test]
+fn chunks_of_file_returns_the_files_current_chunks_in_line_order() {
+    let m = require_moon!();
+    let s = store(&m);
+    let late = chunk("big.rs", 40, "fn late", &["late"], "fn late() {}");
+    let early = chunk("big.rs", 1, "fn early", &["early"], "fn early() {}");
+    let other = chunk("other.rs", 1, "fn other", &["other"], "fn other() {}");
+    s.put_file(R, "big.rs", "h1", &[late.clone(), early.clone()])
+        .expect("put");
+    s.put_file(R, "other.rs", "h", std::slice::from_ref(&other))
+        .expect("put other");
+    assert_eq!(
+        s.chunks_of_file(R, "big.rs").expect("chunks"),
+        vec![early.clone(), late]
+    );
+    // A re-put replaces the list; unknown and deleted files have no chunks.
+    s.put_file(R, "big.rs", "h2", std::slice::from_ref(&early))
+        .expect("reput");
+    assert_eq!(s.chunks_of_file(R, "big.rs").expect("chunks"), vec![early]);
+    assert!(s.chunks_of_file(R, "none.rs").expect("none").is_empty());
+    s.delete_file(R, "big.rs").expect("delete");
+    assert!(s.chunks_of_file(R, "big.rs").expect("deleted").is_empty());
+}
+
+#[test]
 fn delete_file_removes_everything() {
     let m = require_moon!();
     let s = store(&m);

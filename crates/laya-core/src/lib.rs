@@ -197,6 +197,12 @@ pub trait Store: Send + Sync {
         Ok(Vec::new())
     }
     fn get_chunks(&self, repo_id: &str, ids: &[String]) -> Result<Vec<Chunk>>;
+    /// Every chunk of one indexed file, ordered by `start_line` (empty if the file is not
+    /// indexed). Backs file outlines. Default: unsupported → empty, which callers treat as
+    /// "not indexed" and fail open.
+    fn chunks_of_file(&self, _repo_id: &str, _path: &str) -> Result<Vec<Chunk>> {
+        Ok(Vec::new())
+    }
     /// Generic memo cache (Laya scores, query results). TTL in seconds, 0 = no expiry.
     fn memo_get(&self, key: &str) -> Result<Option<String>>;
     fn memo_put(&self, key: &str, value: &str, ttl_secs: u64) -> Result<()>;
