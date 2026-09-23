@@ -1,5 +1,5 @@
 //! Test harness: spawns a private `moon` on a random free port with a temp dir and kills it on
-//! drop. The binary comes from `LAYA_TEST_MOON_BIN` (or `MOON_BIN`); tests skip (with a message)
+//! drop. The binary comes from `LAYA_CODEX_TEST_MOON_BIN` (or `MOON_BIN`); tests skip (with a message)
 //! when neither is set or the file is missing.
 #![allow(dead_code)]
 
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use laya_core::{Chunk, Lang};
 
 /// Env vars naming the Moon binary for integration tests, in priority order.
-pub const MOON_BIN_VARS: [&str; 2] = ["LAYA_TEST_MOON_BIN", "MOON_BIN"];
+pub const MOON_BIN_VARS: [&str; 2] = ["LAYA_CODEX_TEST_MOON_BIN", "MOON_BIN"];
 
 pub fn moon_bin() -> Option<PathBuf> {
     let Some(p) = MOON_BIN_VARS
@@ -21,14 +21,14 @@ pub fn moon_bin() -> Option<PathBuf> {
         .find_map(std::env::var_os)
         .map(PathBuf::from)
     else {
-        eprintln!("SKIP: set LAYA_TEST_MOON_BIN to a moon binary to run this test");
+        eprintln!("SKIP: set LAYA_CODEX_TEST_MOON_BIN to a moon binary to run this test");
         return None;
     };
     if p.is_file() {
         Some(p)
     } else {
         eprintln!(
-            "SKIP: moon binary not found at {} (LAYA_TEST_MOON_BIN)",
+            "SKIP: moon binary not found at {} (LAYA_CODEX_TEST_MOON_BIN)",
             p.display()
         );
         None

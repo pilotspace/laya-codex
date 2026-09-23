@@ -4,10 +4,10 @@
 //! answers it spawns a detached moon (own process group, so a Ctrl-C to the CLI does not kill it)
 //! with `--appendonly yes` so data and the FT index survive restarts, then waits until it answers.
 //!
-//! With [`MoonSupervisor::with_auth`] Moon is spawned with laya's ACL file and password, and only
-//! a Moon that rejects anonymous clients *and* accepts laya's password counts as running
+//! With [`MoonSupervisor::with_auth`] Moon is spawned with laya-codex's ACL file and password, and only
+//! a Moon that rejects anonymous clients *and* accepts laya-codex's password counts as running
 //! ([`MoonProbe::Ready`]). A Moon without a password on the port is refused, except one an older
-//! laya started from the same data dir (its pidfile names a live `moon`), which is replaced.
+//! laya-codex started from the same data dir (its pidfile names a live `moon`), which is replaced.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -28,13 +28,13 @@ const MAX_REPLY: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupervisorStatus {
-    /// laya's Moon already answered on the port.
+    /// laya-codex's Moon already answered on the port.
     AlreadyRunning,
     /// A new moon was spawned and answered.
     Spawned { pid: u32 },
 }
 
-/// What answers on the Moon port, from laya's point of view.
+/// What answers on the Moon port, from laya-codex's point of view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoonProbe {
     /// Nothing answers RESP there (closed port, or a non-RESP listener).
@@ -42,9 +42,9 @@ pub enum MoonProbe {
     /// Ours: without auth, it answers PING; with auth, it rejects an anonymous PING and answers
     /// PING after `AUTH <password>`.
     Ready,
-    /// It answers an anonymous PING although laya expects a password: not laya's Moon.
+    /// It answers an anonymous PING although laya-codex expects a password: not laya-codex's Moon.
     Unprotected,
-    /// It requires a password but rejects laya's.
+    /// It requires a password but rejects laya-codex's.
     WrongPassword,
 }
 
@@ -116,7 +116,7 @@ impl MoonSupervisor {
         self.dir.join("moon.log")
     }
 
-    /// Is laya's Moon ([`MoonProbe::Ready`]) answering on `127.0.0.1:port`?
+    /// Is laya-codex's Moon ([`MoonProbe::Ready`]) answering on `127.0.0.1:port`?
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.probe() == MoonProbe::Ready
@@ -129,7 +129,7 @@ impl MoonSupervisor {
     }
 
     /// Would [`Self::ensure_running`] replace the Moon on the port (a password-less Moon an older
-    /// laya started from this data dir)?
+    /// laya-codex started from this data dir)?
     #[must_use]
     pub fn is_legacy(&self) -> bool {
         self.auth.is_some() && self.probe() == MoonProbe::Unprotected && self.legacy_pid().is_some()
@@ -141,12 +141,12 @@ impl MoonSupervisor {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Error for a Moon on the port that laya must not use.
+    /// Error for a Moon on the port that laya-codex must not use.
     fn refuse(&self, p: MoonProbe) -> Error {
         Error::StoreUnavailable(refusal(self.port, p))
     }
 
-    /// Pid of a password-less Moon an older laya started from our data dir: the pidfile names a
+    /// Pid of a password-less Moon an older laya-codex started from our data dir: the pidfile names a
     /// live process whose executable is called `moon`.
     fn legacy_pid(&self) -> Option<u32> {
         let pid: u32 = std::fs::read_to_string(self.pidfile())
@@ -162,7 +162,7 @@ impl MoonSupervisor {
         tracing::warn!(
             pid,
             port = self.port,
-            "stopping the password-less moon started by an older laya"
+            "stopping the password-less moon started by an older laya-codex"
         );
         self.terminate(pid)?;
         if self.probe() != MoonProbe::Down {
@@ -193,10 +193,10 @@ impl MoonSupervisor {
         Ok(())
     }
 
-    /// Make sure laya's Moon answers on the port, spawning it if needed.
+    /// Make sure laya-codex's Moon answers on the port, spawning it if needed.
     ///
-    /// Errors without spawning when the port is served by a Moon laya cannot authenticate
-    /// against, unless it is a password-less Moon an older laya started from the same data dir:
+    /// Errors without spawning when the port is served by a Moon laya-codex cannot authenticate
+    /// against, unless it is a password-less Moon an older laya-codex started from the same data dir:
     /// that one is stopped and replaced, keeping its data dir (hence the index).
     pub fn ensure_running(&self) -> Result<SupervisorStatus> {
         match self.probe() {
@@ -305,15 +305,15 @@ impl MoonSupervisor {
     }
 }
 
-/// Why laya refuses the Moon on `port` (for `Unprotected` / `WrongPassword`), with the fix.
+/// Why laya-codex refuses the Moon on `port` (for `Unprotected` / `WrongPassword`), with the fix.
 #[must_use]
 pub fn refusal(port: u16, p: MoonProbe) -> String {
     match p {
         MoonProbe::Unprotected => format!(
-            "port {port} is served by a Moon without laya's password; stop it or set LAYA_MOON_PORT"
+            "port {port} is served by a Moon without laya-codex's password; stop it or set LAYA_CODEX_MOON_PORT"
         ),
         _ => format!(
-            "port {port} is served by a Moon that rejects laya's password (another LAYA_HOME?); stop it or set LAYA_MOON_PORT"
+            "port {port} is served by a Moon that rejects laya-codex's password (another LAYA_CODEX_HOME?); stop it or set LAYA_CODEX_MOON_PORT"
         ),
     }
 }
@@ -463,9 +463,9 @@ mod tests {
     #[test]
     fn refusal_names_the_port_and_the_fix() {
         let m = refusal(16379, MoonProbe::Unprotected);
-        assert!(m.contains("port 16379") && m.contains("without laya's password"));
-        assert!(m.contains("LAYA_MOON_PORT"));
-        assert!(refusal(1, MoonProbe::WrongPassword).contains("rejects laya's password"));
+        assert!(m.contains("port 16379") && m.contains("without laya-codex's password"));
+        assert!(m.contains("LAYA_CODEX_MOON_PORT"));
+        assert!(refusal(1, MoonProbe::WrongPassword).contains("rejects laya-codex's password"));
     }
 
     #[test]

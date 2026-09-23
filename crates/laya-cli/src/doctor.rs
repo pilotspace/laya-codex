@@ -1,4 +1,4 @@
-//! `laya doctor`: pass/warn/fail checks, each with a fix hint and a hard time bound.
+//! `laya-codex doctor`: pass/warn/fail checks, each with a fix hint and a hard time bound.
 //!
 //! Check functions take their inputs (paths, probe results) as arguments so they are testable
 //! without a daemon or Moon; [`run`] gathers the real inputs. Only `fail` sets exit code 1.
@@ -13,7 +13,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::client::Client;
-use crate::config::{Config, MOON_FIX, is_executable, model_candidates};
+use crate::config::{Config, INSTALL_SH, MOON_FIX, is_executable, model_candidates};
 use crate::hook::DaemonApi;
 use crate::init::{HOOK_EVENTS, is_laya_hook};
 use crate::protocol::{Request, Response};
@@ -65,7 +65,7 @@ pub fn check_moon(bin: &Path, tried: &[PathBuf], running: bool, probe_timeout: D
                 "moon",
                 Level::Warn,
                 format!(
-                    "a Moon answers on its port, but no binary was found (tried {list}); laya cannot restart it"
+                    "a Moon answers on its port, but no binary was found (tried {list}); laya-codex cannot restart it"
                 ),
                 fix(),
             )
@@ -97,7 +97,7 @@ pub fn check_moon(bin: &Path, tried: &[PathBuf], running: bool, probe_timeout: D
                 level,
                 format!("{} is not runnable: {e}", bin.display()),
                 Some(format!(
-                    "rebuild moon or point LAYA_MOON_BIN at a working build. {MOON_FIX}"
+                    "rebuild moon or point LAYA_CODEX_MOON_BIN at a working build. {MOON_FIX}"
                 )),
             )
         }
@@ -105,41 +105,41 @@ pub fn check_moon(bin: &Path, tried: &[PathBuf], running: bool, probe_timeout: D
 }
 
 /// The server on the Moon port: `probe` is `(what answers, it is a password-less Moon an older
-/// laya started from this LAYA_HOME)`, or why laya's password could not be loaded.
+/// laya-codex started from this LAYA_CODEX_HOME)`, or why laya-codex's password could not be loaded.
 pub fn check_auth(probe: Result<(laya_store::MoonProbe, bool), String>, port: u16) -> Check {
     use laya_store::MoonProbe;
     let other = || {
         Some(format!(
-            "stop the other Moon on port {port}, or set LAYA_MOON_PORT to a free port"
+            "stop the other Moon on port {port}, or set LAYA_CODEX_MOON_PORT to a free port"
         ))
     };
     match probe {
         Err(e) => Check::new(
             "auth",
             Level::Fail,
-            format!("cannot load laya's Moon password: {e}"),
-            Some("delete $LAYA_HOME/moon.acl and run `laya stop`; both are recreated".into()),
+            format!("cannot load laya-codex's Moon password: {e}"),
+            Some("delete $LAYA_CODEX_HOME/moon.acl and run `laya-codex stop`; both are recreated".into()),
         ),
         Ok((MoonProbe::Ready, _)) => Check::new(
             "auth",
             Level::Pass,
-            format!("laya's password-protected Moon answers on port {port}"),
+            format!("laya-codex's password-protected Moon answers on port {port}"),
             None,
         ),
         Ok((MoonProbe::Down, _)) => Check::new(
             "auth",
             Level::Pass,
-            format!("port {port} is free; laya starts its password-protected Moon on demand"),
+            format!("port {port} is free; laya-codex starts its password-protected Moon on demand"),
             None,
         ),
         Ok((MoonProbe::Unprotected, true)) => Check::new(
             "auth",
             Level::Warn,
             format!(
-                "port {port} is served by a Moon an older laya started without a password; the next daemon start replaces it"
+                "port {port} is served by a Moon an older laya-codex started without a password; the next daemon start replaces it"
             ),
             Some(
-                "`laya stop` (the daemon restarts on demand and replaces it, keeping the index)"
+                "`laya-codex stop` (the daemon restarts on demand and replaces it, keeping the index)"
                     .into(),
             ),
         ),
@@ -178,7 +178,7 @@ pub fn check_model(use_model: bool, dir: Option<&Path>, searched: &[PathBuf]) ->
         return Check::new(
             "model",
             Level::Pass,
-            "disabled (LAYA_NO_MODEL=1): lexical-only ranking",
+            "disabled (LAYA_CODEX_NO_MODEL=1): lexical-only ranking",
             None,
         );
     }
@@ -188,10 +188,11 @@ pub fn check_model(use_model: bool, dir: Option<&Path>, searched: &[PathBuf]) ->
             .map(|p| p.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        let base = searched
-            .last()
+        // The laya-code re-ranker goes where it is looked for first.
+        let dest = searched
+            .first()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "$LAYA_HOME/models/laya-base".into());
+            .unwrap_or_else(|| "$LAYA_CODEX_HOME/models/laya-code".into());
         return Check::new(
             "model",
             Level::Warn,
@@ -199,7 +200,8 @@ pub fn check_model(use_model: bool, dir: Option<&Path>, searched: &[PathBuf]) ->
                 "no model found (looked for model.safetensors in {list}); ranking is lexical-only"
             ),
             Some(format!(
-                "hf download convaiinnovations/laya --local-dir {base}  (or set LAYA_MODEL_DIR; LAYA_NO_MODEL=1 silences this)"
+                "download and verify the laya-code re-ranker (~850 MB): `curl -fsSL {INSTALL_SH} | sh -s -- --model-only`, \
+                 or `hf download tindang/laya-code --local-dir {dest}` (or set LAYA_CODEX_MODEL_DIR; LAYA_CODEX_NO_MODEL=1 silences this)"
             )),
         );
     };
@@ -211,7 +213,10 @@ pub fn check_model(use_model: bool, dir: Option<&Path>, searched: &[PathBuf]) ->
                 "{} is incomplete ({e}); the daemon falls back to lexical-only",
                 dir.display()
             ),
-            Some("re-download the model directory, or set LAYA_MODEL_DIR to a complete one".into()),
+            Some(
+                "re-download the model directory, or set LAYA_CODEX_MODEL_DIR to a complete one"
+                    .into(),
+            ),
         );
     }
     if cfg!(target_os = "macos") {
@@ -229,12 +234,12 @@ pub fn check_model(use_model: bool, dir: Option<&Path>, searched: &[PathBuf]) ->
                 "{} found, but it runs on CPU here: too slow for interactive re-ranking",
                 dir.display()
             ),
-            Some("set LAYA_NO_MODEL=1 for lexical-only ranking".into()),
+            Some("set LAYA_CODEX_NO_MODEL=1 for lexical-only ranking".into()),
         )
     }
 }
 
-/// `LAYA_HOME` exists (or can be created) and is writable.
+/// `LAYA_CODEX_HOME` exists (or can be created) and is writable.
 pub fn check_home(home: &Path) -> Check {
     let probe = home.join(format!(".doctor-probe-{}", std::process::id()));
     let res = std::fs::create_dir_all(home)
@@ -251,7 +256,7 @@ pub fn check_home(home: &Path) -> Check {
             "home",
             Level::Fail,
             format!("{} is not writable: {e}", home.display()),
-            Some("make it writable, or set LAYA_HOME to a writable directory".into()),
+            Some("make it writable, or set LAYA_CODEX_HOME to a writable directory".into()),
         ),
     }
 }
@@ -262,20 +267,20 @@ pub fn check_daemon(ping: Result<Response, String>, socket: &Path) -> Check {
     match ping {
         Ok(Response::Pong { version, .. }) if version != ours => Check::new("daemon", Level::Warn,
             format!("running daemon is v{version}, this binary is v{ours}"),
-            Some("restart it so it runs this build: `laya stop` (it restarts on demand)".into())),
+            Some("restart it so it runs this build: `laya-codex stop` (it restarts on demand)".into())),
         Ok(Response::Pong { model_ready, .. }) => {
             let model = if model_ready { "model ready" } else { "model loading or lexical-only" };
             Check::new("daemon", Level::Pass, format!("up at {} ({model})", socket.display()), None)
         }
-        Ok(other) => Check::new("daemon", Level::Warn, format!("unexpected ping reply {other:?}"), Some("restart it: `laya stop`".into())),
+        Ok(other) => Check::new("daemon", Level::Warn, format!("unexpected ping reply {other:?}"), Some("restart it: `laya-codex stop`".into())),
         Err(e) => Check::new("daemon", Level::Warn, format!("not running at {} ({e}); it starts on demand at the first hook", socket.display()),
-            Some("`laya doctor --start` starts it now; if it does not come up, see $LAYA_HOME/daemon.log".into())),
+            Some("`laya-codex doctor --start` starts it now; if it does not come up, see $LAYA_CODEX_HOME/daemon.log".into())),
     }
 }
 
 /// Indexed file count of the repo in Moon.
 pub fn check_index(files: Result<usize, String>, root: &Path) -> Check {
-    let fix = Some(format!("laya index {}", root.display()));
+    let fix = Some(format!("laya-codex index {}", root.display()));
     match files {
         Ok(0) => Check::new(
             "index",
@@ -298,7 +303,7 @@ pub fn check_index(files: Result<usize, String>, root: &Path) -> Check {
     }
 }
 
-/// laya hooks in `.claude/settings.local.json` / `.claude/settings.json`.
+/// laya-codex hooks in `.claude/settings.local.json` / `.claude/settings.json`.
 /// The Claude Code settings scope that enables the laya-codex plugin for `root` ("local",
 /// "project" or "user"), or `None`. The most specific scope that mentions the plugin decides, as
 /// in Claude Code: local settings override project settings, which override user settings.
@@ -331,13 +336,13 @@ fn user_home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
 }
 
-/// laya's four hooks, from `laya init` in the repo's `.claude` settings or from the plugin.
+/// laya-codex's four hooks, from `laya-codex init` in the repo's `.claude` settings or from the plugin.
 pub fn check_hooks(root: &Path) -> Check {
     check_hooks_with(root, &user_home())
 }
 
 pub fn check_hooks_with(root: &Path, home: &Path) -> Check {
-    let init_fix = Some(format!("laya init --repo {}", root.display()));
+    let init_fix = Some(format!("laya-codex init --repo {}", root.display()));
     let mut cmds: Vec<(&str, String)> = Vec::new();
     for name in ["settings.local.json", "settings.json"] {
         let path = root.join(".claude").join(name);
@@ -355,7 +360,7 @@ pub fn check_hooks_with(root: &Path, home: &Path) -> Check {
                     Level::Fail,
                     format!("{} is not valid JSON: {e}", path.display()),
                     Some(format!(
-                        "fix it by hand, or `laya init --force --repo {}` (backs it up to .bak)",
+                        "fix it by hand, or `laya-codex init --force --repo {}` (backs it up to .bak)",
                         root.display()
                     )),
                 );
@@ -398,7 +403,7 @@ pub fn check_hooks_with(root: &Path, home: &Path) -> Check {
             "hooks",
             Level::Fail,
             format!(
-                "laya hooks missing for {} in {}/.claude",
+                "laya-codex hooks missing for {} in {}/.claude",
                 missing.join(", "),
                 root.display()
             ),
@@ -415,7 +420,7 @@ pub fn check_hooks_with(root: &Path, home: &Path) -> Check {
         return Check::new(
             "hooks",
             Level::Fail,
-            format!("a laya hook runs {exe}, which is not an executable"),
+            format!("a laya-codex hook runs {exe}, which is not an executable"),
             init_fix,
         );
     }
@@ -427,7 +432,7 @@ pub fn check_hooks_with(root: &Path, home: &Path) -> Check {
     )
 }
 
-/// The executable of a laya hook command: env assignments dropped, shell quotes removed.
+/// The executable of a laya-codex hook command: env assignments dropped, shell quotes removed.
 fn hook_exe(cmd: &str) -> String {
     let mut head = cmd.trim().strip_suffix(" hook").unwrap_or(cmd).trim();
     while let Some((tok, rest)) = head.split_once(' ')
@@ -462,7 +467,7 @@ pub fn check_mcp_with(root: &Path, home: &Path) -> Check {
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or(Value::Null);
-    match v["mcpServers"]["laya"]["command"].as_str() {
+    match v["mcpServers"]["laya-codex"]["command"].as_str() {
         Some(cmd) => Check::new(
             "mcp",
             Level::Pass,
@@ -472,17 +477,17 @@ pub fn check_mcp_with(root: &Path, home: &Path) -> Check {
         None if plugin_enabled(root, home).is_some() => Check::new(
             "mcp",
             Level::Pass,
-            "laya server via the laya-codex plugin",
+            "laya-codex server via the laya-codex plugin",
             None,
         ),
         None => Check::new(
             "mcp",
             Level::Warn,
             format!(
-                "no laya server in {} (the laya_search tool is unavailable)",
+                "no laya-codex server in {} (the search tool is unavailable)",
                 path.display()
             ),
-            Some(format!("laya init --repo {}", root.display())),
+            Some(format!("laya-codex init --repo {}", root.display())),
         ),
     }
 }
@@ -606,7 +611,7 @@ pub fn run(cfg: &Config, root: &Path, start: bool) -> Vec<Check> {
                     .map_err(|e| e.to_string())
             }
             (Err(e), _) | (_, Err(e)) => Err(e),
-            _ => Err("laya's Moon is not running".to_string()),
+            _ => Err("laya-codex's Moon is not running".to_string()),
         };
         check_index(files, &repo)
     }));
@@ -652,7 +657,7 @@ mod tests {
             "{}",
             c.detail
         );
-        assert!(c.fix.as_deref().unwrap().contains("LAYA_MOON_BIN"));
+        assert!(c.fix.as_deref().unwrap().contains("LAYA_CODEX_MOON_BIN"));
         // Already running without a binary: works now, cannot be restarted.
         assert_eq!(check_moon(&tried[1], &tried, true, T).level, Level::Warn);
     }
@@ -710,7 +715,16 @@ mod tests {
             "{}",
             c.detail
         );
-        assert!(c.fix.as_deref().unwrap().contains("hf download"));
+        let fix = c.fix.as_deref().unwrap();
+        assert!(
+            fix.contains("https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh -s -- --model-only"),
+            "{fix}"
+        );
+        let hf = format!(
+            "hf download tindang/laya-code --local-dir {}",
+            searched[0].display()
+        );
+        assert!(fix.contains(&hf), "{fix}");
 
         let m = d.join("m");
         for f in [
@@ -749,7 +763,7 @@ mod tests {
         let c = check_home(&ro);
         std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(c.level, Level::Fail);
-        assert!(c.fix.as_deref().unwrap().contains("LAYA_HOME"));
+        assert!(c.fix.as_deref().unwrap().contains("LAYA_CODEX_HOME"));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -793,16 +807,16 @@ mod tests {
         let c = check_auth(Ok((MoonProbe::Unprotected, false)), 7);
         assert_eq!(c.level, Level::Fail);
         assert!(
-            c.detail.contains("port 7") && c.detail.contains("without laya's password"),
+            c.detail.contains("port 7") && c.detail.contains("without laya-codex's password"),
             "{}",
             c.detail
         );
-        assert!(c.fix.as_deref().unwrap().contains("LAYA_MOON_PORT"));
+        assert!(c.fix.as_deref().unwrap().contains("LAYA_CODEX_MOON_PORT"));
         assert_eq!(ok(MoonProbe::WrongPassword), Level::Fail);
-        // A Moon an older laya started is replaced at the next daemon start.
+        // A Moon an older laya-codex started is replaced at the next daemon start.
         let c = check_auth(Ok((MoonProbe::Unprotected, true)), 7);
         assert_eq!(c.level, Level::Warn);
-        assert!(c.fix.as_deref().unwrap().contains("laya stop"));
+        assert!(c.fix.as_deref().unwrap().contains("laya-codex stop"));
         let c = check_auth(Err("moon.acl is a symlink".into()), 7);
         assert_eq!(c.level, Level::Fail);
     }
@@ -815,7 +829,7 @@ mod tests {
         assert!(c.detail.contains("12 files"));
         let c = check_index(Ok(0), root);
         assert_eq!(c.level, Level::Warn);
-        assert!(c.fix.as_deref().unwrap().contains("laya index /r"));
+        assert!(c.fix.as_deref().unwrap().contains("laya-codex index /r"));
         assert_eq!(
             check_index(Err("moon down".into()), root).level,
             Level::Warn
@@ -831,8 +845,8 @@ mod tests {
         assert_eq!(check_hooks(&root).level, Level::Fail);
         assert_eq!(check_mcp(&root).level, Level::Warn);
 
-        // A laya binary that exists, so the command's executable check passes.
-        let exe = root.join("bin/laya");
+        // A laya-codex binary that exists, so the command's executable check passes.
+        let exe = root.join("bin/laya-codex");
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         script(&exe, "exit 0");
         crate::init::run(&root, &exe, false, false, false).unwrap();
@@ -851,11 +865,11 @@ mod tests {
         std::fs::remove_file(&exe).unwrap();
         let c = check_hooks(&root);
         assert_eq!(c.level, Level::Fail);
-        assert!(c.detail.contains("bin/laya"), "{}", c.detail);
+        assert!(c.detail.contains("bin/laya-codex"), "{}", c.detail);
 
         // Partially installed: only some events.
         let s = root.join(".claude/settings.local.json");
-        std::fs::write(&s, r#"{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "laya hook"}]}]}}"#).unwrap();
+        std::fs::write(&s, r#"{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "laya-codex hook"}]}]}}"#).unwrap();
         let c = check_hooks(&root);
         assert_eq!(c.level, Level::Fail);
         assert!(

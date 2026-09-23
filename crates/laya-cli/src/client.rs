@@ -68,7 +68,7 @@ impl DaemonApi for Client {
     }
 }
 
-/// Minimum time between daemon start attempts across all laya processes. Without it every
+/// Minimum time between daemon start attempts across all laya-codex processes. Without it every
 /// hook or retry during a slow (or failing) start spawns another daemon.
 const SPAWN_BACKOFF: Duration = Duration::from_secs(10);
 
@@ -91,7 +91,7 @@ fn claim_spawn(marker: &Path, backoff: Duration) -> bool {
     true
 }
 
-/// Start `laya daemon` detached from the calling process (stdio to /dev/null; it logs itself).
+/// Start `laya-codex daemon` detached from the calling process (stdio to /dev/null; it logs itself).
 pub fn spawn_daemon() -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
     let log = crate::config::Config::from_env().daemon_log();
@@ -108,26 +108,26 @@ pub fn spawn_daemon() -> anyhow::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::from(err))
         .spawn()
-        .context("spawn laya daemon")?;
+        .context("spawn laya-codex daemon")?;
     Ok(())
 }
 
-/// How `laya stop` stopped the daemon.
+/// How `laya-codex stop` stopped the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stopped {
     /// The daemon acknowledged `Request::Shutdown` and exited.
     ViaSocket,
-    /// SIGTERM to the pidfile's pid, verified to be a `laya` process (a daemon whose socket is
+    /// SIGTERM to the pidfile's pid, verified to be a `laya-codex` process (a daemon whose socket is
     /// dead, or an older daemon that does not know `Shutdown`).
     ViaSignal(u32),
     NotRunning,
 }
 
-/// How long `laya stop` waits for the daemon to go away.
+/// How long `laya-codex stop` waits for the daemon to go away.
 const STOP_WAIT: Duration = Duration::from_secs(5);
 
 /// Stop the daemon: ask it over the socket; only when that fails, SIGTERM the pidfile's pid, and
-/// only if that pid is verified to be a live `laya` process (never a recycled pid). Stale
+/// only if that pid is verified to be a live `laya-codex` process (never a recycled pid). Stale
 /// pidfile/socket are removed only when no daemon holds the lock.
 pub fn stop_daemon(socket: &Path, pidfile: &Path, lock: &Path) -> anyhow::Result<Stopped> {
     let asked = Client::new(socket, Duration::from_secs(3), false).call(Request::Shutdown);
@@ -230,7 +230,7 @@ mod tests {
     fn stop_never_signals_a_pid_that_is_not_a_laya_daemon() {
         let d = scratch("stale");
         let pidfile = d.join("daemon.pid");
-        // A recycled pid: this test process is alive but is not `laya`.
+        // A recycled pid: this test process is alive but is not `laya-codex`.
         std::fs::write(&pidfile, std::process::id().to_string()).unwrap();
         let r = stop_daemon(&d.join("laya.sock"), &pidfile, &d.join("daemon.lock")).unwrap();
         assert_eq!(r, Stopped::NotRunning);

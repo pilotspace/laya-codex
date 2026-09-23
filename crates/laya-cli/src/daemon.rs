@@ -1,4 +1,4 @@
-//! `laya daemon`: long-lived process that keeps Moon supervised, the Laya model warm and
+//! `laya-codex daemon`: long-lived process that keeps Moon supervised, the Laya model warm and
 //! per-session state in memory. Clients speak the JSON-lines protocol in `protocol.rs`.
 
 use std::collections::HashSet;
@@ -30,7 +30,7 @@ pub struct MemoScorer {
     /// Set while a model run is in flight. A query that finds the model busy degrades to
     /// lexical ranking instead of queueing behind abandoned (timed-out) runs.
     busy: Arc<std::sync::atomic::AtomicBool>,
-    /// `false` (LAYA_MEMO=0): never serve cached probabilities, so every prompt pays the model
+    /// `false` (LAYA_CODEX_MEMO=0): never serve cached probabilities, so every prompt pays the model
     /// run as a new prompt does in real use (benchmarks compare arms under equal, cold scoring).
     read_cache: bool,
 }
@@ -105,7 +105,7 @@ impl Scorer for MemoScorer {
             let t0 = std::time::Instant::now();
             let ps = self.inner.score(task, &todo)?;
             eprintln!(
-                "[laya] scored {} chunks ({} cached) in {:?}",
+                "[laya-codex] scored {} chunks ({} cached) in {:?}",
                 todo.len(),
                 chunks.len() - todo.len(),
                 t0.elapsed()
@@ -194,7 +194,10 @@ impl ScopeClassifier for LayaScope {
         let t0 = std::time::Instant::now();
         let probs = self.probs(prompt)?;
         let scope = scope_from_probs(&probs, self.min_p);
-        eprintln!("[laya] scope {scope:?} p={probs:?} in {:?}", t0.elapsed());
+        eprintln!(
+            "[laya-codex] scope {scope:?} p={probs:?} in {:?}",
+            t0.elapsed()
+        );
         scope
     }
 }
@@ -408,9 +411,11 @@ impl Daemon {
                         match catch_unwind(AssertUnwindSafe(|| {
                             indexer::index_repo(&root, store, &slot.id)
                         })) {
-                            Ok(r) => eprintln!("[laya] background index {}: {r:?}", root.display()),
+                            Ok(r) => {
+                                eprintln!("[laya-codex] background index {}: {r:?}", root.display())
+                            }
                             Err(p) => eprintln!(
-                                "[laya] background index {} panicked: {}",
+                                "[laya-codex] background index {} panicked: {}",
                                 root.display(),
                                 panic_message(p.as_ref())
                             ),
@@ -508,7 +513,7 @@ fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
 fn handle_guarded(daemon: &Arc<Daemon>, req: Request) -> Response {
     catch_unwind(AssertUnwindSafe(|| daemon.handle(req))).unwrap_or_else(|p| {
         let message = format!("internal error: {}", panic_message(p.as_ref()));
-        eprintln!("[laya] request panicked: {message}");
+        eprintln!("[laya-codex] request panicked: {message}");
         Response::Error { message }
     })
 }
@@ -581,7 +586,7 @@ fn serve_conn(daemon: Arc<Daemon>, stream: UnixStream, shutdown: &dyn Fn(), limi
                 "request too long (over {} bytes); connection closed",
                 limits.max_request_bytes
             );
-            eprintln!("[laya] {message}");
+            eprintln!("[laya-codex] {message}");
             send(&stream, &Response::Error { message });
             return;
         }
@@ -654,13 +659,13 @@ fn serve(
             Ok(s) => s,
             Err(e) => {
                 // Out of fds or similar: back off instead of spinning on the error.
-                eprintln!("[laya] accept error: {e}");
+                eprintln!("[laya-codex] accept error: {e}");
                 std::thread::sleep(Duration::from_millis(50));
                 continue;
             }
         };
         if !peer_allowed(&s) {
-            eprintln!("[laya] rejected a connection from another user");
+            eprintln!("[laya-codex] rejected a connection from another user");
             continue;
         }
         let Some(slot) = ConnSlot::try_take(&active, limits.max_conns) else {
@@ -676,7 +681,7 @@ fn serve(
                 serve_conn(d, s, &*stop, &limits);
             });
         if let Err(e) = spawned {
-            eprintln!("[laya] cannot start a connection thread: {e}");
+            eprintln!("[laya-codex] cannot start a connection thread: {e}");
         }
     }
 }
@@ -688,7 +693,7 @@ fn peer_allowed(s: &UnixStream) -> bool {
 }
 
 /// Bind the socket (mode 0600), refusing to start a second daemon when one already answers
-/// (an older laya that does not take the daemon lock).
+/// (an older laya-codex that does not take the daemon lock).
 fn bind_single(socket: &Path) -> anyhow::Result<Option<UnixListener>> {
     use std::os::unix::fs::PermissionsExt;
     if UnixStream::connect(socket).is_ok() {
@@ -712,18 +717,18 @@ fn remove_own_pidfile(path: &Path) {
     }
 }
 
-/// Run the daemon. The caller holds the daemon lock (see `laya daemon` in main.rs).
+/// Run the daemon. The caller holds the daemon lock (see `laya-codex daemon` in main.rs).
 pub fn run(cfg: &Config) -> anyhow::Result<()> {
     let Some(listener) = bind_single(&cfg.socket_path())? else {
         eprintln!(
-            "[laya] daemon already running at {}",
+            "[laya-codex] daemon already running at {}",
             cfg.socket_path().display()
         );
         return Ok(());
     };
     let (socket, pidfile) = (cfg.socket_path(), cfg.daemon_pidfile());
     let shutdown: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-        eprintln!("[laya] shutdown requested; exiting (moon keeps running)");
+        eprintln!("[laya-codex] shutdown requested; exiting (moon keeps running)");
         let _ = std::fs::remove_file(&socket);
         remove_own_pidfile(&pidfile);
         std::process::exit(0);
@@ -738,42 +743,42 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     )?)?);
     // Defaults are the configuration that won the paired benchmark (bench/results/claude-v2):
     // weighted fusion w=0.5, no probability gate, 128 state tokens. Env vars override them
-    // (read once at daemon start; see bench/sweep.py). LAYA_WEIGHT=rrf selects rank fusion.
+    // (read once at daemon start; see bench/sweep.py). LAYA_CODEX_WEIGHT=rrf selects rank fusion.
     let mut base = RetrieverConfig {
         laya_budget: Duration::from_millis(cfg.budget_ms),
         use_laya: cfg.use_model,
-        laya_weight: match std::env::var("LAYA_WEIGHT").as_deref() {
+        laya_weight: match std::env::var("LAYA_CODEX_WEIGHT").as_deref() {
             Ok("rrf") => None,
             Ok(v) => v.parse().ok().or(Some(0.5)),
             Err(_) => Some(0.5),
         },
-        p_threshold: env_num::<f32>("LAYA_P_THRESHOLD").unwrap_or(0.0),
+        p_threshold: env_num::<f32>("LAYA_CODEX_P_THRESHOLD").unwrap_or(0.0),
         ..RetrieverConfig::default()
     };
-    if let Some(k) = env_num::<usize>("LAYA_K") {
+    if let Some(k) = env_num::<usize>("LAYA_CODEX_K") {
         base.k_candidates = k;
     }
-    if let Some(m) = env_num::<usize>("LAYA_MIN_KEEP") {
+    if let Some(m) = env_num::<usize>("LAYA_CODEX_MIN_KEEP") {
         base.min_keep = m;
     }
-    let state_tokens = env_num::<usize>("LAYA_STATE_TOKENS").unwrap_or(128);
-    eprintln!("[laya] retriever config {base:?} state_tokens={state_tokens}");
+    let state_tokens = env_num::<usize>("LAYA_CODEX_STATE_TOKENS").unwrap_or(128);
+    eprintln!("[laya-codex] retriever config {base:?} state_tokens={state_tokens}");
     // Rank-based by default (thresholds 0 = full code for the top spans by fused rank, capped by
     // scope). Laya's P scale shifts with prompt wording, so on agent-wrapped prompts every P
     // threshold lost gold coverage vs the fused rank at equal code volume (bench/size_sweep.py on
     // --template bench/alt dumps). Adaptive's gain is the session delta, not P thresholds.
     let sizing = SizingPolicy {
-        tau_full: env_num::<f32>("LAYA_TAU_FULL").unwrap_or(0.0),
-        tau_map: env_num::<f32>("LAYA_TAU_MAP").unwrap_or(0.0),
+        tau_full: env_num::<f32>("LAYA_CODEX_TAU_FULL").unwrap_or(0.0),
+        tau_map: env_num::<f32>("LAYA_CODEX_TAU_MAP").unwrap_or(0.0),
         ..SizingPolicy::default()
     };
-    let scope_p = env_num::<f32>("LAYA_SCOPE_P").unwrap_or(0.4);
+    let scope_p = env_num::<f32>("LAYA_CODEX_SCOPE_P").unwrap_or(0.4);
     // Off by default: zero-shot scope is near-uniform (macro-F1 <= 0.28) and even oracle scope
     // barely changes what loads, so it would only cost a model call per prompt.
-    let use_scope = std::env::var("LAYA_SCOPE")
+    let use_scope = std::env::var("LAYA_CODEX_SCOPE")
         .map(|v| v == "1")
         .unwrap_or(false);
-    eprintln!("[laya] sizing {sizing:?} scope={use_scope} scope_p={scope_p}");
+    eprintln!("[laya-codex] sizing {sizing:?} scope={use_scope} scope_p={scope_p}");
     let daemon = Daemon::with_sizing(Arc::clone(&store), base, sizing);
 
     if let (true, Some(dir)) = (cfg.use_model, cfg.model_dir.clone()) {
@@ -806,11 +811,11 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
                     };
                     let batch: Vec<&Chunk> = std::iter::repeat_n(&warm, 24).collect();
                     let _ = scorer.score("warm up the relevance model", &batch);
-                    eprintln!("[laya] model warm-up in {:?}", t_warm.elapsed());
+                    eprintln!("[laya-codex] model warm-up in {:?}", t_warm.elapsed());
                     let scorer = Arc::new(scorer);
                     let inner: Arc<dyn Scorer> = scorer.clone();
                     let mut memo = MemoScorer::new(inner, Arc::clone(&d.store), &tag);
-                    if std::env::var("LAYA_MEMO").is_ok_and(|v| v == "0") {
+                    if std::env::var("LAYA_CODEX_MEMO").is_ok_and(|v| v == "0") {
                         memo = memo.without_cache_reads();
                     }
                     if use_scope {
@@ -828,13 +833,22 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
                     if let Ok(mut s) = d.scorer.write() {
                         *s = Some(Arc::new(memo));
                     }
-                    eprintln!("[laya] model {} ready in {:?}", dir.display(), t0.elapsed());
+                    eprintln!(
+                        "[laya-codex] model {} ready in {:?}",
+                        dir.display(),
+                        t0.elapsed()
+                    );
                 }
-                Err(e) => eprintln!("[laya] model load failed ({e}); serving lexical ranking"),
+                Err(e) => {
+                    eprintln!("[laya-codex] model load failed ({e}); serving lexical ranking")
+                }
             }
         });
     }
-    eprintln!("[laya] daemon listening on {}", cfg.socket_path().display());
+    eprintln!(
+        "[laya-codex] daemon listening on {}",
+        cfg.socket_path().display()
+    );
     serve(listener, daemon, shutdown, Limits::default());
     Ok(())
 }

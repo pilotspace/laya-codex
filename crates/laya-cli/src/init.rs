@@ -1,7 +1,7 @@
-//! `laya init`: enable laya for a repository by merging the Claude Code hooks into
-//! `.claude/settings.local.json` and the `laya` MCP server into `.mcp.json`.
+//! `laya-codex init`: enable laya-codex for a repository by merging the Claude Code hooks into
+//! `.claude/settings.local.json` and the `laya-codex` MCP server into `.mcp.json`.
 //!
-//! Merging keeps every unrelated key, hook and server; only existing laya entries are replaced, so
+//! Merging keeps every unrelated key, hook and server; only existing laya-codex entries are replaced, so
 //! a re-run yields byte-identical files. Unparseable JSON is never overwritten without `--force`
 //! (which backs the original up to `*.bak` first). Both files are planned before either is written.
 //!
@@ -19,7 +19,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, bail};
 use serde_json::{Map, Value, json};
 
-/// Hook events laya handles: (event, matcher, timeout seconds). Mirrors the README.
+/// Hook events laya-codex handles: (event, matcher, timeout seconds). Mirrors the README.
 pub const HOOK_EVENTS: [(&str, Option<&str>, u64); 4] = [
     ("SessionStart", None, 5),
     ("UserPromptSubmit", None, 8),
@@ -27,8 +27,8 @@ pub const HOOK_EVENTS: [(&str, Option<&str>, u64); 4] = [
     ("PostToolUse", Some("Edit|Write|MultiEdit|NotebookEdit"), 5),
 ];
 
-/// The program name written when `laya` on `PATH` is the running binary.
-const BARE: &str = "laya";
+/// The program name written when `laya-codex` on `PATH` is the running binary.
+const BARE: &str = "laya-codex";
 
 /// Settings files larger than this are refused rather than read.
 const MAX_JSON_BYTES: u64 = 8 * 1024 * 1024;
@@ -44,7 +44,7 @@ pub enum Action {
     },
 }
 
-/// One file `laya init` will write (or would, under `--dry-run`).
+/// One file `laya-codex init` will write (or would, under `--dry-run`).
 #[derive(Debug, Clone)]
 pub struct Planned {
     pub path: PathBuf,
@@ -53,9 +53,10 @@ pub struct Planned {
     pub content: String,
 }
 
-/// The program laya's hooks and MCP server should run: the bare `laya` when the first `laya` on
-/// `path_env` is (after resolving symlinks) the same file as `exe`, so the committed `.mcp.json`
-/// stays portable; otherwise `exe` itself. A cwd-relative `PATH` entry (`.`, empty) ahead of the
+/// The program laya-codex's hooks and MCP server should run: the bare `laya-codex` when the
+/// first `laya-codex` on `path_env` is (after resolving symlinks) the same file as `exe`, so the
+/// committed `.mcp.json` stays portable (and a Homebrew install does not pin its versioned Cellar
+/// path, since bin/laya-codex links to it); otherwise `exe` itself. A cwd-relative `PATH` entry (`.`, empty) ahead of the
 /// match makes the lookup depend on where Claude Code runs, so it also yields `exe`.
 pub fn program_for(exe: &Path, path_env: Option<&OsStr>) -> PathBuf {
     let fallback = exe.to_path_buf();
@@ -82,7 +83,7 @@ fn is_executable_file(p: &Path) -> bool {
     std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
-/// The shell command Claude Code runs for every laya hook, for the program [`program_for`] picks
+/// The shell command Claude Code runs for every laya-codex hook, for the program [`program_for`] picks
 /// from the current `PATH`.
 pub fn hook_command(exe: &Path, adaptive: bool) -> String {
     hook_command_for(
@@ -93,7 +94,11 @@ pub fn hook_command(exe: &Path, adaptive: bool) -> String {
 
 /// The hook command running `program` (no `PATH` lookup).
 fn hook_command_for(program: &Path, adaptive: bool) -> String {
-    let prefix = if adaptive { "LAYA_ADAPTIVE=1 " } else { "" };
+    let prefix = if adaptive {
+        "LAYA_CODEX_ADAPTIVE=1 "
+    } else {
+        ""
+    };
     format!("{prefix}{} hook", shell_quote(&program.to_string_lossy()))
 }
 
@@ -117,7 +122,7 @@ struct Word {
 
 /// Split a simple command into words (quotes removed). `None` for anything beyond a plain
 /// command line — operators, substitutions, globs, comments, unbalanced quotes — which
-/// laya never writes, so such a command is never mistaken for laya's.
+/// laya-codex never writes, so such a command is never mistaken for laya-codex's.
 fn shell_words(cmd: &str) -> Option<Vec<Word>> {
     let mut words = Vec::new();
     let mut cur: Option<Word> = None;
@@ -162,10 +167,11 @@ fn is_assignment(w: &Word) -> bool {
         })
 }
 
-/// Is `cmd` a laya hook command? Exactly: optional `NAME=value` assignments (laya writes
-/// `LAYA_ADAPTIVE=1`), then a program that is `laya` or a path whose file name is `laya`, then
-/// `hook` and nothing else. `laya hook`, `/abs/laya hook`, `LAYA_X=1 '/a b/laya' hook` match;
-/// `echo laya hook`, `mytool wrap-laya hook` and `laya hook && x` do not.
+/// Is `cmd` a laya-codex hook command? Exactly: optional `NAME=value` assignments (laya-codex
+/// writes `LAYA_CODEX_ADAPTIVE=1`), then a program that is `laya-codex` or a path whose file name
+/// is `laya-codex`, then `hook` and nothing else. `laya-codex hook`, `/abs/laya-codex hook` and
+/// `X=1 '/a b/laya-codex' hook` match; `echo laya-codex hook`, `mytool wrap-laya hook` and
+/// `laya-codex hook && x` do not, and neither does 0.1.x's `laya hook` (a clean break).
 pub fn is_laya_hook(cmd: &str) -> bool {
     let Some(words) = shell_words(cmd) else {
         return false;
@@ -186,7 +192,7 @@ fn object(v: Value) -> Result<Map<String, Value>, String> {
     }
 }
 
-/// Merge laya's hooks (running `cmd`) into a settings object; `Err` if its shape is not mergeable.
+/// Merge laya-codex's hooks (running `cmd`) into a settings object; `Err` if its shape is not mergeable.
 pub fn merge_settings(existing: Value, cmd: &str) -> Result<Value, String> {
     let mut root = object(existing)?;
     let hooks = root.entry("hooks").or_insert_with(|| json!({}));
@@ -196,7 +202,7 @@ pub fn merge_settings(existing: Value, cmd: &str) -> Result<Value, String> {
         let groups = groups
             .as_array_mut()
             .ok_or_else(|| format!("`hooks.{event}` is not an array"))?;
-        // Drop laya handlers everywhere; drop a group only if it held nothing but laya handlers.
+        // Drop laya-codex handlers everywhere; drop a group only if it held nothing but laya-codex handlers.
         groups.retain_mut(|g| {
             let Some(hs) = g.get_mut("hooks").and_then(Value::as_array_mut) else {
                 return true;
@@ -227,7 +233,7 @@ pub fn merge_mcp(existing: Value, program: &Path) -> Result<Value, String> {
         .as_object_mut()
         .ok_or("`mcpServers` is not an object")?;
     servers.insert(
-        "laya".into(),
+        "laya-codex".into(),
         json!({"command": program.to_string_lossy(), "args": ["mcp"]}),
     );
     Ok(Value::Object(root))
@@ -306,7 +312,7 @@ fn check_target(root: &Path, root_canon: &Path, path: &Path) -> anyhow::Result<(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
             Err(e) => return Err(e).with_context(|| format!("inspect {}", dir.display())),
             Ok(m) if m.file_type().is_symlink() => bail!(
-                "{} is a symlink; refusing to write through it (a repository must not redirect laya init outside itself). Replace it with a real directory and re-run",
+                "{} is a symlink; refusing to write through it (a repository must not redirect laya-codex init outside itself). Replace it with a real directory and re-run",
                 dir.display()
             ),
             Ok(m) if !m.is_dir() => bail!("{} is not a directory", dir.display()),
@@ -327,7 +333,7 @@ fn check_target(root: &Path, root_canon: &Path, path: &Path) -> anyhow::Result<(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e).with_context(|| format!("inspect {}", path.display())),
         Ok(m) if m.file_type().is_symlink() => bail!(
-            "{} is a symlink; refusing to write through it (a repository must not redirect laya init outside itself). Replace it with a regular file and re-run",
+            "{} is a symlink; refusing to write through it (a repository must not redirect laya-codex init outside itself). Replace it with a regular file and re-run",
             path.display()
         ),
         Ok(m) if !m.is_file() => bail!("{} is not a regular file", path.display()),
@@ -426,7 +432,7 @@ pub fn apply(p: &Planned) -> anyhow::Result<()> {
 
 /// Plan both files for `root`; write them unless `dry_run`. Nothing is written unless both plan
 /// cleanly, and a failed second write rolls the first one back. Uses the current `PATH` to
-/// decide between the bare `laya` and `exe`'s path (see [`program_for`]), and says so on stderr
+/// decide between the bare `laya-codex` and `exe`'s path (see [`program_for`]), and says so on stderr
 /// when the written path is machine-specific.
 pub fn run(
     root: &Path,
@@ -439,8 +445,8 @@ pub fn run(
     let plans = run_with(root, exe, path_env.as_deref(), adaptive, dry_run, force)?;
     if program_for(exe, path_env.as_deref()) != Path::new(BARE) {
         eprintln!(
-            "note: `laya` on PATH is not {}, so .mcp.json and the hooks use that machine-specific path; \
-             don't commit .mcp.json as is, or put this laya first on PATH and re-run `laya init`",
+            "note: `laya-codex` on PATH is not {}, so .mcp.json and the hooks use that machine-specific path; \
+             don't commit .mcp.json as is, or put this laya-codex first on PATH and re-run `laya-codex init`",
             exe.display()
         );
     }
@@ -459,7 +465,7 @@ pub fn run_with(
     let program = program_for(exe, path_env);
     anyhow::ensure!(
         program.to_str().is_some(),
-        "the laya executable path {} is not valid UTF-8; install laya under a UTF-8 path",
+        "the laya-codex executable path {} is not valid UTF-8; install laya-codex under a UTF-8 path",
         program.display()
     );
     let cmd = hook_command_for(&program, adaptive);
@@ -506,7 +512,7 @@ pub fn run_with(
 mod tests {
     use super::*;
 
-    const EXE: &str = "/opt/laya/bin/laya";
+    const EXE: &str = "/opt/laya-codex/bin/laya-codex";
 
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("laya-init-{tag}-{}", std::process::id()));
@@ -538,23 +544,23 @@ mod tests {
     fn hook_command_quotes_only_when_needed_and_prefixes_adaptive() {
         assert_eq!(
             hook_command(Path::new(EXE), false),
-            "/opt/laya/bin/laya hook"
+            "/opt/laya-codex/bin/laya-codex hook"
         );
         assert_eq!(
             hook_command(Path::new(EXE), true),
-            "LAYA_ADAPTIVE=1 /opt/laya/bin/laya hook"
+            "LAYA_CODEX_ADAPTIVE=1 /opt/laya-codex/bin/laya-codex hook"
         );
         assert_eq!(
-            hook_command(Path::new("/My Tools/it's/laya"), false),
-            r"'/My Tools/it'\''s/laya' hook"
+            hook_command(Path::new("/My Tools/it's/laya-codex"), false),
+            r"'/My Tools/it'\''s/laya-codex' hook"
         );
         // Whatever init writes, re-init recognises as its own.
         for p in [
-            "laya",
+            "laya-codex",
             EXE,
-            "/My Tools/it's/laya",
-            "/a;b/$(x)/laya",
-            "/q\"uote/laya",
+            "/My Tools/it's/laya-codex",
+            "/a;b/$(x)/laya-codex",
+            "/q\"uote/laya-codex",
         ] {
             for adaptive in [false, true] {
                 let c = hook_command_for(Path::new(p), adaptive);
@@ -566,35 +572,38 @@ mod tests {
     #[test]
     fn recognises_laya_hook_commands_only() {
         for c in [
-            "laya hook",
-            "/opt/laya/bin/laya hook",
-            "LAYA_ADAPTIVE=1 /x/laya hook",
-            "'/a b/laya' hook",
-            " laya hook ",
-            r"'/My Tools/it'\''s/laya' hook",
-            "\"/a b/laya\" hook",
-            "LAYA_ADAPTIVE=1  laya\thook",
+            "laya-codex hook",
+            "/opt/laya-codex/bin/laya-codex hook",
+            "LAYA_CODEX_ADAPTIVE=1 /x/laya-codex hook",
+            "'/a b/laya-codex' hook",
+            " laya-codex hook ",
+            r"'/My Tools/it'\''s/laya-codex' hook",
+            "\"/a b/laya-codex\" hook",
+            "LAYA_CODEX_ADAPTIVE=1  laya-codex\thook",
         ] {
             assert!(is_laya_hook(c), "{c}");
         }
         for c in [
             "",
-            "laya",
-            "laya mcp",
+            "laya-codex",
+            "laya-codex mcp",
             "/x/notlaya hook",
             "echo hook",
-            "laya hook && rm -rf /",
+            "laya-codex hook && rm -rf /",
             "my-hook",
-            // Only laya's own program counts, not any command that ends in `laya hook`.
+            // Only laya-codex's own program counts, not any command that ends in `laya-codex hook`.
             "mytool wrap-laya hook",
-            "echo laya hook",
-            "mytool laya hook",
-            "'/x/laya hook'",
-            "laya/ hook",
-            "laya hook; rm -rf ~",
-            "laya hook $(evil)",
-            "laya hook --other",
-            "'LAYA_ADAPTIVE=1' laya hook",
+            "echo laya-codex hook",
+            "mytool laya-codex hook",
+            "'/x/laya-codex hook'",
+            "laya-codex/ hook",
+            // 0.1.x wrote `laya hook`; laya-codex does not own (or remove) those.
+            "laya hook",
+            "/opt/laya/bin/laya hook",
+            "laya-codex hook; rm -rf ~",
+            "laya-codex hook $(evil)",
+            "laya-codex hook --other",
+            "'LAYA_CODEX_ADAPTIVE=1' laya-codex hook",
         ] {
             assert!(!is_laya_hook(c), "{c}");
         }
@@ -612,13 +621,13 @@ mod tests {
             assert_eq!(groups[0]["matcher"].as_str(), matcher, "{event}");
             assert_eq!(
                 groups[0]["hooks"],
-                json!([{"type": "command", "command": "/opt/laya/bin/laya hook", "timeout": timeout}])
+                json!([{"type": "command", "command": "/opt/laya-codex/bin/laya-codex hook", "timeout": timeout}])
             );
         }
         let m = read_json(&root.join(".mcp.json"));
         assert_eq!(
             m,
-            json!({"mcpServers": {"laya": {"command": EXE, "args": ["mcp"]}}})
+            json!({"mcpServers": {"laya-codex": {"command": EXE, "args": ["mcp"]}}})
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -632,8 +641,8 @@ mod tests {
             "hooks": {
                 "PreToolUse": [
                     {"matcher": "Bash", "hooks": [{"type": "command", "command": "guard.sh"}]},
-                    {"matcher": "Read|Agent|Task", "hooks": [{"type": "command", "command": "laya hook", "timeout": 5}]},
-                    {"matcher": "Write", "hooks": [{"type": "command", "command": "fmt.sh"}, {"type": "command", "command": "LAYA_ADAPTIVE=1 laya hook"}]}
+                    {"matcher": "Read|Agent|Task", "hooks": [{"type": "command", "command": "laya-codex hook", "timeout": 5}]},
+                    {"matcher": "Write", "hooks": [{"type": "command", "command": "fmt.sh"}, {"type": "command", "command": "LAYA_CODEX_ADAPTIVE=1 laya-codex hook"}]}
                 ],
                 "Stop": [{"hooks": [{"type": "command", "command": "notify.sh"}]}]
             },
@@ -644,7 +653,7 @@ mod tests {
             serde_json::to_string_pretty(&before).unwrap(),
         )
         .unwrap();
-        std::fs::write(root.join(".mcp.json"), r#"{"mcpServers": {"other": {"command": "x"}, "laya": {"command": "laya", "args": ["mcp"], "env": {}}}}"#).unwrap();
+        std::fs::write(root.join(".mcp.json"), r#"{"mcpServers": {"other": {"command": "x"}, "laya-codex": {"command": "laya-codex", "args": ["mcp"], "env": {}}}}"#).unwrap();
 
         let plans = run(&root, Path::new(EXE), true, false, false).unwrap();
         assert!(plans.iter().all(|p| p.action == Action::Update));
@@ -654,7 +663,7 @@ mod tests {
         assert_eq!(s["hooks"]["Stop"], before["hooks"]["Stop"]);
         let pre = s["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(pre[0], before["hooks"]["PreToolUse"][0]);
-        // The laya handler is removed from the mixed group, which keeps its own hook.
+        // The laya-codex handler is removed from the mixed group, which keeps its own hook.
         assert_eq!(
             pre[1],
             json!({"matcher": "Write", "hooks": [{"type": "command", "command": "fmt.sh"}]})
@@ -663,7 +672,7 @@ mod tests {
         for (event, ..) in HOOK_EVENTS {
             assert_eq!(
                 laya_cmds(&s, event),
-                vec!["LAYA_ADAPTIVE=1 /opt/laya/bin/laya hook"],
+                vec!["LAYA_CODEX_ADAPTIVE=1 /opt/laya-codex/bin/laya-codex hook"],
                 "{event}"
             );
         }
@@ -673,7 +682,7 @@ mod tests {
         let m = read_json(&root.join(".mcp.json"));
         assert_eq!(m["mcpServers"]["other"], json!({"command": "x"}));
         assert_eq!(
-            m["mcpServers"]["laya"],
+            m["mcpServers"]["laya-codex"],
             json!({"command": EXE, "args": ["mcp"]})
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -741,7 +750,7 @@ mod tests {
             1
         );
         assert_eq!(
-            read_json(&root.join(".mcp.json"))["mcpServers"]["laya"]["command"],
+            read_json(&root.join(".mcp.json"))["mcpServers"]["laya-codex"]["command"],
             EXE
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -754,7 +763,7 @@ mod tests {
         let plans = run(&root, Path::new(EXE), false, false, false).unwrap();
         assert_eq!(plans[1].action, Action::Update);
         assert_eq!(
-            read_json(&root.join(".mcp.json"))["mcpServers"]["laya"]["args"],
+            read_json(&root.join(".mcp.json"))["mcpServers"]["laya-codex"]["args"],
             json!(["mcp"])
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -769,7 +778,11 @@ mod tests {
             plans.iter().map(|p| p.action.clone()).collect::<Vec<_>>(),
             [Action::Create, Action::Update]
         );
-        assert!(plans[0].content.contains("/opt/laya/bin/laya hook"));
+        assert!(
+            plans[0]
+                .content
+                .contains("/opt/laya-codex/bin/laya-codex hook")
+        );
         assert!(!root.join(".claude").exists());
         assert_eq!(
             std::fs::read_to_string(root.join(".mcp.json")).unwrap(),
@@ -881,7 +894,7 @@ mod tests {
             laya_cmds(&read_json(&settings(&root)), "SessionStart").len(),
             1
         );
-        assert!(read_json(&root.join(".mcp.json"))["mcpServers"]["laya"].is_object());
+        assert!(read_json(&root.join(".mcp.json"))["mcpServers"]["laya-codex"].is_object());
         // No temp files are left behind.
         let leftovers: Vec<_> = std::fs::read_dir(root.join(".claude"))
             .unwrap()
@@ -927,20 +940,20 @@ mod tests {
     #[test]
     fn program_is_bare_laya_only_when_path_resolves_to_this_binary() {
         let d = scratch("prog");
-        let exe = d.join("install/laya");
+        let exe = d.join("install/laya-codex");
         fake_exe(&exe);
         let bin = d.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::os::unix::fs::symlink(&exe, bin.join("laya")).unwrap();
+        std::os::unix::fs::symlink(&exe, bin.join("laya-codex")).unwrap();
         let other = d.join("other");
-        fake_exe(&other.join("laya"));
+        fake_exe(&other.join("laya-codex"));
         let empty = d.join("empty");
         std::fs::create_dir_all(&empty).unwrap();
-        let bare = PathBuf::from("laya");
+        let bare = PathBuf::from("laya-codex");
 
         let p = path_of(&[&empty, &bin]);
         assert_eq!(program_for(&exe, Some(&p)), bare);
-        // The first `laya` on PATH is what the shell runs: a different binary there loses.
+        // The first `laya-codex` on PATH is what the shell runs: a different binary there loses.
         let p = path_of(&[&other, &bin]);
         assert_eq!(program_for(&exe, Some(&p)), exe);
         // Not on PATH, no PATH, or a cwd-relative entry ahead of the match: machine path.
@@ -948,10 +961,10 @@ mod tests {
         assert_eq!(program_for(&exe, None), exe);
         let p = path_of(&[Path::new("."), &bin]);
         assert_eq!(program_for(&exe, Some(&p)), exe);
-        // A non-executable `laya` is skipped like the shell does.
+        // A non-executable `laya-codex` is skipped like the shell does.
         let noexec = d.join("noexec");
         std::fs::create_dir_all(&noexec).unwrap();
-        std::fs::write(noexec.join("laya"), "").unwrap();
+        std::fs::write(noexec.join("laya-codex"), "").unwrap();
         let p = path_of(&[&noexec, &bin]);
         assert_eq!(program_for(&exe, Some(&p)), bare);
         let _ = std::fs::remove_dir_all(&d);
@@ -961,23 +974,23 @@ mod tests {
     fn run_writes_the_bare_command_when_laya_on_path_is_this_binary() {
         let root = scratch("portable");
         let d = scratch("portable-bin");
-        let exe = d.join("install/laya");
+        let exe = d.join("install/laya-codex");
         fake_exe(&exe);
         std::fs::create_dir_all(d.join("bin")).unwrap();
-        std::os::unix::fs::symlink(&exe, d.join("bin/laya")).unwrap();
+        std::os::unix::fs::symlink(&exe, d.join("bin/laya-codex")).unwrap();
         let path = path_of(&[&d.join("bin")]);
         run_with(&root, &exe, Some(&path), true, false, false).unwrap();
         assert_eq!(
             read_json(&root.join(".mcp.json")),
-            json!({"mcpServers": {"laya": {"command": "laya", "args": ["mcp"]}}})
+            json!({"mcpServers": {"laya-codex": {"command": "laya-codex", "args": ["mcp"]}}})
         );
         for (event, ..) in HOOK_EVENTS {
             assert_eq!(
                 laya_cmds(&read_json(&settings(&root)), event),
-                ["LAYA_ADAPTIVE=1 laya hook"]
+                ["LAYA_CODEX_ADAPTIVE=1 laya-codex hook"]
             );
         }
-        // Re-running from a machine where laya is not on PATH replaces, never duplicates.
+        // Re-running from a machine where laya-codex is not on PATH replaces, never duplicates.
         run_with(&root, &exe, None, false, false, false).unwrap();
         assert_eq!(
             laya_cmds(&read_json(&settings(&root)), "SessionStart"),

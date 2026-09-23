@@ -189,7 +189,7 @@ impl ModernBert {
     }
 }
 
-/// Per-stage wall-clock accumulator, enabled by `LAYA_PROFILE=1`. Each tick synchronizes the
+/// Per-stage wall-clock accumulator, enabled by `LAYA_CODEX_PROFILE=1`. Each tick synchronizes the
 /// device, so it measures true kernel time at the cost of pipelining; it is a diagnostic only.
 pub(crate) struct StageProfiler {
     device: Option<Device>,
@@ -199,7 +199,8 @@ pub(crate) struct StageProfiler {
 
 impl StageProfiler {
     pub(crate) fn from_env(device: &Device) -> Self {
-        let enabled = std::env::var_os("LAYA_PROFILE").is_some_and(|v| v != "0" && !v.is_empty());
+        let enabled =
+            std::env::var_os("LAYA_CODEX_PROFILE").is_some_and(|v| v != "0" && !v.is_empty());
         Self {
             device: enabled.then(|| device.clone()),
             last: std::time::Instant::now(),

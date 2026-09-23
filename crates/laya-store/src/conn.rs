@@ -141,7 +141,7 @@ impl Executor {
 
     /// With a password configured, refuse a server that answers anonymous clients: Moon without
     /// a password accepts any `AUTH`, so a successful `AUTH` alone does not prove the server is
-    /// laya's. Runs once per new connection (pooled connections are reused).
+    /// laya-codex's. Runs once per new connection (pooled connections are reused).
     fn verify_server(&self) -> RedisResult<()> {
         let Some(pw) = &self.cfg.password else {
             return Ok(());
