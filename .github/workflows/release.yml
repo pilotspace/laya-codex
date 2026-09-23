@@ -57,7 +57,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          name="laya-${REF_NAME}-${TARGET}"
+          name="laya-${REF_NAME//\//-}-${TARGET}" # a branch name may contain "/"
           mkdir -p "dist/$name"
           cp "target/$TARGET/release/laya" "dist/$name/"
           cp LICENSE NOTICE README.md CHANGELOG.md "dist/$name/"
@@ -112,7 +112,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          name="moon-${REF_NAME}-${TARGET}"
+          name="moon-${REF_NAME//\//-}-${TARGET}" # a branch name may contain "/"
           mkdir -p "dist/$name"
           cp "moon/target/$TARGET/release/moon" "dist/$name/"
           cp moon/LICENSE "dist/$name/LICENSE"
