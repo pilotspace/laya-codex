@@ -4,9 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.2] — 2026-09-23
 
-Hardening items from the v0.1.0 release review.
+A Claude Code plugin, plus hardening items from the v0.1.0 release review.
+
+### Added
+
+- **Claude Code plugin:** this repository is a plugin marketplace. `/plugin marketplace add
+  pilotspace/laya-codex` followed by `/plugin install laya-codex@laya-codex` enables laya's
+  hooks and the `laya_search` MCP tool in every repository, without running `laya init` in each.
+  The plugin finds `laya` (`LAYA_BIN`, `PATH`, `~/.local/bin`), stays idle with a one-line
+  install hint when the binary is missing, and steps aside in repositories that `laya init`
+  already set up. `laya doctor` recognises the enabled plugin.
+
+### Changed
+
+- Session start only indexes git repositories automatically, so an everywhere-enabled plugin
+  never indexes a home directory or `/tmp`. `laya index <dir>` still indexes any directory.
 
 ### Fixed
 
@@ -171,6 +185,6 @@ prompts per session, paired bootstrap 95% CIs, Claude Sonnet, Laya scored cold i
 - Instruction-heavy benchmark prompts no longer outrank the task terms in retrieval.
 - Long follow-up prompts are no longer treated as new tasks.
 
-[Unreleased]: https://github.com/pilotspace/laya-codex/compare/v0.1.1...HEAD
+[0.1.2]: https://github.com/pilotspace/laya-codex/releases/tag/v0.1.2
 [0.1.1]: https://github.com/pilotspace/laya-codex/releases/tag/v0.1.1
 [0.1.0]: https://github.com/pilotspace/laya-codex/releases/tag/v0.1.0

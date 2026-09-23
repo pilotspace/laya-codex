@@ -24,7 +24,7 @@ laya something people can install in one line and forget about.
 | `install.sh` from GitHub Releases (laya + pinned Moon + model from Hugging Face, checksums verified) | everyone on macOS arm64 / Linux x86_64 | **v0.1.0** |
 | Hugging Face model `tindang/laya-code` | the re-ranker weights | **v0.1.0** |
 | Build from source (`cargo build --release -p laya-cli`) | contributors, other platforms | **v0.1.0** |
-| Claude Code plugin (hooks + MCP server in one `/plugin install`) | Claude Code users — the most direct channel | v0.2 |
+| Claude Code plugin (`/plugin marketplace add pilotspace/laya-codex`) | Claude Code users — the most direct channel | **v0.1.2** |
 | Homebrew tap `pilotspace/tap/laya` | macOS developers | v0.2 |
 | `laya upgrade` / `laya uninstall` | existing users | v0.2 |
 | Linux aarch64 and static musl builds | servers, containers, Graviton | v0.2 |
@@ -34,7 +34,7 @@ laya something people can install in one line and forget about.
 
 Security and robustness items from the v0.1.0 release review that did not block the release.
 
-Done (unreleased, see [CHANGELOG.md](CHANGELOG.md)):
+Done in v0.1.2 (see [CHANGELOG.md](CHANGELOG.md)):
 
 - **Panic isolation:** release builds unwind; panics are caught per request, index job and
   file, and hooks swallow them. Writes to a closed stdout exit quietly.
@@ -64,7 +64,8 @@ Open:
 
 Make the first five minutes painless and the tool visible where Claude Code users look.
 
-- **Claude Code plugin:** package the hooks and the `laya` MCP server as a plugin in a
+- ~~**Claude Code plugin**~~ — shipped in v0.1.2. Next: list it in the community plugin
+  directories. Original plan: package the hooks and the `laya` MCP server as a plugin in a
   marketplace repo, so `/plugin install laya` replaces `laya init` for most users. The binary
   still comes from `install.sh`, and the plugin checks for it and points to the installer.
 - **Homebrew tap**, `laya upgrade`, `laya uninstall` (removes hooks, the MCP entry, caches).
