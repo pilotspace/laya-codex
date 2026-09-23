@@ -1,0 +1,52 @@
+{
+ "n_tasks_paired": 20,
+ "arms": {
+  "baseline": {
+   "reading_tokens": 14504.15,
+   "injected_tokens": 0.0,
+   "total_input_tokens": 482537.65,
+   "output_tokens": 5797.3,
+   "wall_s": 67.926,
+   "num_turns": 18.8,
+   "cost_usd": 0.4548396,
+   "recall": 0.925,
+   "precision": 0.34418650793650796,
+   "hit_any": 1.0,
+   "recall_all_turns": 0.95
+  },
+  "laya-adaptive": {
+   "reading_tokens": 8787.25,
+   "injected_tokens": 3195.85,
+   "total_input_tokens": 400100.15,
+   "output_tokens": 5703.8,
+   "wall_s": 61.414,
+   "num_turns": 15.1,
+   "cost_usd": 0.36921325,
+   "recall": 0.8208333333333334,
+   "precision": 0.35345238095238096,
+   "hit_any": 1.0,
+   "recall_all_turns": 0.8583333333333334,
+   "reading_cost_change_pct": -17.4,
+   "wall_change_pct": -9.6,
+   "median_wall_ratio": 0.832,
+   "median_total_input_ratio": 0.794
+  },
+  "laya-refs": {
+   "reading_tokens": 9621.7,
+   "injected_tokens": 3371.3,
+   "total_input_tokens": 459964.6,
+   "output_tokens": 5580.35,
+   "wall_s": 61.68300000000001,
+   "num_turns": 16.5,
+   "cost_usd": 0.3571009,
+   "recall": 0.9333333333333333,
+   "precision": 0.34982142857142856,
+   "hit_any": 1.0,
+   "recall_all_turns": 0.9333333333333333,
+   "reading_cost_change_pct": -10.4,
+   "wall_change_pct": -9.2,
+   "median_wall_ratio": 0.87,
+   "median_total_input_ratio": 0.93
+  }
+ }
+}
