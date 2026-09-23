@@ -4,9 +4,10 @@
 //! | key                       | type | content                                             |
 //! |---------------------------|------|-----------------------------------------------------|
 //! | `lc:{repo}:c:{chunk_id}`  | HASH | path, start, end, lang, symbol, kind, defines, terms, text |
-//! | `lc:{repo}:f:{path}`      | HASH | hash, chunks (comma ids), defines (newline idents)  |
+//! | `lc:{repo}:f:{path}`      | HASH | hash, chunks (comma ids), defines, refs (newline idents) |
 //! | `lc:{repo}:files`         | SET  | indexed paths                                       |
 //! | `lc:{repo}:d:{ident}`     | SET  | chunk ids defining `ident` (exact, case-sensitive)  |
+//! | `lc:{repo}:r:{ident}`     | SET  | chunk ids referencing `ident` (exact, case-sensitive) |
 //! | `lc:{repo}:df`            | HASH | term -> number of chunks containing it (query planning) |
 //! | `lc:{repo}:idx`           | FT   | `ON HASH PREFIX lc:{repo}:c: SCHEMA terms TEXT`     |
 //! | `lc:memo:{key}`           | STR  | memo cache value (optional TTL)                     |
@@ -43,6 +44,11 @@ pub fn files(repo: &str) -> String {
 #[must_use]
 pub fn defines(repo: &str, ident: &str) -> String {
     format!("lc:{repo}:d:{ident}")
+}
+
+#[must_use]
+pub fn refs(repo: &str, ident: &str) -> String {
+    format!("lc:{repo}:r:{ident}")
 }
 
 #[must_use]
@@ -87,6 +93,7 @@ mod tests {
         assert_eq!(defines("r", "Foo"), "lc:r:d:Foo");
         assert_eq!(index("r"), "lc:r:idx");
         assert_eq!(df("r"), "lc:r:df");
+        assert_eq!(refs("r", "Foo"), "lc:r:r:Foo");
         assert_eq!(memo("q:1"), "lc:memo:q:1");
     }
 

@@ -197,8 +197,16 @@ pub fn chunk(path: &str, start: u32, symbol: &str, defines: &[&str], text: &str)
         symbol: symbol.to_string(),
         kind: "function_item".to_string(),
         defines: defines.iter().map(|s| s.to_string()).collect(),
+        refs: Vec::new(),
         text: text.to_string(),
     }
+}
+
+/// `chunk` plus referenced identifiers.
+pub fn chunk_refs(path: &str, start: u32, defines: &[&str], refs: &[&str], text: &str) -> Chunk {
+    let mut c = chunk(path, start, "", defines, text);
+    c.refs = refs.iter().map(|s| s.to_string()).collect();
+    c
 }
 
 pub fn terms(v: &[&str]) -> Vec<String> {

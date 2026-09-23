@@ -49,23 +49,71 @@ impl MoonStore {
         self.exec.breaker_state()
     }
 
-    /// Read `chunks` and `defines` of a file record.
-    fn file_record(&self, repo: &str, path: &str) -> Result<(Vec<String>, Vec<String>)> {
+    /// Read `chunks`, `defines` and `refs` of a file record.
+    fn file_record(&self, repo: &str, path: &str) -> Result<FileRecord> {
         let key = keys::file(repo, path);
-        let (chunks, defs): (Option<String>, Option<String>) =
+        let (chunks, defs, refs): (Option<String>, Option<String>, Option<String>) =
             self.exec.run(OpKind::Bulk, |c| {
                 redis::cmd("HMGET")
                     .arg(&key)
                     .arg("chunks")
                     .arg("defines")
+                    .arg("refs")
                     .query(c)
             })?;
         let chunks = chunks
             .as_deref()
             .map(|s| keys::split_list(s).map(str::to_string).collect())
             .unwrap_or_default();
-        let defs = defs.as_deref().map(split_idents).unwrap_or_default();
-        Ok((chunks, defs))
+        Ok(FileRecord {
+            ids: chunks,
+            defines: defs.as_deref().map(split_idents).unwrap_or_default(),
+            refs: refs.as_deref().map(split_idents).unwrap_or_default(),
+        })
+    }
+
+    /// Number of chunks defining each identifier (0 = unknown), aligned with `idents`.
+    /// Lets rank expansion tell unique definitions from ambiguous ones (`new`, `run`, ...).
+    /// One pipelined `SCARD` round trip.
+    pub fn definition_counts(&self, repo_id: &str, idents: &[String]) -> Result<Vec<usize>> {
+        if idents.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut pipe = redis::pipe();
+        for i in idents {
+            pipe.cmd("SCARD").arg(keys::defines(repo_id, i));
+        }
+        self.exec.run(OpKind::Query, |c| pipe.query(c))
+    }
+
+    /// Chunks whose ident set (`key(ident)`) contains any of `idents`, with
+    /// `(match count, index of the first requested ident that matched)`.
+    /// One pipelined `SMEMBERS` round trip; duplicates and empty idents are ignored.
+    fn ident_matches(
+        &self,
+        idents: &[String],
+        key: impl Fn(&str) -> String,
+    ) -> Result<Vec<(String, (usize, usize))>> {
+        let mut seen = HashSet::new();
+        let idents: Vec<&String> = idents
+            .iter()
+            .filter(|i| !i.is_empty() && seen.insert(i.as_str()))
+            .collect();
+        if idents.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut pipe = redis::pipe();
+        for i in &idents {
+            pipe.cmd("SMEMBERS").arg(key(i));
+        }
+        let sets: Vec<Vec<String>> = self.exec.run(OpKind::Query, |c| pipe.query(c))?;
+        let mut acc: HashMap<String, (usize, usize)> = HashMap::new();
+        for (order, set) in sets.into_iter().enumerate() {
+            for id in set {
+                acc.entry(id).and_modify(|e| e.0 += 1).or_insert((1, order));
+            }
+        }
+        Ok(acc.into_iter().collect())
     }
 
     /// Indexed `terms` of stored chunks (`None` for missing ones), for df bookkeeping.
@@ -83,26 +131,63 @@ impl MoonStore {
     /// Queue removal of chunks from a pipeline. Moon's `DEL` does not remove a hash from its text
     /// index (see MOON_NOTES.md), so the indexed field is blanked first: the `HSET` re-index drops
     /// the postings, then `DEL` removes the data.
-    fn queue_chunk_removal(
-        pipe: &mut redis::Pipeline,
-        repo: &str,
-        ids: &[&str],
-        old_defs: &[String],
-    ) {
+    fn queue_chunk_removal(pipe: &mut redis::Pipeline, repo: &str, ids: &[&str], old: &FileRecord) {
         for id in ids {
             let k = keys::chunk(repo, id);
             pipe.cmd("HSET").arg(&k).arg("terms").arg("").ignore();
             pipe.cmd("DEL").arg(&k).ignore();
         }
-        if !ids.is_empty() {
-            for d in old_defs {
-                pipe.cmd("SREM")
-                    .arg(keys::defines(repo, d))
-                    .arg(ids)
-                    .ignore();
-            }
-        }
+        queue_set_removal(pipe, repo, ids, old);
     }
+}
+
+/// What a file record says about the chunks currently stored for a path.
+#[derive(Debug, Default)]
+struct FileRecord {
+    ids: Vec<String>,
+    /// Union of the `defines` of those chunks.
+    defines: Vec<String>,
+    /// Union of the `refs` of those chunks.
+    refs: Vec<String>,
+}
+
+/// Queue `SREM ids` from every definition and reference set the record lists.
+fn queue_set_removal(pipe: &mut redis::Pipeline, repo: &str, ids: &[&str], old: &FileRecord) {
+    if ids.is_empty() {
+        return;
+    }
+    for d in &old.defines {
+        pipe.cmd("SREM")
+            .arg(keys::defines(repo, d))
+            .arg(ids)
+            .ignore();
+    }
+    for r in &old.refs {
+        pipe.cmd("SREM").arg(keys::refs(repo, r)).arg(ids).ignore();
+    }
+}
+
+/// Valid identifiers of a list (non-empty, no separator), deduplicated in order.
+fn clean_idents(v: &[String]) -> Vec<&str> {
+    let mut seen = HashSet::new();
+    v.iter()
+        .map(String::as_str)
+        .filter(|d| !d.is_empty() && !d.contains(IDENT_SEP) && seen.insert(*d))
+        .collect()
+}
+
+/// Sort `(id, (count, first))` by count desc, then `first` asc if `by_first`, then id asc.
+fn rank_matches(mut v: Vec<(String, (usize, usize))>, by_first: bool, limit: usize) -> Vec<String> {
+    v.sort_by(|a, b| {
+        let o = b.1.0.cmp(&a.1.0);
+        let o = if by_first {
+            o.then(a.1.1.cmp(&b.1.1))
+        } else {
+            o
+        };
+        o.then_with(|| a.0.cmp(&b.0))
+    });
+    v.into_iter().take(limit).map(|(id, _)| id).collect()
 }
 
 /// Add `sign` to the document frequency of every distinct term of one chunk.
@@ -186,6 +271,10 @@ fn chunk_from_hash(mut h: HashMap<String, String>) -> Option<Chunk> {
             .as_deref()
             .map(split_idents)
             .unwrap_or_default(),
+        refs: take("refs")
+            .as_deref()
+            .map(split_idents)
+            .unwrap_or_default(),
         text: take("text").unwrap_or_default(),
     })
 }
@@ -221,7 +310,8 @@ impl Store for MoonStore {
     }
 
     fn put_file(&self, repo_id: &str, path: &str, file_hash: &str, chunks: &[Chunk]) -> Result<()> {
-        let (old_ids, old_defs) = self.file_record(repo_id, path)?;
+        let old = self.file_record(repo_id, path)?;
+        let old_ids = &old.ids;
 
         let mut new_ids: Vec<String> = Vec::with_capacity(chunks.len());
         let mut seen = HashSet::new();
@@ -257,26 +347,19 @@ impl Store for MoonStore {
         }
 
         let mut pipe = redis::pipe();
-        // 1. Drop chunks that disappeared, and all old definition memberships (re-added below).
-        Self::queue_chunk_removal(&mut pipe, repo_id, &removed, &[]);
-        if !old_ids.is_empty() {
-            for d in &old_defs {
-                pipe.cmd("SREM")
-                    .arg(keys::defines(repo_id, d))
-                    .arg(&old_ids)
-                    .ignore();
-            }
-        }
+        // 1. Drop chunks that disappeared, and the definition/reference memberships of every old
+        //    chunk (kept chunks are re-added below; SREM before SADD is order-safe in a pipeline).
+        Self::queue_chunk_removal(&mut pipe, repo_id, &removed, &FileRecord::default());
+        let all_old: Vec<&str> = old_ids.iter().map(String::as_str).collect();
+        queue_set_removal(&mut pipe, repo_id, &all_old, &old);
         // 2. Write the new chunks (content-addressed: an unchanged chunk is rewritten in place).
         let mut file_defs: Vec<&str> = Vec::new();
         let mut def_seen = HashSet::new();
+        let mut file_refs: Vec<&str> = Vec::new();
+        let mut ref_seen = HashSet::new();
         for ((id, c), terms) in new_ids.iter().zip(&new_chunks).zip(&new_terms) {
-            let defs: Vec<&str> = c
-                .defines
-                .iter()
-                .map(String::as_str)
-                .filter(|d| !d.is_empty() && !d.contains(IDENT_SEP))
-                .collect();
+            let defs = clean_idents(&c.defines);
+            let refs = clean_idents(&c.refs);
             pipe.cmd("HSET")
                 .arg(keys::chunk(repo_id, id))
                 .arg("path")
@@ -293,6 +376,8 @@ impl Store for MoonStore {
                 .arg(&c.kind)
                 .arg("defines")
                 .arg(defs.join("\n"))
+                .arg("refs")
+                .arg(refs.join("\n"))
                 .arg("terms")
                 .arg(terms)
                 .arg("text")
@@ -307,6 +392,15 @@ impl Store for MoonStore {
                     file_defs.push(d);
                 }
             }
+            for r in refs {
+                pipe.cmd("SADD")
+                    .arg(keys::refs(repo_id, r))
+                    .arg(id)
+                    .ignore();
+                if ref_seen.insert(r) {
+                    file_refs.push(r);
+                }
+            }
         }
         queue_df_deltas(&mut pipe, repo_id, &deltas);
         // 3. File record last: if anything above fails, the stale hash makes the indexer retry.
@@ -318,6 +412,8 @@ impl Store for MoonStore {
             .arg(new_ids.join(","))
             .arg("defines")
             .arg(file_defs.join("\n"))
+            .arg("refs")
+            .arg(file_refs.join("\n"))
             .ignore();
         pipe.cmd("SADD")
             .arg(keys::files(repo_id))
@@ -330,14 +426,14 @@ impl Store for MoonStore {
     }
 
     fn delete_file(&self, repo_id: &str, path: &str) -> Result<()> {
-        let (old_ids, old_defs) = self.file_record(repo_id, path)?;
-        let ids: Vec<&str> = old_ids.iter().map(String::as_str).collect();
+        let old = self.file_record(repo_id, path)?;
+        let ids: Vec<&str> = old.ids.iter().map(String::as_str).collect();
         let mut deltas: HashMap<String, i64> = HashMap::new();
         for t in self.stored_terms(repo_id, &ids)?.iter().flatten() {
             count_terms(&mut deltas, t, -1);
         }
         let mut pipe = redis::pipe();
-        Self::queue_chunk_removal(&mut pipe, repo_id, &ids, &old_defs);
+        Self::queue_chunk_removal(&mut pipe, repo_id, &ids, &old);
         queue_df_deltas(&mut pipe, repo_id, &deltas);
         pipe.cmd("DEL").arg(keys::file(repo_id, path)).ignore();
         pipe.cmd("SREM")
@@ -427,35 +523,28 @@ impl Store for MoonStore {
         idents: &[String],
         limit: usize,
     ) -> Result<Vec<String>> {
-        let mut seen = HashSet::new();
-        let idents: Vec<&String> = idents
-            .iter()
-            .filter(|i| !i.is_empty() && seen.insert(i.as_str()))
-            .collect();
-        if idents.is_empty() || limit == 0 {
+        if limit == 0 {
             return Ok(Vec::new());
         }
-        let mut pipe = redis::pipe();
-        for i in &idents {
-            pipe.cmd("SMEMBERS").arg(keys::defines(repo_id, i));
-        }
-        let sets: Vec<Vec<String>> = self.exec.run(OpKind::Query, |c| pipe.query(c))?;
+        // Rank by how many requested identifiers a chunk defines, then the first requested
+        // ident it matched, then id: fully deterministic.
+        let m = self.ident_matches(idents, |i| keys::defines(repo_id, i))?;
+        Ok(rank_matches(m, true, limit))
+    }
 
-        // Rank by how many requested identifiers a chunk defines, then first appearance, then id.
-        let mut acc: HashMap<String, (usize, usize)> = HashMap::new();
-        for (order, set) in sets.into_iter().enumerate() {
-            for id in set {
-                acc.entry(id).and_modify(|e| e.0 += 1).or_insert((1, order));
-            }
+    /// Callers/users of `idents`: chunks whose `refs` contain any of them, ordered by how many
+    /// they reference (desc), then id (asc). One pipelined `SMEMBERS` round trip.
+    fn chunks_referencing(
+        &self,
+        repo_id: &str,
+        idents: &[String],
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        if limit == 0 {
+            return Ok(Vec::new());
         }
-        let mut out: Vec<(String, (usize, usize))> = acc.into_iter().collect();
-        out.sort_by(|a, b| {
-            b.1.0
-                .cmp(&a.1.0)
-                .then(a.1.1.cmp(&b.1.1))
-                .then_with(|| a.0.cmp(&b.0))
-        });
-        Ok(out.into_iter().take(limit).map(|(id, _)| id).collect())
+        let m = self.ident_matches(idents, |i| keys::refs(repo_id, i))?;
+        Ok(rank_matches(m, false, limit))
     }
 
     fn get_chunks(&self, repo_id: &str, ids: &[String]) -> Result<Vec<Chunk>> {
@@ -514,6 +603,7 @@ mod tests {
             symbol: "impl WalWriter".into(),
             kind: "impl_item".into(),
             defines: vec![],
+            refs: vec![],
             text: "flush flush".into(),
         };
         let t = index_terms(&c, 0);
@@ -531,6 +621,7 @@ mod tests {
             symbol: String::new(),
             kind: String::new(),
             defines: vec![],
+            refs: vec![],
             text: "flush flush flush flush other".into(),
         };
         assert_eq!(index_terms(&c, 2), "rs flush flush other");

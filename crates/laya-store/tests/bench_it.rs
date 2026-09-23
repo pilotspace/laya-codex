@@ -90,13 +90,26 @@ fn build_corpus() -> Vec<(String, Vec<Chunk>)> {
                     let body: Vec<&str> = (0..120)
                         .map(|_| vocab[zipf.sample(&mut rng)].as_str())
                         .collect();
-                    common::chunk(
+                    let mut ch = common::chunk(
                         &path,
                         (c * 20 + 1) as u32,
                         &format!("fn {def}"),
                         &[&def],
                         &format!("fn {def}() {{ {} }}", body.join("(); ")),
-                    )
+                    );
+                    // Calls: 6 other items (Zipf over files, so some are popular callees)
+                    // plus a few frequent helpers every chunk uses.
+                    ch.refs = (0..6)
+                        .map(|_| {
+                            format!(
+                                "Item{}x{}",
+                                zipf.sample(&mut rng) % FILES,
+                                rng.usize(..CHUNKS_PER_FILE)
+                            )
+                        })
+                        .chain(["unwrap", "clone", "len"].map(String::from))
+                        .collect();
+                    ch
                 })
                 .collect();
             (path, chunks)
@@ -210,6 +223,63 @@ fn bm25_latency_10_terms_over_10k_chunks() {
         })
         .collect();
     report("chunks_defining 5 idents", lat);
+
+    // "Who calls X" expansion: 8 idents mixing popular callees (Zipf head), rare ones and a
+    // helper referenced by every chunk (worst case: a 10k-member set).
+    let mut rng = fastrand::Rng::with_seed(23);
+    let ref_queries: Vec<Vec<String>> = (0..QUERIES)
+        .map(|_| {
+            let mut q: Vec<String> = (0..7)
+                .map(|i| {
+                    let f = if i % 2 == 0 {
+                        zipf.sample(&mut rng) % FILES
+                    } else {
+                        rng.usize(..FILES)
+                    };
+                    format!("Item{f}x{}", rng.usize(..CHUNKS_PER_FILE))
+                })
+                .collect();
+            q.push("len".to_string());
+            q
+        })
+        .collect();
+    let mut sizes = Vec::new();
+    let lat: Vec<Duration> = ref_queries
+        .iter()
+        .map(|q| {
+            let t = Instant::now();
+            sizes.push(
+                store
+                    .chunks_referencing(REPO, &q[..7], 50)
+                    .expect("refs")
+                    .len(),
+            );
+            t.elapsed()
+        })
+        .collect();
+    report("chunks_referencing 7 idents, limit 50", lat);
+    println!(
+        "  (mean hits {:.1})",
+        sizes.iter().sum::<usize>() as f64 / sizes.len() as f64
+    );
+    let lat: Vec<Duration> = ref_queries
+        .iter()
+        .map(|q| {
+            let t = Instant::now();
+            store.chunks_referencing(REPO, q, 50).expect("refs");
+            t.elapsed()
+        })
+        .collect();
+    report("chunks_referencing 8 idents incl. 10k-set", lat);
+    let lat: Vec<Duration> = ref_queries
+        .iter()
+        .map(|q| {
+            let t = Instant::now();
+            assert_eq!(store.definition_counts(REPO, q).expect("counts").len(), 8);
+            t.elapsed()
+        })
+        .collect();
+    report("definition_counts 8 idents", lat);
 
     // 4 concurrent query threads (pool of 4) — hook + MCP + reindex overlap.
     let handles: Vec<_> = (0..4)
