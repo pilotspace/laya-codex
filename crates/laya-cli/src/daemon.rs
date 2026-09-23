@@ -567,6 +567,24 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
                     let tag = format!("{name}-s{state_tokens}");
                     let mut scorer = laya_model::LayaScorer::new(model);
                     scorer.max_state_tokens = state_tokens;
+                    // Warm up before publishing: the first Metal run compiles kernels (~10 s),
+                    // which would push the first real prompt past its budget into lexical mode.
+                    let t_warm = std::time::Instant::now();
+                    let warm = Chunk {
+                        path: "warmup.rs".into(),
+                        start_line: 1,
+                        end_line: 40,
+                        lang: laya_core::Lang::Rust,
+                        symbol: String::new(),
+                        kind: "function_item".into(),
+                        defines: vec![],
+                        refs: vec![],
+                        text: "fn warm_up(x: u32) -> u32 { x.wrapping_mul(31).rotate_left(7) }\n"
+                            .repeat(20),
+                    };
+                    let batch: Vec<&Chunk> = std::iter::repeat_n(&warm, 24).collect();
+                    let _ = scorer.score("warm up the relevance model", &batch);
+                    eprintln!("[laya] model warm-up in {:?}", t_warm.elapsed());
                     let scorer = Arc::new(scorer);
                     let inner: Arc<dyn Scorer> = scorer.clone();
                     let mut memo = MemoScorer::new(inner, Arc::clone(&d.store), &tag);
