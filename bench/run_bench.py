@@ -146,33 +146,65 @@ def grade(answer, gold):
     return {"named": named, "recall": recall, "precision": precision, "hit_any": float(bool(hit))}
 
 
-def run_one(arm, task, args, cfg_dir):
-    cmd = ["claude", "-p", PROMPT.format(task=task["task"]), "--model", args.model, "--output-format", "stream-json",
-           "--verbose", "--include-hook-events", "--no-session-persistence", "--max-budget-usd", str(args.max_usd)]
-    cmd += arm_flags(arm, cfg_dir)
-    hook_log = os.path.join(args.out, "hooklogs", "%s_%s.jsonl" % (task["id"], arm))
-    os.makedirs(os.path.dirname(hook_log), exist_ok=True)
-    if os.path.exists(hook_log):
-        os.remove(hook_log)
-    env = dict(os.environ, LAYA_HOOK_LOG=hook_log)
+FOLLOWUP = ("Now, for the same change, identify the tests that cover this code and the main call sites that invoke it. "
+            "Be efficient: read only what you need. End your answer with one line exactly of the form\n"
+            "FILES: <comma-separated repo-relative paths of the most relevant source files>")
+
+
+def _claude(prompt, arm, args, cfg_dir, env, session_flags):
+    cmd = ["claude", "-p", prompt, "--model", args.model, "--output-format", "stream-json", "--verbose",
+           "--include-hook-events", "--max-budget-usd", str(args.max_usd)] + session_flags + arm_flags(arm, cfg_dir)
     t0 = time.time()
     try:
         p = subprocess.run(cmd, cwd=args.repo, capture_output=True, text=True, timeout=args.timeout, env=env)
         lines, rc = p.stdout.splitlines(), p.returncode
     except subprocess.TimeoutExpired as ex:
-        lines, rc = (ex.stdout or b"").decode(errors="ignore").splitlines() if isinstance(ex.stdout, bytes) else (ex.stdout or "").splitlines(), "timeout"
-    wall = time.time() - t0
-    r = parse_stream(lines)
-    r.update(read_hook_log(hook_log))
-    u = r["usage"]
-    total_in = (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
-    row = {"arm": arm, "task_id": task["id"], "wall_s": round(wall, 2), "rc": rc, "total_input_tokens": total_in,
-           "output_tokens": u.get("output_tokens"), "reading_tokens": r["reading_tokens"],
-           "injected_tokens": r["injected_tokens"], "cost_usd": r["cost_usd"], "num_turns": r["num_turns"],
-           "api_ms": r["api_ms"], "tool_calls": r["tool_calls"], "hook_events": r["hook_events"],
-           "hook_actions": r["hook_actions"], "is_error": r["is_error"]}
-    row.update(grade(r["result"], task["gold"]))
-    return row, lines
+        out = ex.stdout or ""
+        lines, rc = (out.decode(errors="ignore") if isinstance(out, bytes) else out).splitlines(), "timeout"
+    return lines, rc, time.time() - t0
+
+
+def run_one(arm, task, args, cfg_dir):
+    """One task = one Claude session of `args.turns` prompts (turn 2+ resume the same session)."""
+    import uuid
+    hook_log = os.path.join(args.out, "hooklogs", "%s_%s.jsonl" % (task["id"], arm))
+    os.makedirs(os.path.dirname(hook_log), exist_ok=True)
+    if os.path.exists(hook_log):
+        os.remove(hook_log)
+    env = dict(os.environ, LAYA_HOOK_LOG=hook_log)
+    prompts = [PROMPT.format(task=task["task"])] + [FOLLOWUP] * (args.turns - 1)
+    sid = str(uuid.uuid4())
+    all_lines, wall, rcs = [], 0.0, []
+    agg = {"reading_tokens": 0, "total_in": 0, "output": 0, "cost": 0.0, "turns": 0, "tool_calls": {}}
+    answers = []
+    for k, prompt in enumerate(prompts):
+        flags = (["--no-session-persistence"] if args.turns == 1 else ["--session-id", sid]) if k == 0 else ["--resume", sid]
+        lines, rc, w = _claude(prompt, arm, args, cfg_dir, env, flags)
+        all_lines += lines
+        wall += w
+        rcs.append(rc)
+        r = parse_stream(lines)
+        u = r["usage"]
+        agg["reading_tokens"] += r["reading_tokens"]
+        agg["total_in"] += (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+        agg["output"] += u.get("output_tokens") or 0
+        agg["cost"] += r["cost_usd"] or 0
+        agg["turns"] += r["num_turns"] or 0
+        for t, n in r["tool_calls"].items():
+            agg["tool_calls"][t] = agg["tool_calls"].get(t, 0) + n
+        answers.append(r["result"])
+    h = read_hook_log(hook_log)
+    row = {"arm": arm, "task_id": task["id"], "wall_s": round(wall, 2), "rc": rcs, "total_input_tokens": agg["total_in"],
+           "output_tokens": agg["output"], "reading_tokens": agg["reading_tokens"], "injected_tokens": h["injected_tokens"],
+           "cost_usd": round(agg["cost"], 6), "num_turns": agg["turns"], "tool_calls": agg["tool_calls"],
+           "hook_actions": h["hook_actions"], "prompts": len(prompts)}
+    row.update(grade(answers[0], task["gold"]))
+    if len(answers) > 1:
+        named = [n for a in answers for n in grade(a, task["gold"])["named"]]
+        row["recall_all_turns"] = len({g for g in task["gold"]
+                                       if any(n == g or g.endswith("/" + n) or n.endswith(g) for n in named)}) / len(task["gold"])
+        row["turn2"] = grade(answers[1], task["gold"])
+    return row, all_lines
 
 
 def run(args):
@@ -206,7 +238,7 @@ def report(args):
     by = {a: {r["task_id"]: r for r in rows if r["arm"] == a} for a in arms}
     common = set.intersection(*[set(v) for v in by.values()])
     keys = ["reading_tokens", "injected_tokens", "total_input_tokens", "output_tokens", "wall_s", "num_turns", "cost_usd",
-            "recall", "precision", "hit_any"]
+            "recall", "precision", "hit_any"] + (["recall_all_turns"] if all("recall_all_turns" in r for r in rows) else [])
 
     def mean(a, k):
         vals = [by[a][t][k] or 0 for t in common]
@@ -219,7 +251,7 @@ def report(args):
     summary = {"n_tasks_paired": len(common), "arms": {}}
     lines = ["| metric | " + " | ".join(arms) + " |", "|---" * (len(arms) + 1) + "|"]
     for k in keys:
-        lines.append("| %s | %s |" % (k, " | ".join("%.3f" % mean(a, k) if k in ("recall", "precision", "hit_any", "cost_usd")
+        lines.append("| %s | %s |" % (k, " | ".join("%.3f" % mean(a, k) if k in ("recall", "precision", "hit_any", "cost_usd", "recall_all_turns")
                                                     else "%.1f" % mean(a, k) for a in arms)))
     for a in arms:
         summary["arms"][a] = {k: mean(a, k) for k in keys}
@@ -259,6 +291,7 @@ def main():
     r.add_argument("--limit", type=int, default=0)
     r.add_argument("--timeout", type=int, default=900)
     r.add_argument("--max-usd", type=float, default=2.0)
+    r.add_argument("--turns", type=int, default=1, help="prompts per session (2 = localisation + follow-up)")
     p = sub.add_parser("report")
     p.add_argument("--out", required=True)
     args = ap.parse_args()
