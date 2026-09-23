@@ -36,8 +36,18 @@ pub struct Check {
 }
 
 impl Check {
-    fn new(name: &'static str, level: Level, detail: impl Into<String>, fix: Option<String>) -> Self {
-        Check { name, level, detail: detail.into(), fix }
+    fn new(
+        name: &'static str,
+        level: Level,
+        detail: impl Into<String>,
+        fix: Option<String>,
+    ) -> Self {
+        Check {
+            name,
+            level,
+            detail: detail.into(),
+            fix,
+        }
     }
 }
 
@@ -45,19 +55,51 @@ impl Check {
 pub fn check_moon(bin: &Path, tried: &[PathBuf], running: bool, probe_timeout: Duration) -> Check {
     let fix = || Some(MOON_FIX.to_string());
     if !is_executable(bin) {
-        let list = tried.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
+        let list = tried
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         return if running {
-            Check::new("moon", Level::Warn, format!("a Moon answers on its port, but no binary was found (tried {list}); laya cannot restart it"), fix())
+            Check::new(
+                "moon",
+                Level::Warn,
+                format!(
+                    "a Moon answers on its port, but no binary was found (tried {list}); laya cannot restart it"
+                ),
+                fix(),
+            )
         } else {
-            Check::new("moon", Level::Fail, format!("moon binary not found; tried {list}"), fix())
+            Check::new(
+                "moon",
+                Level::Fail,
+                format!("moon binary not found; tried {list}"),
+                fix(),
+            )
         };
     }
-    let state = if running { "running" } else { "not running; starts on demand" };
+    let state = if running {
+        "running"
+    } else {
+        "not running; starts on demand"
+    };
     match probe(bin, probe_timeout) {
-        Ok(()) => Check::new("moon", Level::Pass, format!("{} ({state})", bin.display()), None),
+        Ok(()) => Check::new(
+            "moon",
+            Level::Pass,
+            format!("{} ({state})", bin.display()),
+            None,
+        ),
         Err(e) => {
             let level = if running { Level::Warn } else { Level::Fail };
-            Check::new("moon", level, format!("{} is not runnable: {e}", bin.display()), Some(format!("rebuild moon or point LAYA_MOON_BIN at a working build. {MOON_FIX}")))
+            Check::new(
+                "moon",
+                level,
+                format!("{} is not runnable: {e}", bin.display()),
+                Some(format!(
+                    "rebuild moon or point LAYA_MOON_BIN at a working build. {MOON_FIX}"
+                )),
+            )
         }
     }
 }
@@ -90,38 +132,84 @@ fn probe(bin: &Path, timeout: Duration) -> Result<(), String> {
 /// Model directory: `dir` is the resolved one (`None` = none found among `searched`).
 pub fn check_model(use_model: bool, dir: Option<&Path>, searched: &[PathBuf]) -> Check {
     if !use_model {
-        return Check::new("model", Level::Pass, "disabled (LAYA_NO_MODEL=1): lexical-only ranking", None);
+        return Check::new(
+            "model",
+            Level::Pass,
+            "disabled (LAYA_NO_MODEL=1): lexical-only ranking",
+            None,
+        );
     }
     let Some(dir) = dir else {
-        let list = searched.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
-        let base = searched.last().map(|p| p.display().to_string()).unwrap_or_else(|| "$LAYA_HOME/models/laya-base".into());
+        let list = searched
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let base = searched
+            .last()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "$LAYA_HOME/models/laya-base".into());
         return Check::new(
             "model",
             Level::Warn,
-            format!("no model found (looked for model.safetensors in {list}); ranking is lexical-only"),
-            Some(format!("hf download convaiinnovations/laya --local-dir {base}  (or set LAYA_MODEL_DIR; LAYA_NO_MODEL=1 silences this)")),
+            format!(
+                "no model found (looked for model.safetensors in {list}); ranking is lexical-only"
+            ),
+            Some(format!(
+                "hf download convaiinnovations/laya --local-dir {base}  (or set LAYA_MODEL_DIR; LAYA_NO_MODEL=1 silences this)"
+            )),
         );
     };
     if let Err(e) = laya_model::ModelFiles::resolve(dir) {
-        return Check::new("model", Level::Warn, format!("{} is incomplete ({e}); the daemon falls back to lexical-only", dir.display()),
-            Some("re-download the model directory, or set LAYA_MODEL_DIR to a complete one".into()));
+        return Check::new(
+            "model",
+            Level::Warn,
+            format!(
+                "{} is incomplete ({e}); the daemon falls back to lexical-only",
+                dir.display()
+            ),
+            Some("re-download the model directory, or set LAYA_MODEL_DIR to a complete one".into()),
+        );
     }
     if cfg!(target_os = "macos") {
-        Check::new("model", Level::Pass, format!("{} (Metal)", dir.display()), None)
+        Check::new(
+            "model",
+            Level::Pass,
+            format!("{} (Metal)", dir.display()),
+            None,
+        )
     } else {
-        Check::new("model", Level::Warn, format!("{} found, but it runs on CPU here: too slow for interactive re-ranking", dir.display()),
-            Some("set LAYA_NO_MODEL=1 for lexical-only ranking".into()))
+        Check::new(
+            "model",
+            Level::Warn,
+            format!(
+                "{} found, but it runs on CPU here: too slow for interactive re-ranking",
+                dir.display()
+            ),
+            Some("set LAYA_NO_MODEL=1 for lexical-only ranking".into()),
+        )
     }
 }
 
 /// `LAYA_HOME` exists (or can be created) and is writable.
 pub fn check_home(home: &Path) -> Check {
     let probe = home.join(format!(".doctor-probe-{}", std::process::id()));
-    let res = std::fs::create_dir_all(home).and_then(|()| std::fs::write(&probe, b"ok")).and_then(|()| std::fs::remove_file(&probe));
+    let res = std::fs::create_dir_all(home)
+        .and_then(|()| std::fs::write(&probe, b"ok"))
+        .and_then(|()| std::fs::remove_file(&probe));
     match res {
-        Ok(()) => Check::new("home", Level::Pass, format!("{} is writable", home.display()), None),
-        Err(e) => Check::new("home", Level::Fail, format!("{} is not writable: {e}", home.display()),
-            Some("make it writable, or set LAYA_HOME to a writable directory".into())),
+        Ok(()) => Check::new(
+            "home",
+            Level::Pass,
+            format!("{} is writable", home.display()),
+            None,
+        ),
+        Err(e) => Check::new(
+            "home",
+            Level::Fail,
+            format!("{} is not writable: {e}", home.display()),
+            Some("make it writable, or set LAYA_HOME to a writable directory".into()),
+        ),
     }
 }
 
@@ -146,9 +234,24 @@ pub fn check_daemon(ping: Result<Response, String>, socket: &Path) -> Check {
 pub fn check_index(files: Result<usize, String>, root: &Path) -> Check {
     let fix = Some(format!("laya index {}", root.display()));
     match files {
-        Ok(0) => Check::new("index", Level::Warn, format!("{} has no indexed files", root.display()), fix),
-        Ok(n) => Check::new("index", Level::Pass, format!("{n} files indexed for {}", root.display()), None),
-        Err(e) => Check::new("index", Level::Warn, format!("cannot read the index: {e}"), fix),
+        Ok(0) => Check::new(
+            "index",
+            Level::Warn,
+            format!("{} has no indexed files", root.display()),
+            fix,
+        ),
+        Ok(n) => Check::new(
+            "index",
+            Level::Pass,
+            format!("{n} files indexed for {}", root.display()),
+            None,
+        ),
+        Err(e) => Check::new(
+            "index",
+            Level::Warn,
+            format!("cannot read the index: {e}"),
+            fix,
+        ),
     }
 }
 
@@ -158,30 +261,75 @@ pub fn check_hooks(root: &Path) -> Check {
     let mut cmds: Vec<(&str, String)> = Vec::new();
     for name in ["settings.local.json", "settings.json"] {
         let path = root.join(".claude").join(name);
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         if text.trim().is_empty() {
             continue;
         }
         let v: Value = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(e) => {
-                return Check::new("hooks", Level::Fail, format!("{} is not valid JSON: {e}", path.display()),
-                    Some(format!("fix it by hand, or `laya init --force --repo {}` (backs it up to .bak)", root.display())));
+                return Check::new(
+                    "hooks",
+                    Level::Fail,
+                    format!("{} is not valid JSON: {e}", path.display()),
+                    Some(format!(
+                        "fix it by hand, or `laya init --force --repo {}` (backs it up to .bak)",
+                        root.display()
+                    )),
+                );
             }
         };
         for (event, ..) in HOOK_EVENTS {
-            let handlers = v["hooks"][event].as_array().into_iter().flatten().flat_map(|g| g["hooks"].as_array().into_iter().flatten());
-            cmds.extend(handlers.filter_map(|h| h["command"].as_str()).filter(|c| is_laya_hook(c)).map(|c| (event, c.to_string())));
+            let handlers = v["hooks"][event]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|g| g["hooks"].as_array().into_iter().flatten());
+            cmds.extend(
+                handlers
+                    .filter_map(|h| h["command"].as_str())
+                    .filter(|c| is_laya_hook(c))
+                    .map(|c| (event, c.to_string())),
+            );
         }
     }
-    let missing: Vec<&str> = HOOK_EVENTS.iter().map(|e| e.0).filter(|e| !cmds.iter().any(|(ev, _)| ev == e)).collect();
+    let missing: Vec<&str> = HOOK_EVENTS
+        .iter()
+        .map(|e| e.0)
+        .filter(|e| !cmds.iter().any(|(ev, _)| ev == e))
+        .collect();
     if !missing.is_empty() {
-        return Check::new("hooks", Level::Fail, format!("laya hooks missing for {} in {}/.claude", missing.join(", "), root.display()), init_fix);
+        return Check::new(
+            "hooks",
+            Level::Fail,
+            format!(
+                "laya hooks missing for {} in {}/.claude",
+                missing.join(", "),
+                root.display()
+            ),
+            init_fix,
+        );
     }
-    if let Some((_, exe)) = cmds.iter().map(|(_, c)| (c, hook_exe(c))).find(|(_, exe)| !exe_found(exe)) {
-        return Check::new("hooks", Level::Fail, format!("a laya hook runs {exe}, which is not an executable"), init_fix);
+    if let Some((_, exe)) = cmds
+        .iter()
+        .map(|(_, c)| (c, hook_exe(c)))
+        .find(|(_, exe)| !exe_found(exe))
+    {
+        return Check::new(
+            "hooks",
+            Level::Fail,
+            format!("a laya hook runs {exe}, which is not an executable"),
+            init_fix,
+        );
     }
-    Check::new("hooks", Level::Pass, format!("all {} events -> {}", HOOK_EVENTS.len(), cmds[0].1), None)
+    Check::new(
+        "hooks",
+        Level::Pass,
+        format!("all {} events -> {}", HOOK_EVENTS.len(), cmds[0].1),
+        None,
+    )
 }
 
 /// The executable of a laya hook command: env assignments dropped, shell quotes removed.
@@ -204,29 +352,54 @@ fn exe_found(exe: &str) -> bool {
     if exe.contains('/') {
         return is_executable(Path::new(exe));
     }
-    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| is_executable(&d.join(exe))))
+    std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| is_executable(&d.join(exe))))
 }
 
 /// `mcpServers.laya` in `.mcp.json`.
 pub fn check_mcp(root: &Path) -> Check {
     let path = root.join(".mcp.json");
-    let v: Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+    let v: Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
     match v["mcpServers"]["laya"]["command"].as_str() {
-        Some(cmd) => Check::new("mcp", Level::Pass, format!("mcpServers.laya -> {cmd}"), None),
-        None => Check::new("mcp", Level::Warn, format!("no laya server in {} (the laya_search tool is unavailable)", path.display()),
-            Some(format!("laya init --repo {}", root.display()))),
+        Some(cmd) => Check::new(
+            "mcp",
+            Level::Pass,
+            format!("mcpServers.laya -> {cmd}"),
+            None,
+        ),
+        None => Check::new(
+            "mcp",
+            Level::Warn,
+            format!(
+                "no laya server in {} (the laya_search tool is unavailable)",
+                path.display()
+            ),
+            Some(format!("laya init --repo {}", root.display())),
+        ),
     }
 }
 
 /// Run `f` on a worker thread; a check that overruns `timeout` fails instead of hanging doctor.
-pub fn bounded(name: &'static str, timeout: Duration, f: impl FnOnce() -> Check + Send + 'static) -> Check {
+pub fn bounded(
+    name: &'static str,
+    timeout: Duration,
+    f: impl FnOnce() -> Check + Send + 'static,
+) -> Check {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(f());
     });
     match rx.recv_timeout(timeout) {
         Ok(c) => c,
-        Err(RecvTimeoutError::Timeout) => Check::new(name, Level::Fail, format!("check timed out after {timeout:?}"), None),
+        Err(RecvTimeoutError::Timeout) => Check::new(
+            name,
+            Level::Fail,
+            format!("check timed out after {timeout:?}"),
+            None,
+        ),
         Err(RecvTimeoutError::Disconnected) => Check::new(name, Level::Fail, "check crashed", None),
     }
 }
@@ -251,7 +424,12 @@ pub fn render(checks: &[Check]) -> String {
         }
     }
     let n = |l: Level| checks.iter().filter(|c| c.level == l).count();
-    out.push_str(&format!("{} passed, {} warnings, {} failed\n", n(Level::Pass), n(Level::Warn), n(Level::Fail)));
+    out.push_str(&format!(
+        "{} passed, {} warnings, {} failed\n",
+        n(Level::Pass),
+        n(Level::Warn),
+        n(Level::Fail)
+    ));
     out
 }
 
@@ -262,29 +440,47 @@ pub fn run(cfg: &Config, root: &Path, start: bool) -> Vec<Check> {
     let mut checks = Vec::new();
 
     let home = cfg.home.clone();
-    checks.push(bounded("home", Duration::from_secs(3), move || check_home(&home)));
+    checks.push(bounded("home", Duration::from_secs(3), move || {
+        check_home(&home)
+    }));
     let (bin, tried) = (cfg.moon_bin.clone(), cfg.moon_tried.clone());
-    checks.push(bounded("moon", Duration::from_secs(4), move || check_moon(&bin, &tried, moon_running, Duration::from_secs(2))));
-    let (use_model, dir, searched) = (cfg.use_model, cfg.model_dir.clone(), model_candidates(&cfg.home));
-    checks.push(bounded("model", Duration::from_secs(3), move || check_model(use_model, dir.as_deref(), &searched)));
+    checks.push(bounded("moon", Duration::from_secs(4), move || {
+        check_moon(&bin, &tried, moon_running, Duration::from_secs(2))
+    }));
+    let (use_model, dir, searched) = (
+        cfg.use_model,
+        cfg.model_dir.clone(),
+        model_candidates(&cfg.home),
+    );
+    checks.push(bounded("model", Duration::from_secs(3), move || {
+        check_model(use_model, dir.as_deref(), &searched)
+    }));
 
     let socket = cfg.socket_path();
-    let wait = if start { Duration::from_secs(20) } else { Duration::from_secs(2) };
-    checks.push(bounded("daemon", wait + Duration::from_secs(2), move || {
-        // Autostart (with --start) on the first ping only, then poll without spawning again.
-        let first = Client::new(&socket, Duration::from_secs(1), start).call(Request::Ping);
-        let client = Client::new(&socket, Duration::from_secs(1), false);
-        let t0 = Instant::now();
-        let mut next = Some(first);
-        let ping = loop {
-            match next.take().unwrap_or_else(|| client.call(Request::Ping)) {
-                Ok(r) => break Ok(r),
-                Err(e) if !start || t0.elapsed() >= wait => break Err(format!("{e:#}")),
-                Err(_) => std::thread::sleep(Duration::from_millis(250)),
-            }
-        };
-        check_daemon(ping, &socket)
-    }));
+    let wait = if start {
+        Duration::from_secs(20)
+    } else {
+        Duration::from_secs(2)
+    };
+    checks.push(bounded(
+        "daemon",
+        wait + Duration::from_secs(2),
+        move || {
+            // Autostart (with --start) on the first ping only, then poll without spawning again.
+            let first = Client::new(&socket, Duration::from_secs(1), start).call(Request::Ping);
+            let client = Client::new(&socket, Duration::from_secs(1), false);
+            let t0 = Instant::now();
+            let mut next = Some(first);
+            let ping = loop {
+                match next.take().unwrap_or_else(|| client.call(Request::Ping)) {
+                    Ok(r) => break Ok(r),
+                    Err(e) if !start || t0.elapsed() >= wait => break Err(format!("{e:#}")),
+                    Err(_) => std::thread::sleep(Duration::from_millis(250)),
+                }
+            };
+            check_daemon(ping, &socket)
+        },
+    ));
 
     // Re-checked here: `--start` may have brought Moon up with the daemon.
     let (port, repo) = (cfg.moon_port, root.to_path_buf());
@@ -304,9 +500,13 @@ pub fn run(cfg: &Config, root: &Path, start: bool) -> Vec<Check> {
     }));
 
     let r = root.to_path_buf();
-    checks.push(bounded("hooks", Duration::from_secs(3), move || check_hooks(&r)));
+    checks.push(bounded("hooks", Duration::from_secs(3), move || {
+        check_hooks(&r)
+    }));
     let r = root.to_path_buf();
-    checks.push(bounded("mcp", Duration::from_secs(3), move || check_mcp(&r)));
+    checks.push(bounded("mcp", Duration::from_secs(3), move || {
+        check_mcp(&r)
+    }));
     checks
 }
 
@@ -334,7 +534,11 @@ mod tests {
         let tried = [PathBuf::from("/nope/a/moon"), PathBuf::from("/nope/b/moon")];
         let c = check_moon(&tried[1], &tried, false, T);
         assert_eq!(c.level, Level::Fail);
-        assert!(c.detail.contains("/nope/a/moon") && c.detail.contains("/nope/b/moon"), "{}", c.detail);
+        assert!(
+            c.detail.contains("/nope/a/moon") && c.detail.contains("/nope/b/moon"),
+            "{}",
+            c.detail
+        );
         assert!(c.fix.as_deref().unwrap().contains("LAYA_MOON_BIN"));
         // Already running without a binary: works now, cannot be restarted.
         assert_eq!(check_moon(&tried[1], &tried, true, T).level, Level::Warn);
@@ -345,8 +549,14 @@ mod tests {
         let d = scratch("moon");
         let ok = d.join("moon-ok");
         script(&ok, "exit 0");
-        assert_eq!(check_moon(&ok, std::slice::from_ref(&ok), false, T).level, Level::Pass);
-        assert_eq!(check_moon(&ok, std::slice::from_ref(&ok), true, T).level, Level::Pass);
+        assert_eq!(
+            check_moon(&ok, std::slice::from_ref(&ok), false, T).level,
+            Level::Pass
+        );
+        assert_eq!(
+            check_moon(&ok, std::slice::from_ref(&ok), true, T).level,
+            Level::Pass
+        );
 
         let bad = d.join("moon-bad");
         script(&bad, "exit 3");
@@ -356,13 +566,21 @@ mod tests {
         let hang = d.join("moon-hang");
         script(&hang, "sleep 30");
         let t0 = std::time::Instant::now();
-        let c = check_moon(&hang, std::slice::from_ref(&hang), false, Duration::from_millis(300));
+        let c = check_moon(
+            &hang,
+            std::slice::from_ref(&hang),
+            false,
+            Duration::from_millis(300),
+        );
         assert_eq!(c.level, Level::Fail, "{c:?}");
         assert!(t0.elapsed() < Duration::from_secs(5));
 
         let plain = d.join("moon-plain");
         std::fs::write(&plain, "").unwrap();
-        assert_eq!(check_moon(&plain, std::slice::from_ref(&plain), false, T).level, Level::Fail);
+        assert_eq!(
+            check_moon(&plain, std::slice::from_ref(&plain), false, T).level,
+            Level::Fail
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -374,11 +592,19 @@ mod tests {
         let searched = [d.join("models/laya-code"), d.join("models/laya-base")];
         let c = check_model(true, None, &searched);
         assert_eq!(c.level, Level::Warn);
-        assert!(c.detail.contains("lexical-only") && c.detail.contains("laya-base"), "{}", c.detail);
+        assert!(
+            c.detail.contains("lexical-only") && c.detail.contains("laya-base"),
+            "{}",
+            c.detail
+        );
         assert!(c.fix.as_deref().unwrap().contains("hf download"));
 
         let m = d.join("m");
-        for f in ["model.safetensors", "encoder/config.json", "rl_agent_config.json"] {
+        for f in [
+            "model.safetensors",
+            "encoder/config.json",
+            "rl_agent_config.json",
+        ] {
             std::fs::create_dir_all(m.join(f).parent().unwrap()).unwrap();
             std::fs::write(m.join(f), "").unwrap();
         }
@@ -389,7 +615,11 @@ mod tests {
         std::fs::create_dir_all(m.join("tokenizer")).unwrap();
         std::fs::write(m.join("tokenizer/tokenizer.json"), "").unwrap();
         let c = check_model(true, Some(&m), &[]);
-        let want = if cfg!(target_os = "macos") { Level::Pass } else { Level::Warn };
+        let want = if cfg!(target_os = "macos") {
+            Level::Pass
+        } else {
+            Level::Warn
+        };
         assert_eq!(c.level, want, "{c:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -414,8 +644,28 @@ mod tests {
     fn daemon_down_is_a_warning_and_version_skew_is_flagged() {
         let sock = Path::new("/tmp/x.sock");
         let me = env!("CARGO_PKG_VERSION").to_string();
-        assert_eq!(check_daemon(Ok(Response::Pong { model_ready: true, version: me }), sock).level, Level::Pass);
-        assert_eq!(check_daemon(Ok(Response::Pong { model_ready: false, version: "0.0.1".into() }), sock).level, Level::Warn);
+        assert_eq!(
+            check_daemon(
+                Ok(Response::Pong {
+                    model_ready: true,
+                    version: me
+                }),
+                sock
+            )
+            .level,
+            Level::Pass
+        );
+        assert_eq!(
+            check_daemon(
+                Ok(Response::Pong {
+                    model_ready: false,
+                    version: "0.0.1".into()
+                }),
+                sock
+            )
+            .level,
+            Level::Warn
+        );
         let c = check_daemon(Err("connection refused".into()), sock);
         assert_eq!(c.level, Level::Warn);
         assert!(c.detail.contains("not running"), "{}", c.detail);
@@ -430,7 +680,10 @@ mod tests {
         let c = check_index(Ok(0), root);
         assert_eq!(c.level, Level::Warn);
         assert!(c.fix.as_deref().unwrap().contains("laya index /r"));
-        assert_eq!(check_index(Err("moon down".into()), root).level, Level::Warn);
+        assert_eq!(
+            check_index(Err("moon down".into()), root).level,
+            Level::Warn
+        );
     }
 
     #[test]
@@ -444,7 +697,15 @@ mod tests {
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         script(&exe, "exit 0");
         crate::init::run(&root, &exe, false, false, false).unwrap();
-        assert_eq!(check_hooks(&root), Check { name: "hooks", level: Level::Pass, detail: check_hooks(&root).detail, fix: None });
+        assert_eq!(
+            check_hooks(&root),
+            Check {
+                name: "hooks",
+                level: Level::Pass,
+                detail: check_hooks(&root).detail,
+                fix: None
+            }
+        );
         assert_eq!(check_mcp(&root).level, Level::Pass);
 
         // A hook pointing at a binary that no longer exists.
@@ -458,7 +719,11 @@ mod tests {
         std::fs::write(&s, r#"{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "laya hook"}]}]}}"#).unwrap();
         let c = check_hooks(&root);
         assert_eq!(c.level, Level::Fail);
-        assert!(c.detail.contains("SessionStart") && !c.detail.contains("UserPromptSubmit"), "{}", c.detail);
+        assert!(
+            c.detail.contains("SessionStart") && !c.detail.contains("UserPromptSubmit"),
+            "{}",
+            c.detail
+        );
 
         std::fs::write(&s, "{ broken").unwrap();
         let c = check_hooks(&root);
@@ -477,7 +742,10 @@ mod tests {
         assert_eq!(c.level, Level::Fail);
         assert!(c.detail.contains("timed out"));
         assert!(t0.elapsed() < Duration::from_secs(2));
-        assert_eq!(bounded("fast", T, || Check::new("fast", Level::Pass, "ok", None)).level, Level::Pass);
+        assert_eq!(
+            bounded("fast", T, || Check::new("fast", Level::Pass, "ok", None)).level,
+            Level::Pass
+        );
     }
 
     #[test]
@@ -488,9 +756,15 @@ mod tests {
         assert_eq!(exit_code(&[pass.clone(), warn.clone()]), 0);
         assert_eq!(exit_code(&[pass.clone(), fail.clone()]), 1);
         let out = render(&[pass, warn, fail]);
-        assert!(out.contains("PASS") && out.contains("WARN") && out.contains("FAIL"), "{out}");
+        assert!(
+            out.contains("PASS") && out.contains("WARN") && out.contains("FAIL"),
+            "{out}"
+        );
         assert!(out.contains("do x") && out.contains("do y"), "{out}");
         let j = serde_json::to_value(Check::new("a", Level::Warn, "d", None)).unwrap();
-        assert_eq!(j, serde_json::json!({"name": "a", "level": "warn", "detail": "d"}));
+        assert_eq!(
+            j,
+            serde_json::json!({"name": "a", "level": "warn", "detail": "d"})
+        );
     }
 }

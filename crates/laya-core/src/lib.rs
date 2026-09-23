@@ -180,10 +180,20 @@ pub trait Store: Send + Sync {
     /// OR-semantics BM25 over normalized terms; returns (chunk_id, summed score), best first.
     fn bm25(&self, repo_id: &str, terms: &[String], limit: usize) -> Result<Vec<(String, f32)>>;
     /// Chunks whose `defines` contain any of `idents` (exact, case-sensitive).
-    fn chunks_defining(&self, repo_id: &str, idents: &[String], limit: usize) -> Result<Vec<String>>;
+    fn chunks_defining(
+        &self,
+        repo_id: &str,
+        idents: &[String],
+        limit: usize,
+    ) -> Result<Vec<String>>;
     /// Chunks whose `refs` contain any of `idents` (exact, case-sensitive): the callers/users.
     /// Ordered by how many of `idents` they reference (desc), then id. Default: unsupported → empty.
-    fn chunks_referencing(&self, _repo_id: &str, _idents: &[String], _limit: usize) -> Result<Vec<String>> {
+    fn chunks_referencing(
+        &self,
+        _repo_id: &str,
+        _idents: &[String],
+        _limit: usize,
+    ) -> Result<Vec<String>> {
         Ok(Vec::new())
     }
     fn get_chunks(&self, repo_id: &str, ids: &[String]) -> Result<Vec<Chunk>>;

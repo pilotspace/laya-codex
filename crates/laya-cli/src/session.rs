@@ -33,8 +33,13 @@ pub struct Sessions {
 
 impl Sessions {
     fn get(&mut self, id: &str) -> &mut Session {
-        if !self.map.contains_key(id) && self.map.len() >= MAX_SESSIONS
-            && let Some(oldest) = self.map.iter().min_by_key(|(_, s)| s.touched).map(|(k, _)| k.clone())
+        if !self.map.contains_key(id)
+            && self.map.len() >= MAX_SESSIONS
+            && let Some(oldest) = self
+                .map
+                .iter()
+                .min_by_key(|(_, s)| s.touched)
+                .map(|(k, _)| k.clone())
         {
             self.map.remove(&oldest);
         }
@@ -48,11 +53,11 @@ impl Sessions {
         let s = self.get(id);
         s.last = Some(result.clone());
         for span in &result.spans {
-            if let Some(existing) = s
-                .working_set
-                .iter_mut()
-                .find(|w| w.path == span.path && w.start_line == span.start_line && w.end_line == span.end_line)
-            {
+            if let Some(existing) = s.working_set.iter_mut().find(|w| {
+                w.path == span.path
+                    && w.start_line == span.start_line
+                    && w.end_line == span.end_line
+            }) {
                 if span.score > existing.score {
                     *existing = span.clone();
                 }
@@ -98,7 +103,11 @@ impl Sessions {
             Some(topic) if laya_rank::is_follow_up(prompt) => {
                 let sig = laya_rank::extract_signals(prompt);
                 let named: Vec<String> = sig.identifiers.into_iter().chain(sig.paths).collect();
-                if named.is_empty() { topic.clone() } else { format!("{topic}\n{}", named.join(" ")) }
+                if named.is_empty() {
+                    topic.clone()
+                } else {
+                    format!("{topic}\n{}", named.join(" "))
+                }
             }
             _ => {
                 s.topic = Some(prompt.to_string());
@@ -124,7 +133,10 @@ impl Sessions {
 
     pub fn view(&mut self, id: &str) -> SessionView {
         let s = self.get(id);
-        SessionView { last: s.last.clone(), working_set: s.working_set.clone() }
+        SessionView {
+            last: s.last.clone(),
+            working_set: s.working_set.clone(),
+        }
     }
 }
 
@@ -134,11 +146,25 @@ mod tests {
     use laya_core::RankMode;
 
     fn span(path: &str, start: u32, score: f32) -> RankedSpan {
-        RankedSpan { path: path.into(), start_line: start, end_line: start + 9, symbol: String::new(), p_relevant: None, score, text: String::new() }
+        RankedSpan {
+            path: path.into(),
+            start_line: start,
+            end_line: start + 9,
+            symbol: String::new(),
+            p_relevant: None,
+            score,
+            text: String::new(),
+        }
     }
 
     fn result(spans: Vec<RankedSpan>) -> QueryResult {
-        QueryResult { spans, mode: RankMode::Lexical, elapsed_ms: 1, candidates: 3, related: vec![] }
+        QueryResult {
+            spans,
+            mode: RankMode::Lexical,
+            elapsed_ms: 1,
+            candidates: 3,
+            related: vec![],
+        }
     }
 
     #[test]
@@ -158,14 +184,22 @@ mod tests {
         s.note_read("a", "z.rs", false);
         let mut got = s.already("a");
         got.sort();
-        assert_eq!(got, vec![("x.rs".to_string(), 1, 20), ("y.rs".to_string(), 1, u32::MAX)]);
+        assert_eq!(
+            got,
+            vec![
+                ("x.rs".to_string(), 1, 20),
+                ("y.rs".to_string(), 1, u32::MAX)
+            ]
+        );
         assert!(s.already("b").is_empty());
     }
 
     #[test]
     fn sent_is_bounded_to_newest() {
         let mut s = Sessions::default();
-        let keys: Vec<_> = (0..(MAX_SENT as u32 + 5)).map(|i| ("f.rs".to_string(), i, i)).collect();
+        let keys: Vec<_> = (0..(MAX_SENT as u32 + 5))
+            .map(|i| ("f.rs".to_string(), i, i))
+            .collect();
         s.mark_sent("a", &keys);
         let got = s.already("a");
         assert_eq!(got.len(), MAX_SENT);
@@ -178,7 +212,11 @@ mod tests {
         let task = "fix(vector): address three post-review issues in mmap budget accounting";
         assert_eq!(s.effective_query("a", task), task);
         let follow = "Now, for the same change, identify the tests that cover this code.";
-        assert_eq!(s.effective_query("a", follow), task, "a follow-up's prose is not searched");
+        assert_eq!(
+            s.effective_query("a", follow),
+            task,
+            "a follow-up's prose is not searched"
+        );
         // A terse follow-up naming code keeps the topic and adds the name…
         let q = s.effective_query("a", "and enforce_budget()?");
         assert!(q.starts_with(task) && q.contains("enforce_budget"), "{q}");
@@ -196,7 +234,10 @@ mod tests {
     #[test]
     fn working_set_dedupes_keeps_best_score_and_orders() {
         let mut s = Sessions::default();
-        s.record_query("a", &result(vec![span("x.rs", 1, 0.2), span("y.rs", 5, 0.9)]));
+        s.record_query(
+            "a",
+            &result(vec![span("x.rs", 1, 0.2), span("y.rs", 5, 0.9)]),
+        );
         s.record_query("a", &result(vec![span("x.rs", 1, 0.7)]));
         let v = s.view("a");
         assert_eq!(v.working_set.len(), 2);

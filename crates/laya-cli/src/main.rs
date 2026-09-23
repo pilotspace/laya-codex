@@ -5,8 +5,8 @@ mod config;
 mod daemon;
 mod doctor;
 mod hook;
-mod init;
 mod indexer;
+mod init;
 mod mcp;
 mod protocol;
 mod session;
@@ -25,7 +25,11 @@ use crate::hook::{DaemonApi, HookCtx};
 use crate::protocol::{Request, Response};
 
 #[derive(Parser)]
-#[command(name = "laya", version, about = "Ranked code retrieval for Claude Code (tree-sitter + Moon + Laya)")]
+#[command(
+    name = "laya",
+    version,
+    about = "Ranked code retrieval for Claude Code (tree-sitter + Moon + Laya)"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -100,7 +104,12 @@ fn main() {
     let cfg = Config::from_env();
     let res = match cli.cmd {
         Cmd::Index { path } => cmd_index(&cfg, path),
-        Cmd::Query { prompt, repo, top, json } => cmd_query(&cfg, &prompt, repo, top, json),
+        Cmd::Query {
+            prompt,
+            repo,
+            top,
+            json,
+        } => cmd_query(&cfg, &prompt, repo, top, json),
         Cmd::Daemon => cmd_daemon(&cfg),
         Cmd::Stop => cmd_stop(&cfg),
         Cmd::Status => cmd_status(&cfg),
@@ -110,10 +119,20 @@ fn main() {
         }
         Cmd::Mcp { repo } => {
             let root = repo_root(&repo.unwrap_or_else(|| PathBuf::from(".")));
-            let c = Client::new(&cfg.socket_path(), Duration::from_millis(cfg.budget_ms + 3000), true);
+            let c = Client::new(
+                &cfg.socket_path(),
+                Duration::from_millis(cfg.budget_ms + 3000),
+                true,
+            );
             mcp::serve(&c, root, INJECT_TOKENS, cfg.budget_ms)
         }
-        Cmd::Init { repo, adaptive, dry_run, force, no_index } => cmd_init(&cfg, repo, adaptive, dry_run, force, no_index),
+        Cmd::Init {
+            repo,
+            adaptive,
+            dry_run,
+            force,
+            no_index,
+        } => cmd_init(&cfg, repo, adaptive, dry_run, force, no_index),
         Cmd::Doctor { repo, json, start } => cmd_doctor(&cfg, repo, json, start),
     };
     if let Err(e) = res {
@@ -148,16 +167,37 @@ fn wait_ready(c: &Client, want_model: bool, timeout: Duration) -> bool {
     false
 }
 
-fn cmd_query(cfg: &Config, prompt: &str, repo: Option<PathBuf>, top: Option<usize>, as_json: bool) -> anyhow::Result<()> {
+fn cmd_query(
+    cfg: &Config,
+    prompt: &str,
+    repo: Option<PathBuf>,
+    top: Option<usize>,
+    as_json: bool,
+) -> anyhow::Result<()> {
     let root = repo_root(&repo.unwrap_or_else(|| PathBuf::from(".")));
     let c = Client::new(&cfg.socket_path(), Duration::from_secs(60), true);
-    wait_ready(&c, cfg.use_model && cfg.model_dir.is_some(), Duration::from_secs(90));
-    let req = Request::Query { repo: root.to_string_lossy().into_owned(), session: None, prompt: prompt.to_string(),
-        budget_ms: Some(cfg.budget_ms), top_n: top, render: None };
+    wait_ready(
+        &c,
+        cfg.use_model && cfg.model_dir.is_some(),
+        Duration::from_secs(90),
+    );
+    let req = Request::Query {
+        repo: root.to_string_lossy().into_owned(),
+        session: None,
+        prompt: prompt.to_string(),
+        budget_ms: Some(cfg.budget_ms),
+        top_n: top,
+        render: None,
+    };
     match c.call(req)? {
-        Response::Query { result, .. } if as_json => println!("{}", serde_json::to_string_pretty(&result)?),
+        Response::Query { result, .. } if as_json => {
+            println!("{}", serde_json::to_string_pretty(&result)?)
+        }
         Response::Query { result, .. } => {
-            println!("mode={:?} candidates={} elapsed={}ms", result.mode, result.candidates, result.elapsed_ms);
+            println!(
+                "mode={:?} candidates={} elapsed={}ms",
+                result.mode, result.candidates, result.elapsed_ms
+            );
             println!("{}", laya_rank::render_context(&result, 100_000));
         }
         other => anyhow::bail!("unexpected response {other:?}"),
@@ -173,7 +213,9 @@ fn cmd_daemon(cfg: &Config) -> anyhow::Result<()> {
 
 fn cmd_stop(cfg: &Config) -> anyhow::Result<()> {
     let pid = std::fs::read_to_string(cfg.home.join("daemon.pid")).context("no daemon pidfile")?;
-    let status = std::process::Command::new("kill").arg(pid.trim()).status()?;
+    let status = std::process::Command::new("kill")
+        .arg(pid.trim())
+        .status()?;
     let _ = std::fs::remove_file(cfg.socket_path());
     println!("stopped daemon pid {} ({status})", pid.trim());
     Ok(())
@@ -182,19 +224,39 @@ fn cmd_stop(cfg: &Config) -> anyhow::Result<()> {
 fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
     let c = Client::new(&cfg.socket_path(), Duration::from_secs(2), false);
     let r = c.call(Request::Ping);
-    println!("{}", json!({"socket": cfg.socket_path(), "model_dir": cfg.model_dir, "moon_port": cfg.moon_port,
+    println!(
+        "{}",
+        json!({"socket": cfg.socket_path(), "model_dir": cfg.model_dir, "moon_port": cfg.moon_port,
         "daemon": match r { Ok(Response::Pong { model_ready, version }) => json!({"up": true, "model_ready": model_ready, "version": version}),
-                            _ => json!({"up": false}) }}));
+                            _ => json!({"up": false}) }})
+    );
     Ok(())
 }
 
-fn cmd_init(cfg: &Config, repo: Option<PathBuf>, adaptive: bool, dry_run: bool, force: bool, no_index: bool) -> anyhow::Result<()> {
+fn cmd_init(
+    cfg: &Config,
+    repo: Option<PathBuf>,
+    adaptive: bool,
+    dry_run: bool,
+    force: bool,
+    no_index: bool,
+) -> anyhow::Result<()> {
     let start = repo.unwrap_or_else(|| PathBuf::from("."));
     anyhow::ensure!(start.is_dir(), "{} is not a directory", start.display());
     let root = repo_root(&start);
-    let exe = std::env::current_exe().and_then(|p| p.canonicalize()).context("locate the laya executable")?;
+    let exe = std::env::current_exe()
+        .and_then(|p| p.canonicalize())
+        .context("locate the laya executable")?;
     let plans = init::run(&root, &exe, adaptive, dry_run, force)?;
-    println!("laya init{}: {}", if dry_run { " (dry run, nothing written)" } else { "" }, root.display());
+    println!(
+        "laya init{}: {}",
+        if dry_run {
+            " (dry run, nothing written)"
+        } else {
+            ""
+        },
+        root.display()
+    );
     for p in &plans {
         let what = match (&p.action, dry_run) {
             (init::Action::Unchanged, _) => "unchanged".to_string(),
@@ -202,7 +264,11 @@ fn cmd_init(cfg: &Config, repo: Option<PathBuf>, adaptive: bool, dry_run: bool, 
             (init::Action::Create, false) => "created".to_string(),
             (init::Action::Update, true) => "would update".to_string(),
             (init::Action::Update, false) => "updated".to_string(),
-            (init::Action::Replace { backup }, d) => format!("{} (backup {})", if d { "would replace" } else { "replaced" }, backup.display()),
+            (init::Action::Replace { backup }, d) => format!(
+                "{} (backup {})",
+                if d { "would replace" } else { "replaced" },
+                backup.display()
+            ),
         };
         println!("  {what:<12} {}", p.path.display());
         if dry_run && p.action != init::Action::Unchanged {
@@ -216,15 +282,25 @@ fn cmd_init(cfg: &Config, repo: Option<PathBuf>, adaptive: bool, dry_run: bool, 
         return Ok(());
     }
     if no_index {
-        println!("indexing skipped; run `laya index {}` before the first session", root.display());
+        println!(
+            "indexing skipped; run `laya index {}` before the first session",
+            root.display()
+        );
         return Ok(());
     }
     // Fail open: the hooks work (as no-ops) without an index, so a setup problem is a hint here.
     match kick_index(cfg, &root) {
-        Ok(()) => println!("indexing {} in the background; `laya doctor --repo {}` shows progress", root.display(), root.display()),
+        Ok(()) => println!(
+            "indexing {} in the background; `laya doctor --repo {}` shows progress",
+            root.display(),
+            root.display()
+        ),
         Err(e) => {
             println!("indexing not started: {e:#}");
-            println!("the hooks fail open (Claude Code runs unchanged) until then; after fixing it run `laya index {}`", root.display());
+            println!(
+                "the hooks fail open (Claude Code runs unchanged) until then; after fixing it run `laya index {}`",
+                root.display()
+            );
         }
     }
     Ok(())
@@ -237,17 +313,33 @@ fn kick_index(cfg: &Config, root: &std::path::Path) -> anyhow::Result<()> {
     // daemon per failed connect while the first one is still starting.
     let _ = Client::new(&cfg.socket_path(), Duration::from_secs(2), true).call(Request::Ping);
     let c = Client::new(&cfg.socket_path(), Duration::from_secs(2), false);
-    anyhow::ensure!(wait_ready(&c, false, Duration::from_secs(15)), "daemon did not come up within 15 s (log: {})", cfg.daemon_log().display());
-    c.call(Request::IndexRepo { repo: root.to_string_lossy().into_owned() })?;
+    anyhow::ensure!(
+        wait_ready(&c, false, Duration::from_secs(15)),
+        "daemon did not come up within 15 s (log: {})",
+        cfg.daemon_log().display()
+    );
+    c.call(Request::IndexRepo {
+        repo: root.to_string_lossy().into_owned(),
+    })?;
     Ok(())
 }
 
-fn cmd_doctor(cfg: &Config, repo: Option<PathBuf>, as_json: bool, start: bool) -> anyhow::Result<()> {
+fn cmd_doctor(
+    cfg: &Config,
+    repo: Option<PathBuf>,
+    as_json: bool,
+    start: bool,
+) -> anyhow::Result<()> {
     let root = repo_root(&repo.unwrap_or_else(|| PathBuf::from(".")));
     let checks = doctor::run(cfg, &root, start);
     let code = doctor::exit_code(&checks);
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&json!({"repo": root, "ok": code == 0, "checks": checks}))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &json!({"repo": root, "ok": code == 0, "checks": checks})
+            )?
+        );
     } else {
         println!("laya doctor: {}", root.display());
         print!("{}", doctor::render(&checks));
@@ -267,16 +359,39 @@ fn cmd_hook(cfg: &Config) {
     if std::io::stdin().read_to_string(&mut raw).is_err() {
         return;
     }
-    let Ok(input) = serde_json::from_str::<Value>(&raw) else { return };
-    let cwd = input["cwd"].as_str().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let Ok(input) = serde_json::from_str::<Value>(&raw) else {
+        return;
+    };
+    let cwd = input["cwd"]
+        .as_str()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     let root = repo_root(&cwd);
-    let client = Client::new(&cfg.socket_path(), Duration::from_millis(cfg.budget_ms + 1500), true);
-    let ctx = HookCtx { api: &client, root, budget_ms: cfg.budget_ms, inject_tokens: INJECT_TOKENS,
+    let client = Client::new(
+        &cfg.socket_path(),
+        Duration::from_millis(cfg.budget_ms + 1500),
+        true,
+    );
+    let ctx = HookCtx {
+        api: &client,
+        root,
+        budget_ms: cfg.budget_ms,
+        inject_tokens: INJECT_TOKENS,
         // Defaults match the benchmarked configuration (calibrated laya-code, compact injection).
-        read_p: std::env::var("LAYA_READ_P").ok().and_then(|v| v.parse().ok()).unwrap_or(0.4),
-        compact: std::env::var("LAYA_RENDER").map(|v| v != "full").unwrap_or(true),
-        adaptive: std::env::var("LAYA_ADAPTIVE").map(|v| v == "1").unwrap_or(false),
-        related: std::env::var("LAYA_RELATED").map(|v| v != "0").unwrap_or(true) };
+        read_p: std::env::var("LAYA_READ_P")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.4),
+        compact: std::env::var("LAYA_RENDER")
+            .map(|v| v != "full")
+            .unwrap_or(true),
+        adaptive: std::env::var("LAYA_ADAPTIVE")
+            .map(|v| v == "1")
+            .unwrap_or(false),
+        related: std::env::var("LAYA_RELATED")
+            .map(|v| v != "0")
+            .unwrap_or(true),
+    };
     let outcome = hook::handle(&input, &ctx);
     if let Some(out) = &outcome.output {
         println!("{out}");
@@ -285,7 +400,11 @@ fn cmd_hook(cfg: &Config) {
         let line = json!({"ts_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
             "session_id": input["session_id"], "event": input["hook_event_name"], "tool": input["tool_name"],
             "action": outcome.action, "injected_chars": outcome.injected_chars, "elapsed_ms": t0.elapsed().as_millis() as u64});
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+        {
             use std::io::Write;
             let _ = writeln!(f, "{line}");
         }

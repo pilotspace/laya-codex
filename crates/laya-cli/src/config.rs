@@ -32,7 +32,11 @@ impl Config {
             .unwrap_or_else(|| home_dir().join(".cache/laya-codex"));
         let model_dir = std::env::var_os("LAYA_MODEL_DIR")
             .map(PathBuf::from)
-            .or_else(|| model_candidates(&home).into_iter().find(|p| p.join("model.safetensors").exists()));
+            .or_else(|| {
+                model_candidates(&home)
+                    .into_iter()
+                    .find(|p| p.join("model.safetensors").exists())
+            });
         let (moon_bin, moon_tried) = resolve_moon(
             std::env::var_os("LAYA_MOON_BIN").map(PathBuf::from),
             std::env::var_os("PATH").as_deref(),
@@ -40,7 +44,9 @@ impl Config {
         );
         Config {
             moon_port: env_parse("LAYA_MOON_PORT").unwrap_or(16379),
-            use_model: std::env::var("LAYA_NO_MODEL").map(|v| v != "1").unwrap_or(true),
+            use_model: std::env::var("LAYA_NO_MODEL")
+                .map(|v| v != "1")
+                .unwrap_or(true),
             budget_ms: env_parse("LAYA_BUDGET_MS").unwrap_or(1200),
             hook_log: std::env::var_os("LAYA_HOOK_LOG").map(PathBuf::from),
             home,
@@ -68,17 +74,25 @@ fn env_parse<T: std::str::FromStr>(k: &str) -> Option<T> {
 }
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
 /// Locate the Moon binary: `LAYA_MOON_BIN` alone when set, else `moon` on each `PATH` entry, then
 /// a sibling checkout (`~/workspaces/tind-repo/moon/target/release/moon`). Returns the chosen path
 /// (the last candidate when none exists, so the spawn error names it) and every path tried.
-pub fn resolve_moon(env_bin: Option<PathBuf>, path_var: Option<&std::ffi::OsStr>, home: &Path) -> (PathBuf, Vec<PathBuf>) {
+pub fn resolve_moon(
+    env_bin: Option<PathBuf>,
+    path_var: Option<&std::ffi::OsStr>,
+    home: &Path,
+) -> (PathBuf, Vec<PathBuf>) {
     if let Some(bin) = env_bin {
         return (bin.clone(), vec![bin]);
     }
-    let mut tried: Vec<PathBuf> = path_var.map(|v| std::env::split_paths(v).map(|d| d.join("moon")).collect()).unwrap_or_default();
+    let mut tried: Vec<PathBuf> = path_var
+        .map(|v| std::env::split_paths(v).map(|d| d.join("moon")).collect())
+        .unwrap_or_default();
     tried.push(home.join("workspaces/tind-repo/moon/target/release/moon"));
     match tried.iter().position(|p| is_executable(p)) {
         Some(i) => {
@@ -97,7 +111,10 @@ pub fn is_executable(p: &Path) -> bool {
 
 /// Model directories searched, in order, when `LAYA_MODEL_DIR` is unset.
 pub fn model_candidates(home: &Path) -> Vec<PathBuf> {
-    ["laya-code", "laya-base"].iter().map(|m| home.join("models").join(m)).collect()
+    ["laya-code", "laya-base"]
+        .iter()
+        .map(|m| home.join("models").join(m))
+        .collect()
 }
 
 /// How to get a Moon binary.
@@ -106,7 +123,10 @@ pub const MOON_FIX: &str = "install moon (https://github.com/pilotspace/moon, `c
 
 /// Actionable error for a Moon binary that cannot be found, naming every path tried.
 pub fn moon_missing_message(tried: &[PathBuf]) -> String {
-    let list: Vec<String> = tried.iter().map(|p| format!("  - {}", p.display())).collect();
+    let list: Vec<String> = tried
+        .iter()
+        .map(|p| format!("  - {}", p.display()))
+        .collect();
     format!(
         "moon binary not found (Moon is the BM25 store laya runs as a sidecar). Tried:\n{}\nFix: {MOON_FIX}",
         list.join("\n")
@@ -115,7 +135,10 @@ pub fn moon_missing_message(tried: &[PathBuf]) -> String {
 
 /// Cheap pre-flight (nothing is spawned): Moon answers on its port, or a runnable binary exists.
 pub fn moon_available(cfg: &Config) -> anyhow::Result<()> {
-    if is_executable(&cfg.moon_bin) || laya_store::MoonSupervisor::new(&cfg.moon_bin, cfg.moon_port, cfg.moon_dir()).is_running() {
+    if is_executable(&cfg.moon_bin)
+        || laya_store::MoonSupervisor::new(&cfg.moon_bin, cfg.moon_port, cfg.moon_dir())
+            .is_running()
+    {
         return Ok(());
     }
     anyhow::bail!("{}", moon_missing_message(&cfg.moon_tried))
@@ -130,7 +153,11 @@ pub fn ensure_moon(cfg: &Config) -> anyhow::Result<()> {
     }
     moon_available(cfg)?;
     sup.ensure_running().map(|_| ()).map_err(|e| {
-        anyhow::anyhow!("moon: {e} (binary {}; log {}). Set LAYA_MOON_BIN to a working moon build", cfg.moon_bin.display(), sup.logfile().display())
+        anyhow::anyhow!(
+            "moon: {e} (binary {}; log {}). Set LAYA_MOON_BIN to a working moon build",
+            cfg.moon_bin.display(),
+            sup.logfile().display()
+        )
     })
 }
 
@@ -147,9 +174,15 @@ pub fn repo_root(start: &Path) -> PathBuf {
 /// Repo-relative `/`-separated path for `p` (absolute or relative to `root`); `None` if outside.
 pub fn rel_path(root: &Path, p: &str) -> Option<String> {
     let path = Path::new(p);
-    let abs = if path.is_absolute() { path.to_path_buf() } else { root.join(path) };
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
     let abs = abs.canonicalize().unwrap_or(abs);
-    abs.strip_prefix(root).ok().map(|r| r.to_string_lossy().replace('\\', "/"))
+    abs.strip_prefix(root)
+        .ok()
+        .map(|r| r.to_string_lossy().replace('\\', "/"))
 }
 
 #[cfg(test)]
@@ -221,8 +254,14 @@ mod tests {
     fn rel_path_handles_abs_rel_and_outside() {
         let root = repo_root(Path::new(env!("CARGO_MANIFEST_DIR")));
         let abs = root.join("Cargo.toml");
-        assert_eq!(rel_path(&root, abs.to_str().unwrap()).as_deref(), Some("Cargo.toml"));
-        assert_eq!(rel_path(&root, "crates/laya-cli/Cargo.toml").as_deref(), Some("crates/laya-cli/Cargo.toml"));
+        assert_eq!(
+            rel_path(&root, abs.to_str().unwrap()).as_deref(),
+            Some("Cargo.toml")
+        );
+        assert_eq!(
+            rel_path(&root, "crates/laya-cli/Cargo.toml").as_deref(),
+            Some("crates/laya-cli/Cargo.toml")
+        );
         assert_eq!(rel_path(&root, "/etc/hosts"), None);
     }
 }

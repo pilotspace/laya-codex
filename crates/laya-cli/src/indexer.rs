@@ -20,7 +20,10 @@ pub struct IndexStats {
 }
 
 fn rel(root: &Path, p: &Path) -> String {
-    p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/")
+    p.strip_prefix(root)
+        .unwrap_or(p)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 pub fn index_repo(root: &Path, store: &dyn Store, repo: &str) -> laya_core::Result<IndexStats> {
@@ -30,7 +33,10 @@ pub fn index_repo(root: &Path, store: &dyn Store, repo: &str) -> laya_core::Resu
         .into_iter()
         .filter(|p| laya_parse::detect_lang(&rel(root, p)).is_some())
         .collect();
-    let mut stats = IndexStats { files_seen: files.len(), ..Default::default() };
+    let mut stats = IndexStats {
+        files_seen: files.len(),
+        ..Default::default()
+    };
     let mut changed = Vec::new();
     for p in &files {
         let r = rel(root, p);
@@ -62,7 +68,12 @@ pub fn index_repo(root: &Path, store: &dyn Store, repo: &str) -> laya_core::Resu
 }
 
 /// Re-index one file (after an edit). Deletes it from the store if it is gone or unsupported.
-pub fn index_file(root: &Path, store: &dyn Store, repo: &str, rel_path: &str) -> laya_core::Result<usize> {
+pub fn index_file(
+    root: &Path,
+    store: &dyn Store,
+    repo: &str,
+    rel_path: &str,
+) -> laya_core::Result<usize> {
     let abs = root.join(rel_path);
     if !abs.is_file() || laya_parse::detect_lang(rel_path).is_none() {
         store.delete_file(repo, rel_path)?;
@@ -100,7 +111,10 @@ pub mod mem {
         }
         fn put_file(&self, _: &str, path: &str, hash: &str, chunks: &[Chunk]) -> Result<()> {
             *self.puts.lock().unwrap() += 1;
-            self.files.lock().unwrap().insert(path.into(), (hash.into(), chunks.to_vec()));
+            self.files
+                .lock()
+                .unwrap()
+                .insert(path.into(), (hash.into(), chunks.to_vec()));
             Ok(())
         }
         fn delete_file(&self, _: &str, path: &str) -> Result<()> {
@@ -151,7 +165,10 @@ mod tests {
         let root = tmp_repo("inc");
         let s = MemStore::default();
         let first = index_repo(&root, &s, "r").unwrap();
-        assert_eq!((first.files_seen, first.indexed, first.unchanged), (2, 2, 0));
+        assert_eq!(
+            (first.files_seen, first.indexed, first.unchanged),
+            (2, 2, 0)
+        );
         assert!(first.chunks >= 2);
 
         let second = index_repo(&root, &s, "r").unwrap();
@@ -161,7 +178,11 @@ mod tests {
         std::fs::remove_file(root.join("src/b.py")).unwrap();
         let third = index_repo(&root, &s, "r").unwrap();
         assert_eq!((third.indexed, third.unchanged, third.removed), (1, 0, 1));
-        assert!(s.files.lock().unwrap().get("src/a.rs").unwrap().1[0].text.contains("42"));
+        assert!(
+            s.files.lock().unwrap().get("src/a.rs").unwrap().1[0]
+                .text
+                .contains("42")
+        );
     }
 
     #[test]

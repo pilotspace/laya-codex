@@ -36,7 +36,9 @@ fn split_ident(word: &str) -> Vec<String> {
                 && ((c.is_ascii_uppercase()
                     && (chars[i - 1].is_ascii_lowercase()
                         || chars[i - 1].is_ascii_digit()
-                        || (i + 1 < chars.len() && chars[i + 1].is_ascii_lowercase() && chars[i - 1].is_ascii_uppercase())))
+                        || (i + 1 < chars.len()
+                            && chars[i + 1].is_ascii_lowercase()
+                            && chars[i - 1].is_ascii_uppercase())))
                     || (c.is_ascii_digit() != chars[i - 1].is_ascii_digit()));
             if boundary && !cur.is_empty() {
                 parts.push(std::mem::take(&mut cur).to_ascii_lowercase());
@@ -56,8 +58,14 @@ mod tests {
 
     #[test]
     fn splits_camel_snake_and_keeps_joined() {
-        assert_eq!(terms("HashWithTtl"), vec!["hash", "with", "ttl", "hashwithttl"]);
-        assert_eq!(terms("parse_config"), vec!["parse", "config", "parse_config"]);
+        assert_eq!(
+            terms("HashWithTtl"),
+            vec!["hash", "with", "ttl", "hashwithttl"]
+        );
+        assert_eq!(
+            terms("parse_config"),
+            vec!["parse", "config", "parse_config"]
+        );
         assert_eq!(terms("HTTPServer"), vec!["http", "server", "httpserver"]);
     }
 

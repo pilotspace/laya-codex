@@ -45,7 +45,11 @@ pub struct Outcome {
 
 impl Outcome {
     fn skip(action: &'static str) -> Self {
-        Outcome { output: None, action, injected_chars: 0 }
+        Outcome {
+            output: None,
+            action,
+            injected_chars: 0,
+        }
     }
 }
 
@@ -53,7 +57,9 @@ pub fn handle(input: &Value, ctx: &HookCtx) -> Outcome {
     let event = input["hook_event_name"].as_str().unwrap_or_default();
     let session = input["session_id"].as_str().unwrap_or_default();
     match event {
-        "UserPromptSubmit" => user_prompt(input["prompt"].as_str().unwrap_or_default(), session, ctx),
+        "UserPromptSubmit" => {
+            user_prompt(input["prompt"].as_str().unwrap_or_default(), session, ctx)
+        }
         "PreToolUse" => match input["tool_name"].as_str().unwrap_or_default() {
             "Read" => pre_read(&input["tool_input"], session, ctx),
             "Agent" | "Task" => pre_agent(&input["tool_input"], session, ctx),
@@ -81,10 +87,16 @@ fn user_prompt(prompt: &str, session: &str, ctx: &HookCtx) -> Outcome {
         prompt: prompt.to_string(),
         budget_ms: Some(ctx.budget_ms),
         top_n: None,
-        render: ctx.compact.then_some(RenderReq { budget_tokens: ctx.inject_tokens, related: ctx.related, adaptive: ctx.adaptive }),
+        render: ctx.compact.then_some(RenderReq {
+            budget_tokens: ctx.inject_tokens,
+            related: ctx.related,
+            adaptive: ctx.adaptive,
+        }),
     };
     let (result, rendered) = match ctx.api.call(req) {
-        Ok(Response::Query { result, rendered, .. }) => (result, rendered),
+        Ok(Response::Query {
+            result, rendered, ..
+        }) => (result, rendered),
         _ => return Outcome::skip("query_failed"),
     };
     if result.spans.is_empty() {
@@ -102,32 +114,61 @@ fn user_prompt(prompt: &str, session: &str, ctx: &HookCtx) -> Outcome {
     };
     Outcome {
         injected_chars: text.len(),
-        output: Some(json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}})),
+        output: Some(
+            json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}),
+        ),
         action: "inject",
     }
 }
 
 fn session_view(session: &str, reset: bool, ctx: &HookCtx) -> Option<SessionView> {
-    match ctx.api.call(Request::Session { session: session.to_string(), reset }) {
+    match ctx.api.call(Request::Session {
+        session: session.to_string(),
+        reset,
+    }) {
         Ok(Response::Session { view }) => Some(view),
         _ => None,
     }
 }
 
 fn pre_read(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
-    let Some(file) = tool_input["file_path"].as_str() else { return Outcome::skip("no_path") };
-    let Some(rel) = rel_path(&ctx.root, file) else { return Outcome::skip("outside_repo") };
+    let Some(file) = tool_input["file_path"].as_str() else {
+        return Outcome::skip("no_path");
+    };
+    let Some(rel) = rel_path(&ctx.root, file) else {
+        return Outcome::skip("outside_repo");
+    };
     let ranged = !tool_input["offset"].is_null() || !tool_input["limit"].is_null();
-    let count = match ctx.api.call(Request::NoteRead { session: session.to_string(), path: rel.clone(), full: !ranged }) {
+    let count = match ctx.api.call(Request::NoteRead {
+        session: session.to_string(),
+        path: rel.clone(),
+        full: !ranged,
+    }) {
         Ok(Response::Count { count }) => count,
         _ => return Outcome::skip("daemon_unavailable"),
     };
     if ranged || count > 1 {
-        return Outcome::skip(if ranged { "already_ranged" } else { "escape_hatch" });
+        return Outcome::skip(if ranged {
+            "already_ranged"
+        } else {
+            "escape_hatch"
+        });
     }
-    let Some(last) = session_view(session, false, ctx).and_then(|v| v.last) else { return Outcome::skip("no_ranking") };
-    let Some(total) = count_lines(&ctx.root.join(&rel)) else { return Outcome::skip("unreadable") };
-    let Some((offset, limit)) = laya_rank::read_narrowing(&last, &rel, total, &laya_rank::ReadPolicy { p_threshold: ctx.read_p, ..Default::default() }) else {
+    let Some(last) = session_view(session, false, ctx).and_then(|v| v.last) else {
+        return Outcome::skip("no_ranking");
+    };
+    let Some(total) = count_lines(&ctx.root.join(&rel)) else {
+        return Outcome::skip("unreadable");
+    };
+    let Some((offset, limit)) = laya_rank::read_narrowing(
+        &last,
+        &rel,
+        total,
+        &laya_rank::ReadPolicy {
+            p_threshold: ctx.read_p,
+            ..Default::default()
+        },
+    ) else {
         return Outcome::skip("not_narrowed");
     };
     let mut updated = tool_input.clone();
@@ -140,37 +181,56 @@ fn pre_read(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
     );
     Outcome {
         injected_chars: note.len(),
-        output: Some(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
-            "updatedInput": updated, "additionalContext": note}})),
+        output: Some(
+            json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
+            "updatedInput": updated, "additionalContext": note}}),
+        ),
         action: "narrow_read",
     }
 }
 
 fn pre_agent(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
-    let Some(prompt) = tool_input["prompt"].as_str() else { return Outcome::skip("no_prompt") };
-    let Some(view) = session_view(session, false, ctx) else { return Outcome::skip("daemon_unavailable") };
+    let Some(prompt) = tool_input["prompt"].as_str() else {
+        return Outcome::skip("no_prompt");
+    };
+    let Some(view) = session_view(session, false, ctx) else {
+        return Outcome::skip("daemon_unavailable");
+    };
     if view.working_set.is_empty() {
         return Outcome::skip("empty_working_set");
     }
-    let mut block = String::from("\n\n[laya-codex] Code the parent agent already located (read these ranges first):\n");
+    let mut block = String::from(
+        "\n\n[laya-codex] Code the parent agent already located (read these ranges first):\n",
+    );
     for s in view.working_set.iter().take(5) {
-        block.push_str(&format!("- {}:{}-{} {}\n", s.path, s.start_line, s.end_line, s.symbol));
+        block.push_str(&format!(
+            "- {}:{}-{} {}\n",
+            s.path, s.start_line, s.end_line, s.symbol
+        ));
     }
     let mut updated = tool_input.clone();
     updated["prompt"] = json!(format!("{prompt}{block}"));
     Outcome {
         injected_chars: block.len(),
-        output: Some(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
-            "updatedInput": updated}})),
+        output: Some(
+            json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
+            "updatedInput": updated}}),
+        ),
         action: "agent_handoff",
     }
 }
 
 fn post_edit(tool_input: &Value, ctx: &HookCtx) -> Outcome {
-    let Some(file) = tool_input["file_path"].as_str().or(tool_input["notebook_path"].as_str()) else {
+    let Some(file) = tool_input["file_path"]
+        .as_str()
+        .or(tool_input["notebook_path"].as_str())
+    else {
         return Outcome::skip("no_path");
     };
-    let req = Request::ReindexFile { repo: ctx.root.to_string_lossy().into_owned(), path: file.to_string() };
+    let req = Request::ReindexFile {
+        repo: ctx.root.to_string_lossy().into_owned(),
+        path: file.to_string(),
+    };
     match ctx.api.call(req) {
         Ok(Response::Ok) => Outcome::skip("reindexed"),
         _ => Outcome::skip("reindex_failed"),
@@ -184,25 +244,38 @@ fn session_start(source: &str, session: &str, ctx: &HookCtx) -> Outcome {
     }
     if source == "compact" {
         // Compaction dropped earlier injections and reads from the agent's context.
-        let Some(view) = session_view(session, true, ctx) else { return Outcome::skip("daemon_unavailable") };
+        let Some(view) = session_view(session, true, ctx) else {
+            return Outcome::skip("daemon_unavailable");
+        };
         if view.working_set.is_empty() {
             return Outcome::skip("empty_working_set");
         }
-        let result = QueryResult { spans: view.working_set.into_iter().take(8).collect(), mode: RankMode::Laya, elapsed_ms: 0, candidates: 0, related: vec![] };
+        let result = QueryResult {
+            spans: view.working_set.into_iter().take(8).collect(),
+            mode: RankMode::Laya,
+            elapsed_ms: 0,
+            candidates: 0,
+            related: vec![],
+        };
         let text = laya_rank::render_context(&result, ctx.inject_tokens * 2 / 3);
         return Outcome {
             injected_chars: text.len(),
-            output: Some(json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}})),
+            output: Some(
+                json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}),
+            ),
             action: "reinject_after_compact",
         };
     }
-    let _ = ctx.api.call(Request::IndexRepo { repo: ctx.root.to_string_lossy().into_owned() });
+    let _ = ctx.api.call(Request::IndexRepo {
+        repo: ctx.root.to_string_lossy().into_owned(),
+    });
     Outcome::skip("index_started")
 }
 
 fn count_lines(path: &Path) -> Option<u32> {
     let bytes = std::fs::read(path).ok()?;
-    let n = bytes.iter().filter(|&&b| b == b'\n').count() + usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
+    let n = bytes.iter().filter(|&&b| b == b'\n').count()
+        + usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
     u32::try_from(n).ok()
 }
 
@@ -231,9 +304,14 @@ mod tests {
                     },
                     None => anyhow::bail!("down"),
                 },
-                Request::NoteRead { .. } => Response::Count { count: self.read_count },
+                Request::NoteRead { .. } => Response::Count {
+                    count: self.read_count,
+                },
                 Request::Session { .. } => Response::Session {
-                    view: SessionView { last: self.result.clone(), working_set: self.result.clone().map(|r| r.spans).unwrap_or_default() },
+                    view: SessionView {
+                        last: self.result.clone(),
+                        working_set: self.result.clone().map(|r| r.spans).unwrap_or_default(),
+                    },
                 },
                 _ => Response::Ok,
             })
@@ -245,19 +323,47 @@ mod tests {
     }
 
     fn span(path: &str, a: u32, b: u32, p: f32) -> RankedSpan {
-        RankedSpan { path: path.into(), start_line: a, end_line: b, symbol: "fn x".into(), p_relevant: Some(p), score: p, text: "fn x() {}".into() }
+        RankedSpan {
+            path: path.into(),
+            start_line: a,
+            end_line: b,
+            symbol: "fn x".into(),
+            p_relevant: Some(p),
+            score: p,
+            text: "fn x() {}".into(),
+        }
     }
 
     fn fake(result: Option<QueryResult>, read_count: u32) -> Fake {
-        Fake { calls: RefCell::new(vec![]), result, read_count, rendered: None }
+        Fake {
+            calls: RefCell::new(vec![]),
+            result,
+            read_count,
+            rendered: None,
+        }
     }
 
     fn ctx<'a>(api: &'a dyn DaemonApi) -> HookCtx<'a> {
-        HookCtx { api, root: root(), budget_ms: 500, inject_tokens: 4000, read_p: 0.7, compact: false, related: true, adaptive: false }
+        HookCtx {
+            api,
+            root: root(),
+            budget_ms: 500,
+            inject_tokens: 4000,
+            read_p: 0.7,
+            compact: false,
+            related: true,
+            adaptive: false,
+        }
     }
 
     fn res(spans: Vec<RankedSpan>) -> QueryResult {
-        QueryResult { spans, mode: RankMode::Laya, elapsed_ms: 5, candidates: 10, related: vec![] }
+        QueryResult {
+            spans,
+            mode: RankMode::Laya,
+            elapsed_ms: 5,
+            candidates: 10,
+            related: vec![],
+        }
     }
 
     #[test]
@@ -275,7 +381,10 @@ mod tests {
         let input = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is the WAL replay implemented"});
         let o = handle(&input, &ctx(&f));
         assert_eq!(o.action, "inject");
-        let text = o.output.unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string();
+        let text = o.output.unwrap()["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert!(text.contains("src/a.rs"));
         let down = fake(None, 1);
         assert_eq!(handle(&input, &ctx(&down)).output, None);
@@ -313,7 +422,10 @@ mod tests {
         let r = res(vec![span(big, 100, 140, 0.95)]);
         let input = json!({"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": "Read",
             "tool_input": {"file_path": root().join(big).to_string_lossy(), "offset": 1, "limit": 10}});
-        assert_eq!(handle(&input, &ctx(&fake(Some(r), 1))).action, "already_ranged");
+        assert_eq!(
+            handle(&input, &ctx(&fake(Some(r), 1))).action,
+            "already_ranged"
+        );
     }
 
     #[test]
@@ -331,15 +443,38 @@ mod tests {
     fn adaptive_prompt_uses_daemon_render_and_skips_when_nothing_new() {
         let mut f = fake(Some(res(vec![span("src/a.rs", 1, 20, 0.8)])), 0);
         f.rendered = Some("SIZED CONTEXT".into());
-        let c = HookCtx { compact: true, adaptive: true, ..ctx(&f) };
-        let o = handle(&json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is wal replay done"}), &c);
+        let c = HookCtx {
+            compact: true,
+            adaptive: true,
+            ..ctx(&f)
+        };
+        let o = handle(
+            &json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is wal replay done"}),
+            &c,
+        );
         assert_eq!(o.action, "inject");
-        assert_eq!(o.output.unwrap()["hookSpecificOutput"]["additionalContext"], "SIZED CONTEXT");
-        assert!(f.calls.borrow().iter().any(|r| matches!(r, Request::Query { render: Some(RenderReq { adaptive: true, .. }), .. })));
+        assert_eq!(
+            o.output.unwrap()["hookSpecificOutput"]["additionalContext"],
+            "SIZED CONTEXT"
+        );
+        assert!(f.calls.borrow().iter().any(|r| matches!(
+            r,
+            Request::Query {
+                render: Some(RenderReq { adaptive: true, .. }),
+                ..
+            }
+        )));
         let mut g = fake(Some(res(vec![span("src/a.rs", 1, 20, 0.8)])), 0);
         g.rendered = Some(String::new());
-        let c = HookCtx { compact: true, adaptive: true, ..ctx(&g) };
-        let o = handle(&json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is wal replay done"}), &c);
+        let c = HookCtx {
+            compact: true,
+            adaptive: true,
+            ..ctx(&g)
+        };
+        let o = handle(
+            &json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is wal replay done"}),
+            &c,
+        );
         assert_eq!((o.action, o.output), ("already_in_context", None));
     }
 
@@ -347,26 +482,49 @@ mod tests {
     fn compact_or_clear_resets_the_sessions_context() {
         let f = fake(Some(res(vec![span("src/a.rs", 1, 20, 0.8)])), 0);
         for source in ["compact", "clear"] {
-            handle(&json!({"hook_event_name": "SessionStart", "session_id": "s", "source": source}), &ctx(&f));
-            assert!(matches!(f.calls.borrow().last(), Some(Request::Session { reset: true, .. })), "{source}");
+            handle(
+                &json!({"hook_event_name": "SessionStart", "session_id": "s", "source": source}),
+                &ctx(&f),
+            );
+            assert!(
+                matches!(
+                    f.calls.borrow().last(),
+                    Some(Request::Session { reset: true, .. })
+                ),
+                "{source}"
+            );
         }
     }
 
     #[test]
     fn compact_reinjects_and_startup_indexes() {
         let f = fake(Some(res(vec![span("src/a.rs", 1, 20, 0.9)])), 1);
-        let c = handle(&json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "compact"}), &ctx(&f));
+        let c = handle(
+            &json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "compact"}),
+            &ctx(&f),
+        );
         assert_eq!(c.action, "reinject_after_compact");
-        let s = handle(&json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"}), &ctx(&f));
+        let s = handle(
+            &json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"}),
+            &ctx(&f),
+        );
         assert_eq!(s.output, None);
-        assert!(f.calls.borrow().iter().any(|r| matches!(r, Request::IndexRepo { .. })));
+        assert!(
+            f.calls
+                .borrow()
+                .iter()
+                .any(|r| matches!(r, Request::IndexRepo { .. }))
+        );
     }
 
     #[test]
     fn post_edit_reindexes() {
         let f = fake(None, 1);
-        let o = handle(&json!({"hook_event_name": "PostToolUse", "session_id": "s", "tool_name": "Edit",
-            "tool_input": {"file_path": "/x/y.rs"}}), &ctx(&f));
+        let o = handle(
+            &json!({"hook_event_name": "PostToolUse", "session_id": "s", "tool_name": "Edit",
+            "tool_input": {"file_path": "/x/y.rs"}}),
+            &ctx(&f),
+        );
         assert_eq!(o.output, None);
         assert!(matches!(f.calls.borrow()[0], Request::ReindexFile { .. }));
     }

@@ -20,7 +20,11 @@ pub struct Client {
 
 impl Client {
     pub fn new(socket: &Path, timeout: Duration, autostart: bool) -> Self {
-        Client { socket: socket.to_path_buf(), timeout, autostart }
+        Client {
+            socket: socket.to_path_buf(),
+            timeout,
+            autostart,
+        }
     }
 
     fn connect(&self) -> anyhow::Result<UnixStream> {
@@ -29,6 +33,10 @@ impl Client {
             Err(e) => {
                 if !self.autostart {
                     return Err(e).context("daemon not reachable");
+                }
+                let marker = crate::config::Config::from_env().home.join("daemon.spawn");
+                if !claim_spawn(&marker, SPAWN_BACKOFF) {
+                    return Err(e).context("daemon not reachable (a start is already in progress)");
                 }
                 spawn_daemon()?;
                 Err(e).context("daemon not reachable (starting it in the background)")
@@ -47,7 +55,9 @@ impl DaemonApi for Client {
         stream.write_all(line.as_bytes())?;
         let mut reader = BufReader::new(stream);
         let mut resp = String::new();
-        reader.read_line(&mut resp).context("daemon read (timeout?)")?;
+        reader
+            .read_line(&mut resp)
+            .context("daemon read (timeout?)")?;
         if resp.is_empty() {
             bail!("daemon closed the connection");
         }
@@ -58,6 +68,29 @@ impl DaemonApi for Client {
     }
 }
 
+/// Minimum time between daemon start attempts across all laya processes. Without it every
+/// hook or retry during a slow (or failing) start spawns another daemon.
+const SPAWN_BACKOFF: Duration = Duration::from_secs(10);
+
+/// Claim the right to start the daemon: false if another process started one within `backoff`
+/// (per the `marker` file's mtime), else touches the marker and returns true. Best effort: two
+/// racing callers may both win, which is harmless because the daemon binds its socket exclusively.
+fn claim_spawn(marker: &Path, backoff: Duration) -> bool {
+    let recent = std::fs::metadata(marker)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < backoff);
+    if recent {
+        return false;
+    }
+    if let Some(dir) = marker.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(marker, std::process::id().to_string());
+    true
+}
+
 /// Start `laya daemon` detached from the calling process (stdio to /dev/null; it logs itself).
 pub fn spawn_daemon() -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
@@ -65,7 +98,10 @@ pub fn spawn_daemon() -> anyhow::Result<()> {
     if let Some(dir) = log.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let err = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
+    let err = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)?;
     Command::new(exe)
         .arg("daemon")
         .stdin(Stdio::null())
@@ -74,4 +110,28 @@ pub fn spawn_daemon() -> anyhow::Result<()> {
         .spawn()
         .context("spawn laya daemon")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawns_are_rate_limited_across_processes() {
+        let dir = std::env::temp_dir().join(format!("laya-spawn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("daemon.spawn");
+        let _ = std::fs::remove_file(&marker);
+        let backoff = Duration::from_secs(10);
+        assert!(claim_spawn(&marker, backoff), "first caller spawns");
+        assert!(
+            !claim_spawn(&marker, backoff),
+            "a caller within the backoff does not"
+        );
+        assert!(
+            claim_spawn(&marker, Duration::ZERO),
+            "after the backoff a caller spawns again"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

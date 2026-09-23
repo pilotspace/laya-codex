@@ -36,9 +36,14 @@ pub enum Request {
         reset: bool,
     },
     /// Re-index one file (after an edit). Relative or absolute path.
-    ReindexFile { repo: String, path: String },
+    ReindexFile {
+        repo: String,
+        path: String,
+    },
     /// Incremental index of the whole repo (hash-skipped); runs in the background.
-    IndexRepo { repo: String },
+    IndexRepo {
+        repo: String,
+    },
 }
 
 /// Daemon-side rendering request for `Query`.
@@ -62,7 +67,10 @@ pub struct SessionView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Response {
-    Pong { model_ready: bool, version: String },
+    Pong {
+        model_ready: bool,
+        version: String,
+    },
     Query {
         result: QueryResult,
         #[serde(default)]
@@ -71,10 +79,16 @@ pub enum Response {
         #[serde(default)]
         scope: Option<String>,
     },
-    Count { count: u32 },
-    Session { view: SessionView },
+    Count {
+        count: u32,
+    },
+    Session {
+        view: SessionView,
+    },
     Ok,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[cfg(test)]
@@ -83,22 +97,47 @@ mod tests {
 
     #[test]
     fn request_roundtrips_as_tagged_json() {
-        let r = Request::NoteRead { session: "s".into(), path: "src/a.rs".into(), full: true };
+        let r = Request::NoteRead {
+            session: "s".into(),
+            path: "src/a.rs".into(),
+            full: true,
+        };
         let s = serde_json::to_string(&r).unwrap();
-        assert_eq!(s, r#"{"op":"note_read","session":"s","path":"src/a.rs","full":true}"#);
+        assert_eq!(
+            s,
+            r#"{"op":"note_read","session":"s","path":"src/a.rs","full":true}"#
+        );
         assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
         // Older clients omit the new fields.
-        let old: Request = serde_json::from_str(r#"{"op":"note_read","session":"s","path":"a"}"#).unwrap();
-        assert_eq!(old, Request::NoteRead { session: "s".into(), path: "a".into(), full: false });
+        let old: Request =
+            serde_json::from_str(r#"{"op":"note_read","session":"s","path":"a"}"#).unwrap();
+        assert_eq!(
+            old,
+            Request::NoteRead {
+                session: "s".into(),
+                path: "a".into(),
+                full: false
+            }
+        );
         let q: Request = serde_json::from_str(r#"{"op":"query","repo":"/r","session":null,"prompt":"p","budget_ms":null,"top_n":null}"#).unwrap();
         assert!(matches!(q, Request::Query { render: None, .. }));
         let resp: Response = serde_json::from_str(r#"{"status":"query","result":{"spans":[],"mode":"lexical","elapsed_ms":1,"candidates":0}}"#).unwrap();
-        assert!(matches!(resp, Response::Query { rendered: None, scope: None, .. }));
+        assert!(matches!(
+            resp,
+            Response::Query {
+                rendered: None,
+                scope: None,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn response_error_shape() {
-        let s = serde_json::to_string(&Response::Error { message: "x".into() }).unwrap();
+        let s = serde_json::to_string(&Response::Error {
+            message: "x".into(),
+        })
+        .unwrap();
         assert_eq!(s, r#"{"status":"error","message":"x"}"#);
     }
 }
