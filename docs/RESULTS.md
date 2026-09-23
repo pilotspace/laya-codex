@@ -21,7 +21,53 @@ answer quality?
   variants. Every run records tokens, wall-clock, turns, cost, and graded FILES recall/precision.
 - **Stats**: paired bootstrap (10k resamples) 95% CI of the ratio of sums (`bench/stats.py`).
 
-## 3. Headline result — v3 (compact injection + one-hop reference expansion, the shipped default)
+## 3a. Headline result: v7, the v0.1.0 defaults (two prompts per session)
+
+These are the v0.1.0 defaults: adaptive injection (`laya-adaptive`). Tasks are the same 20; each
+session has two prompts (localisation, then tests and call sites). Laya is scored **cold** in
+every arm (`LAYA_MEMO=0`) and the model is warmed up at daemon start. Raw rows are in
+`bench/results/claude-v7/`.
+
+| metric (vs stock Claude Code) | v7 adaptive (default) | v7 laya-refs | 95% CI (adaptive) | tasks improved |
+|---|---|---|---|---|
+| code-reading tokens | **−50.1%** | −48.5% | [−61.6%, −33.0%] | 17/20 |
+| reading + injected tokens | −27.9% | −25.8% | [−43.8%, −4.2%] | 13/20 |
+| total input tokens | −26.8% | −28.5% | [−42.2%, −6.4%] | 14/20 |
+| wall-clock | **−17.4%** | −16.6% (n.s.) | [−31.5%, −1.0%] | 13/20 |
+| turns | −23.4% | −24.9% | [−34.1%, −10.5%] | 15/20 |
+| cost | −27.2% | **−34.7%** | [−39.2%, −11.1%] | 13/20 |
+| answer recall (turn 1) | 0.933 vs 0.975 | 0.933 | diff −0.042 [−0.108, 0.000] | |
+| answer recall (both turns) | 0.933 vs 0.975 | 0.958 | diff −0.017 [−0.092, +0.058] | |
+
+Read accuracy (`bench/read_accuracy.py`):
+
+| arm | read precision | gold code seen | wasted read tokens | first gold Read at turn |
+|---|---|---|---|---|
+| baseline | 0.373 | 0.871 | 4,993 | 8.2 |
+| **adaptive** | **0.546** | **0.933** | **2,118** | 4.0 |
+| refs | 0.482 | 0.871 | 2,569 | 3.2 |
+
+Mechanics (`bench/check_v7.py`):
+- 80 prompt injections, max 8,303 characters, none over the 9,500 cap.
+- 70 of 80 carried the "Definitions and uses" list.
+- 6 whole-file Reads were narrowed to a region. Claude later read other ranges of those files,
+  and never the whole file.
+
+What moved from v6 to v7:
+- Wall-clock went from −9% to −17%, code reading from −39% to −50%, and cost from −19% to
+  −27%, even though v7 scores every prompt cold, which v6 did not.
+- The forensics-driven changes were:
+  - the character cap;
+  - distinct-file inlining;
+  - the definitions and uses list;
+  - the Read plan;
+  - the model warm-up.
+
+Recall dipped by 2 tasks (−0.042, CI touching 0). In one of them (756db483ef) both laya arms
+missed the third gold file, `warm_search.rs`. Treat that one as a possible systematic miss, not
+proven noise.
+
+## 3. Earlier headline: v3 (single prompt, compact injection + one-hop reference expansion)
 
 `bench/results/claude-v3/stats-laya-refs.txt` — laya-refs vs baseline, paired n=20:
 
@@ -111,7 +157,7 @@ read is not re-sent, and the next-ranked spans take its place).
 - v1's "full injection" arm exceeded Claude Code's 10,000-character hook limit in 16 of 20
   injections, so Claude saw a preview and read the overflow file back.
 
-**v7 (running)** acts on those findings:
+**v7** (results in §3a) acted on those findings:
 - hard 9,500-character cap on all hook output;
 - first whole-file Read of a large file → best region plus an outline;
 - a "Definitions and uses" list for task identifiers;
@@ -120,11 +166,11 @@ read is not re-sent, and the next-ranked spans take its place).
 
 ## 4. Against the goals
 
-| goal | result (v3) | verdict |
+| goal | result (v7, v0.1.0 defaults; v3 single-prompt in brackets) | verdict |
 |---|---|---|
-| −50% codebase-reading tokens | −44.7% code-reading tokens; −29.6% counting laya's own injected context; −42% total input | **close, not met** |
-| −30% task time | −24.6% (CI −42%…−4%); −30.4% at 16/20 tasks | **not met** (significant improvement) |
-| no quality drop | answer recall 0.950 vs 0.938, precision 0.420 vs 0.337, read recall 0.871 vs 0.767 | **met** |
+| −50% codebase-reading tokens | −50.1% code-reading (CI −62%…−33%); −27.9% counting laya's injected context; −26.8% total input [v3: −44.7% / −29.6% / −42%] | **met on code reading (point estimate)**; not when counting the injection |
+| −30% task time | −17.4% (CI −32%…−1%) over two prompts [v3: −24.6%, single prompt] | **not met** (significant improvement) |
+| no quality drop | answer recall 0.933 vs 0.975, diff −0.042 (CI −0.108…0.000); read precision 0.55 vs 0.37 | **no significant loss**; point estimate −4 points |
 
 ## 5. What each component contributed (ablations)
 
@@ -164,8 +210,11 @@ read is not re-sent, and the next-ranked spans take its place).
 
 ## 8. Next steps (ranked by expected value)
 
-1. **v7** (running): the forensics-driven changes above. The key unknown is how often Claude
-   re-reads a file after a narrowed large-file Read.
+1. **Close the time gap (−17% → −30%).** Time is now dominated by the final answer turn and
+   verification turns (forensics §6). The candidates are:
+   - fewer verification turns, e.g. richer usage lists for identifiers the answer names;
+   - making `laya_search` (MCP) the cheap default for follow-up lookups;
+   - checking the `warm_search.rs`-style third-file misses on multi-file tasks.
 2. **Residual prompt noise.** A few generic chunks (`hash_write.rs` HgetexMode,
    `shortest_path.rs`) recur across tasks via the answer-format tail ("paths", "files"), and
    per-repo IDF-aware term selection is the principled fix. The laya-typed-decisions comparison

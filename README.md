@@ -6,19 +6,26 @@ Ranked code retrieval for Claude Code. `laya` indexes a repository with tree-sit
 typed-decision model running natively in Rust (candle, Metal), and hands Claude Code the most
 relevant spans through hooks and an MCP tool.
 
-**Measured effect** (20 held-out tasks, paired, Claude Sonnet, all significant): −45% code-reading
-tokens, −42% total input tokens, −25% wall-clock, −37% turns, −29% cost, with answer recall
-0.95 vs 0.94 and read precision 0.66 vs 0.55. See [docs/RESULTS.md](docs/RESULTS.md) for the
-full evidence, ablations and caveats.
+**Measured effect** (v0.1.0 defaults vs stock Claude Code; 20 held-out tasks, two prompts per
+session, paired, Claude Sonnet, Laya scored cold):
+- **−50% code-reading tokens** (95% CI −62%…−33%) and −27% total input tokens;
+- **−17% wall-clock** (CI −32%…−1%), −23% turns and −27% cost;
+- read precision 0.55 vs 0.37, and Claude reaches the relevant code at turn 4 instead of 8;
+- answer recall 0.93 vs 0.98, a difference that is not significant.
+
+The −30% time goal is not met yet. See [docs/RESULTS.md](docs/RESULTS.md) for the evidence,
+ablations and caveats.
 
 ## How it works
 
 ```
 prompt ──UserPromptSubmit hook──► laya daemon ──► Moon BM25 (+ symbol/path signals, RRF)
                                      │                  │ top 24 chunks
-                                     │            Laya re-rank (Metal, ~0.8 s, memoized in Moon)
-                                     ◄──── ranked map + top-3 spans injected as context
-Read/Agent/Edit hooks: guarded Read narrowing · subagent hand-off · re-index on edit
+                                     │            Laya re-rank (Metal, ~0.8 s) fused with lexical rank
+                                     ◄──── ≤ 9,500 chars: ranked map · top-3 files' code ·
+                                           definitions & uses · related (skips what the session has)
+Read hook: first whole-file Read of a large file → best region + outline (Read again for all)
+Other hooks: subagent hand-off · re-index on edit · re-inject after compaction
 MCP tool `laya_search` for follow-up queries
 ```
 
@@ -53,8 +60,8 @@ laya doctor --repo /path/to/repo         # check Moon, model, LAYA_HOME, daemon,
 `laya init` merges the four hooks into `<repo>/.claude/settings.local.json` and the `laya` server
 into `<repo>/.mcp.json`, using the absolute path of the `laya` binary you ran. It keeps every other
 key, hook and server and only replaces earlier laya entries, so re-running it is safe (and a
-no-op). Flags: `--dry-run` prints the result without writing, `--adaptive` turns on adaptive
-context sizing (`LAYA_ADAPTIVE=1` on the hook command), `--no-index` skips indexing, `--force`
+no-op). Flags: `--dry-run` prints the result without writing, `--adaptive` pins adaptive
+injection on the hook command (already the default), `--no-index` skips indexing, `--force`
 replaces a file that is not valid JSON (the original is kept as `*.bak`; without `--force` such
 files are left untouched and init exits 1). Any path inside the repo works; the git root is used.
 Re-run `laya init` if you move the binary. Claude Code asks once to approve the project MCP server.
@@ -94,7 +101,8 @@ Every hook fails open: if the daemon, Moon or the model is unavailable, Claude C
 | `LAYA_BUDGET_MS` | `1200` | Laya time budget per prompt (falls back to lexical) |
 | `LAYA_RENDER` | `compact` | `full` injects every span's code |
 | `LAYA_WEIGHT` / `LAYA_STATE_TOKENS` / `LAYA_K` / `LAYA_P_THRESHOLD` | `0.5` / `128` / `24` / `0` | ranking knobs (daemon start) |
-| `LAYA_ADAPTIVE` | unset | `1` = size injected context by task scope, skip spans already sent (`laya init --adaptive`) |
+| `LAYA_ADAPTIVE` | on | `0` = fixed compact injection; default skips code already sent or read in the session |
+| `LAYA_SCOPE` | off | `1` = let a Laya scope classifier size the injection (measured no-op; see RESULTS) |
 | `LAYA_MOON_PORT` / `LAYA_MOON_BIN` | `16379` / `moon` on `PATH` | Moon sidecar; a missing binary is reported with every path tried |
 
 ## Reproduce the benchmark
@@ -103,8 +111,9 @@ Every hook fails open: if the daemon, Moon or the model is unavailable, Claude C
 python3 bench/run_bench.py tasks --repo <moon clone> --skip 40 --n 20 --out bench/tasks.jsonl
 laya index <moon clone>
 python3 bench/run_bench.py run --repo <moon clone> --tasks bench/tasks.jsonl \
-    --arms baseline,laya-compact,lex-compact --out /tmp/bench-run
-python3 bench/stats.py /tmp/bench-run laya-compact
+    --arms baseline,laya-refs,laya-adaptive --turns 2 --out /tmp/bench-run
+python3 bench/stats.py /tmp/bench-run laya-adaptive
+python3 bench/read_accuracy.py /tmp/bench-run bench/tasks.jsonl
 ```
 
 ## Layout

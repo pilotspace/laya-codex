@@ -12,10 +12,16 @@ macOS arm64 (Laya on Metal) and Linux x86_64 (Laya on CPU, or lexical-only with
 
 ### Benchmark
 
-<!-- TODO: headline numbers from the v0.1.0 paired benchmark (tokens, wall-clock, turns, cost,
-     answer recall/precision, n, 95% CIs). Fill in from docs/RESULTS.md when the run finishes. -->
-- TODO: code-reading tokens, total input tokens, wall-clock, turns, cost vs stock Claude Code.
-- TODO: answer quality (recall / precision) vs baseline.
+v7: default configuration vs stock Claude Code. 20 held-out tasks from pilotspace/moon, two
+prompts per session, paired bootstrap 95% CIs, Claude Sonnet, Laya scored cold in every arm
+(`docs/RESULTS.md`).
+
+- Code-reading tokens **−50.1%** [−61.6, −33.0]; reading + injected −27.9%; total input −26.8%.
+- Wall-clock **−17.4%** [−31.5, −1.0]; turns −23.4%; cost −27.2%.
+- Read precision 0.55 vs 0.37. Gold code seen 0.93 vs 0.87. The first relevant Read comes at
+  turn 4.0 vs 8.2.
+- Answer recall 0.933 vs 0.975: −0.042 [−0.108, 0.000], not significant.
+- Goals: −50% reading tokens met on the point estimate; −30% time not met.
 
 ### Added
 
@@ -48,6 +54,16 @@ macOS arm64 (Laya on Metal) and Linux x86_64 (Laya on CPU, or lexical-only with
 - **Hooks** (`laya hook`): SessionStart, UserPromptSubmit, PreToolUse (Read/Agent/Task) and
   PostToolUse (Edit/Write re-index) handlers; every hook fails open when the daemon, Moon or the
   model is unavailable.
+- **Injection format**: a hard 9,500-character cap on all hook output (Claude Code moves longer
+  output to a file). Full code of the top 3 *distinct files*. A grep-style "Definitions and
+  uses" list for task identifiers.
+- **Read plan**: the first whole-file Read of a large indexed file returns the best region plus
+  a file outline; a second whole-file Read returns everything.
+- **Setup**: `laya init` (idempotent hook/MCP settings merge) and `laya doctor` (checks with fix
+  hints). Daemon autostart is rate-limited across processes. The model is warmed up before it
+  serves prompts.
+- **Defaults**: adaptive injection on (`LAYA_ADAPTIVE=0` to disable). Scope classifier off
+  (`LAYA_SCOPE=1`, a measured no-op).
 - **MCP server** (`laya mcp`): `laya_search` tool for follow-up queries.
 - **CLI** (`laya`): daemon over a unix socket, incremental indexer, `index`, `query`, `status`,
   `stop`; tuning knobs via `LAYA_*` environment variables.
