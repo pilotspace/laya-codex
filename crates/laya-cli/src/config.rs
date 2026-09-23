@@ -44,10 +44,7 @@ impl Config {
             });
         let (moon_bin, moon_tried) = resolve_moon(
             std::env::var_os("LAYA_MOON_BIN").map(PathBuf::from),
-            std::env::current_exe()
-                .ok()
-                .and_then(|e| e.parent().map(Path::to_path_buf))
-                .as_deref(),
+            std::env::current_exe().ok().as_deref(),
             std::env::var_os("PATH").as_deref(),
         );
         Config {
@@ -104,18 +101,29 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
-/// Locate the Moon binary: `LAYA_MOON_BIN` alone when set, else `moon` in `exe_dir` (where the
-/// installer puts the pinned Moon beside `laya`), then on each `PATH` entry. Returns the chosen
-/// path (the last candidate when none exists, so the spawn error names it) and every path tried.
+/// Locate the Moon binary: `LAYA_CODEX_MOON_BIN` alone when set, else, relative to the real
+/// (symlink-resolved) location of the `laya-codex` executable `exe`, `moon` beside it (where
+/// install.sh puts the pinned Moon) and `../libexec/moon` (the Homebrew formula's layout), then on
+/// each `PATH` entry. Returns the chosen path (the last candidate when none exists, so the spawn
+/// error names it) and every path tried.
 pub fn resolve_moon(
     env_bin: Option<PathBuf>,
-    exe_dir: Option<&Path>,
+    exe: Option<&Path>,
     path_var: Option<&std::ffi::OsStr>,
 ) -> (PathBuf, Vec<PathBuf>) {
     if let Some(bin) = env_bin {
         return (bin.clone(), vec![bin]);
     }
-    let mut tried: Vec<PathBuf> = exe_dir.map(|d| d.join("moon")).into_iter().collect();
+    // The real location: a symlink (Homebrew's bin/laya-codex -> Cellar/...) would otherwise hide
+    // the Moon installed with the binary.
+    let exe = exe.map(|e| e.canonicalize().unwrap_or_else(|_| e.to_path_buf()));
+    let mut tried: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = exe.as_deref().and_then(Path::parent) {
+        tried.push(dir.join("moon"));
+        if let Some(prefix) = dir.parent() {
+            tried.push(prefix.join("libexec").join("moon"));
+        }
+    }
     if let Some(v) = path_var {
         for p in std::env::split_paths(v).map(|d| d.join("moon")) {
             if !tried.contains(&p) {
@@ -339,21 +347,71 @@ mod tests {
         exe(&on_path.join("moon"));
 
         // Nothing beside laya: it is tried first, then PATH wins.
-        let (bin, tried) = resolve_moon(None, Some(&bin_dir), Some(&path_var));
+        let (bin, tried) = resolve_moon(None, Some(&bin_dir.join("laya-codex")), Some(&path_var));
         assert_eq!(bin, on_path.join("moon"));
-        assert_eq!(tried, vec![bin_dir.join("moon"), on_path.join("moon")]);
+        assert_eq!(
+            tried,
+            vec![
+                bin_dir.join("moon"),
+                d.join("libexec/moon"),
+                on_path.join("moon")
+            ]
+        );
 
         // The installer puts the pinned Moon beside laya: it beats any other moon on PATH.
         exe(&bin_dir.join("moon"));
-        let (bin, tried) = resolve_moon(None, Some(&bin_dir), Some(&path_var));
+        let (bin, tried) = resolve_moon(None, Some(&bin_dir.join("laya-codex")), Some(&path_var));
         assert_eq!((bin, tried.len()), (bin_dir.join("moon"), 1));
 
         // LAYA_MOON_BIN still overrides everything.
         let env = d.join("custom/moon");
         assert_eq!(
-            resolve_moon(Some(env.clone()), Some(&bin_dir), Some(&path_var)).0,
+            resolve_moon(
+                Some(env.clone()),
+                Some(&bin_dir.join("laya-codex")),
+                Some(&path_var)
+            )
+            .0,
             env
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn resolve_moon_follows_a_symlinked_executable_to_its_real_directory() {
+        let d = scratch("moon-symlink");
+        let (real, linked) = (d.join("real"), d.join("linked"));
+        exe(&real.join("laya-codex"));
+        exe(&real.join("moon"));
+        std::fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(real.join("laya-codex"), linked.join("laya-codex")).unwrap();
+
+        // Run through the symlink: the moon beside the real binary is found.
+        let (bin, tried) = resolve_moon(None, Some(&linked.join("laya-codex")), None);
+        assert_eq!(bin, real.canonicalize().unwrap().join("moon"), "{tried:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn resolve_moon_finds_the_homebrew_libexec_moon() {
+        // Homebrew: bin/laya-codex -> Cellar/laya-codex/<v>/bin/laya-codex, moon in
+        // Cellar/laya-codex/<v>/libexec (bin/moon belongs to an unrelated formula).
+        let d = scratch("moon-brew");
+        let keg = d.join("Cellar/laya-codex/0.2.0");
+        let (prefix_bin, on_path) = (d.join("bin"), d.join("path"));
+        exe(&keg.join("bin/laya-codex"));
+        exe(&keg.join("libexec/moon"));
+        exe(&on_path.join("moon"));
+        std::fs::create_dir_all(&prefix_bin).unwrap();
+        std::os::unix::fs::symlink(keg.join("bin/laya-codex"), prefix_bin.join("laya-codex"))
+            .unwrap();
+        let path_var = std::env::join_paths([&on_path]).unwrap();
+
+        let linked = prefix_bin.join("laya-codex");
+        let (bin, tried) = resolve_moon(None, Some(&linked), Some(&path_var));
+        let keg = keg.canonicalize().unwrap();
+        assert_eq!(bin, keg.join("libexec/moon"));
+        assert_eq!(tried, vec![keg.join("bin/moon"), keg.join("libexec/moon")]);
         let _ = std::fs::remove_dir_all(&d);
     }
 
