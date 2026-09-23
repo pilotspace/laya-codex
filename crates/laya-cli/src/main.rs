@@ -1,5 +1,22 @@
 //! `laya` — code retrieval for Claude Code: tree-sitter chunks, Moon BM25, Laya re-ranking.
 
+/// `println!` that returns an error instead of panicking when stdout is gone; a reader that
+/// closed early (`laya query ... | head`) becomes [`sys::StdoutClosed`], which exits quietly.
+macro_rules! outln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        writeln!(std::io::stdout(), $($arg)*).map_err(crate::sys::stdout_err)?
+    }};
+}
+
+/// `print!` counterpart of [`outln!`].
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        write!(std::io::stdout(), $($arg)*).map_err(crate::sys::stdout_err)?
+    }};
+}
+
 mod client;
 mod config;
 mod daemon;
@@ -137,6 +154,9 @@ fn main() {
         Cmd::Doctor { repo, json, start } => cmd_doctor(&cfg, repo, json, start),
     };
     if let Err(e) = res {
+        if e.downcast_ref::<sys::StdoutClosed>().is_some() {
+            std::process::exit(0);
+        }
         eprintln!("laya: {e:#}");
         std::process::exit(1);
     }
@@ -150,7 +170,7 @@ fn cmd_index(cfg: &Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     let store = laya_store::MoonStore::new(sc)?;
     let id = laya_store::repo_id(&root);
     let stats = indexer::index_repo(&root, &store, &id)?;
-    println!("{}", json!({"repo": root, "repo_id": id, "stats": stats}));
+    outln!("{}", json!({"repo": root, "repo_id": id, "stats": stats}));
     Ok(())
 }
 
@@ -192,14 +212,16 @@ fn cmd_query(
     };
     match c.call(req)? {
         Response::Query { result, .. } if as_json => {
-            println!("{}", serde_json::to_string_pretty(&result)?)
+            outln!("{}", serde_json::to_string_pretty(&result)?)
         }
         Response::Query { result, .. } => {
-            println!(
+            outln!(
                 "mode={:?} candidates={} elapsed={}ms",
-                result.mode, result.candidates, result.elapsed_ms
+                result.mode,
+                result.candidates,
+                result.elapsed_ms
             );
-            println!("{}", laya_rank::render_context(&result, 100_000));
+            outln!("{}", laya_rank::render_context(&result, 100_000));
         }
         other => anyhow::bail!("unexpected response {other:?}"),
     }
@@ -226,9 +248,9 @@ fn cmd_stop(cfg: &Config) -> anyhow::Result<()> {
         &cfg.daemon_pidfile(),
         &cfg.daemon_lock(),
     )? {
-        client::Stopped::ViaSocket => println!("stopped daemon"),
-        client::Stopped::ViaSignal(pid) => println!("stopped daemon pid {pid} (SIGTERM)"),
-        client::Stopped::NotRunning => println!("no daemon running"),
+        client::Stopped::ViaSocket => outln!("stopped daemon"),
+        client::Stopped::ViaSignal(pid) => outln!("stopped daemon pid {pid} (SIGTERM)"),
+        client::Stopped::NotRunning => outln!("no daemon running"),
     }
     Ok(())
 }
@@ -236,7 +258,7 @@ fn cmd_stop(cfg: &Config) -> anyhow::Result<()> {
 fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
     let c = Client::new(&cfg.socket_path(), Duration::from_secs(2), false);
     let r = c.call(Request::Ping);
-    println!(
+    outln!(
         "{}",
         json!({"socket": cfg.socket_path(), "model_dir": cfg.model_dir, "moon_port": cfg.moon_port,
         "daemon": match r { Ok(Response::Pong { model_ready, version }) => json!({"up": true, "model_ready": model_ready, "version": version}),
@@ -260,7 +282,7 @@ fn cmd_init(
         .and_then(|p| p.canonicalize())
         .context("locate the laya executable")?;
     let plans = init::run(&root, &exe, adaptive, dry_run, force)?;
-    println!(
+    outln!(
         "laya init{}: {}",
         if dry_run {
             " (dry run, nothing written)"
@@ -282,19 +304,19 @@ fn cmd_init(
                 backup.display()
             ),
         };
-        println!("  {what:<12} {}", p.path.display());
+        outln!("  {what:<12} {}", p.path.display());
         if dry_run && p.action != init::Action::Unchanged {
             for line in p.content.lines() {
-                println!("      {line}");
+                outln!("      {line}");
             }
         }
     }
-    println!("  hook command: {}", init::hook_command(&exe, adaptive));
+    outln!("  hook command: {}", init::hook_command(&exe, adaptive));
     if dry_run {
         return Ok(());
     }
     if no_index {
-        println!(
+        outln!(
             "indexing skipped; run `laya index {}` before the first session",
             root.display()
         );
@@ -302,14 +324,14 @@ fn cmd_init(
     }
     // Fail open: the hooks work (as no-ops) without an index, so a setup problem is a hint here.
     match kick_index(cfg, &root) {
-        Ok(()) => println!(
+        Ok(()) => outln!(
             "indexing {} in the background; `laya doctor --repo {}` shows progress",
             root.display(),
             root.display()
         ),
         Err(e) => {
-            println!("indexing not started: {e:#}");
-            println!(
+            outln!("indexing not started: {e:#}");
+            outln!(
                 "the hooks fail open (Claude Code runs unchanged) until then; after fixing it run `laya index {}`",
                 root.display()
             );
@@ -346,18 +368,18 @@ fn cmd_doctor(
     let checks = doctor::run(cfg, &root, start);
     let code = doctor::exit_code(&checks);
     if as_json {
-        println!(
+        outln!(
             "{}",
             serde_json::to_string_pretty(
                 &json!({"repo": root, "ok": code == 0, "checks": checks})
             )?
         );
     } else {
-        println!("laya doctor: {}", root.display());
-        print!("{}", doctor::render(&checks));
+        outln!("laya doctor: {}", root.display());
+        out!("{}", doctor::render(&checks));
     }
     use std::io::Write;
-    std::io::stdout().flush()?;
+    std::io::stdout().flush().map_err(sys::stdout_err)?;
     if code != 0 {
         std::process::exit(code);
     }
@@ -365,7 +387,13 @@ fn cmd_doctor(
 }
 
 /// Hook entry point: never fails, never blocks past its timeouts, prints nothing on error.
+/// A panic anywhere in it (a bug on a strange input) is swallowed: no output, exit 0.
 fn cmd_hook(cfg: &Config) {
+    std::panic::set_hook(Box::new(|_| {}));
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook_inner(cfg)));
+}
+
+fn hook_inner(cfg: &Config) {
     let t0 = Instant::now();
     let mut raw = String::new();
     if std::io::stdin().read_to_string(&mut raw).is_err() {
@@ -403,7 +431,8 @@ fn cmd_hook(cfg: &Config) {
     };
     let outcome = hook::handle(&input, &ctx);
     if let Some(out) = &outcome.output {
-        println!("{out}");
+        use std::io::Write;
+        let _ = writeln!(std::io::stdout(), "{out}");
     }
     if let Some(log) = &cfg.hook_log {
         let line = json!({"ts_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),

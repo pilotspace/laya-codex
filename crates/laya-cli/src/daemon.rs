@@ -4,8 +4,9 @@
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
 use laya_core::QueryResult;
@@ -256,12 +257,7 @@ impl Daemon {
             .ok()
             .and_then(|c| c.clone())
             .and_then(|c| c.classify(prompt));
-        let Ok(mut sessions) = self.sessions.lock() else {
-            return (
-                laya_rank::render_compact_opts(result, 3, req.budget_tokens, req.related),
-                scope,
-            );
-        };
+        let mut sessions = self.sessions();
         let already: Vec<SpanKey> = session
             .map(|s| sessions.already(s))
             .unwrap_or_default()
@@ -288,6 +284,13 @@ impl Daemon {
             sessions.mark_sent(s, &keys);
         }
         (text, scope)
+    }
+
+    /// The session table. A panic under the lock (see `serve_conn`) leaves it poisoned; the
+    /// table is only a cache of what each session has seen, so it is used as is rather than
+    /// failing every later request.
+    fn sessions(&self) -> MutexGuard<'_, Sessions> {
+        lock(&self.sessions)
     }
 
     fn repo(&self, repo: &str) -> (PathBuf, String) {
@@ -323,14 +326,14 @@ impl Daemon {
                 }
                 let scorer = self.scorer.read().ok().and_then(|s| s.clone());
                 let retriever = Retriever::new(self.store.as_ref(), scorer, cfg);
-                let query = match (&session, self.sessions.lock()) {
-                    (Some(s), Ok(mut sessions)) => sessions.effective_query(s, &prompt),
-                    _ => prompt.clone(),
+                let query = match &session {
+                    Some(s) => self.sessions().effective_query(s, &prompt),
+                    None => prompt.clone(),
                 };
                 match retriever.query(&id, &query) {
                     Ok(result) => {
-                        if let (Some(s), Ok(mut sessions)) = (&session, self.sessions.lock()) {
-                            sessions.record_query(s, &result);
+                        if let Some(s) = &session {
+                            self.sessions().record_query(s, &result);
                         }
                         let (rendered, scope) = match &render {
                             Some(r) => {
@@ -355,27 +358,18 @@ impl Daemon {
                 session,
                 path,
                 full,
-            } => match self.sessions.lock() {
-                Ok(mut s) => Response::Count {
-                    count: s.note_read(&session, &path, full),
-                },
-                Err(_) => Response::Error {
-                    message: "session lock poisoned".into(),
-                },
+            } => Response::Count {
+                count: self.sessions().note_read(&session, &path, full),
             },
-            Request::Session { session, reset } => match self.sessions.lock() {
-                Ok(mut s) => {
-                    if reset {
-                        s.reset_context(&session);
-                    }
-                    Response::Session {
-                        view: s.view(&session),
-                    }
+            Request::Session { session, reset } => {
+                let mut s = self.sessions();
+                if reset {
+                    s.reset_context(&session);
                 }
-                Err(_) => Response::Error {
-                    message: "session lock poisoned".into(),
-                },
-            },
+                Response::Session {
+                    view: s.view(&session),
+                }
+            }
             Request::ReindexFile { repo, path } => {
                 let (root, id) = self.repo(&repo);
                 let Some(rel) = rel_path(&root, &path) else {
@@ -390,18 +384,24 @@ impl Daemon {
             }
             Request::IndexRepo { repo } => {
                 let (root, id) = self.repo(&repo);
-                let fresh = self
-                    .indexing
-                    .lock()
-                    .map(|mut s| s.insert(id.clone()))
-                    .unwrap_or(false);
+                let fresh = lock(&self.indexing).insert(id.clone());
                 if fresh {
-                    let me = Arc::clone(self);
+                    let slot = IndexingSlot {
+                        daemon: Arc::clone(self),
+                        id,
+                    };
                     std::thread::spawn(move || {
-                        let r = indexer::index_repo(&root, me.store.as_ref(), &id);
-                        eprintln!("[laya] background index {}: {r:?}", root.display());
-                        if let Ok(mut s) = me.indexing.lock() {
-                            s.remove(&id);
+                        // `slot` clears the indexing flag when this thread ends, panic or not.
+                        let store = slot.daemon.store.as_ref();
+                        match catch_unwind(AssertUnwindSafe(|| {
+                            indexer::index_repo(&root, store, &slot.id)
+                        })) {
+                            Ok(r) => eprintln!("[laya] background index {}: {r:?}", root.display()),
+                            Err(p) => eprintln!(
+                                "[laya] background index {} panicked: {}",
+                                root.display(),
+                                panic_message(p.as_ref())
+                            ),
                         }
                     });
                 }
@@ -446,14 +446,12 @@ impl Daemon {
         if chunks.is_empty() {
             return None;
         }
-        let (ranking, query) = self.sessions.lock().ok()?.read_context(session);
+        let (ranking, query) = self.sessions().read_context(session);
         let signals = laya_rank::extract_signals(query.as_deref().unwrap_or_default());
         let (offset, limit, basis) =
             policy.read_region(ranking.as_ref(), &rel, &chunks, &signals, total_lines)?;
         let outline = policy.outline(&chunks, &signals, (offset, limit));
-        self.sessions
-            .lock()
-            .ok()?
+        self.sessions()
             .narrowed_read(session, &rel, offset, offset + limit - 1);
         Some(ReadPlan {
             offset,
@@ -463,6 +461,44 @@ impl Daemon {
             outline,
         })
     }
+}
+
+/// Lock `m`, recovering the guard if a panicking thread poisoned it.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| {
+        m.clear_poison();
+        e.into_inner()
+    })
+}
+
+/// A repo marked as being indexed; unmarked on drop, including when the index job panics.
+struct IndexingSlot {
+    daemon: Arc<Daemon>,
+    id: String,
+}
+
+impl Drop for IndexingSlot {
+    fn drop(&mut self) {
+        lock(&self.daemon.indexing).remove(&self.id);
+    }
+}
+
+/// The message of a caught panic payload (`panic!` with a literal or a formatted string).
+fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".into())
+}
+
+/// Handle one request, turning a panic (a parser, store or model bug on a strange input) into
+/// an error reply so the connection, and the daemon, keep serving.
+fn handle_guarded(daemon: &Arc<Daemon>, req: Request) -> Response {
+    catch_unwind(AssertUnwindSafe(|| daemon.handle(req))).unwrap_or_else(|p| {
+        let message = format!("internal error: {}", panic_message(p.as_ref()));
+        eprintln!("[laya] request panicked: {message}");
+        Response::Error { message }
+    })
 }
 
 fn env_num<T: std::str::FromStr>(key: &str) -> Option<T> {
@@ -483,7 +519,7 @@ fn serve_conn(daemon: Arc<Daemon>, stream: UnixStream, shutdown: &dyn Fn()) {
         let (resp, stop) = match serde_json::from_str::<Request>(&line) {
             Ok(req) => {
                 let stop = req == Request::Shutdown;
-                (daemon.handle(req), stop)
+                (handle_guarded(&daemon, req), stop)
             }
             Err(e) => (
                 Response::Error {
@@ -1152,6 +1188,127 @@ mod tests {
     fn peers_of_the_same_user_are_allowed() {
         let (a, _b) = UnixStream::pair().unwrap();
         assert!(peer_allowed(&a));
+    }
+
+    /// A store that panics in `bm25` (every query) and `ensure_index` (every index job), as a
+    /// parser or store bug on a strange input would.
+    #[derive(Default)]
+    struct PanicStore(MemStore);
+    impl Store for PanicStore {
+        fn ensure_index(&self, _: &str) -> laya_core::Result<()> {
+            panic!("injected ensure_index panic")
+        }
+        fn put_file(&self, r: &str, p: &str, h: &str, c: &[Chunk]) -> laya_core::Result<()> {
+            self.0.put_file(r, p, h, c)
+        }
+        fn delete_file(&self, r: &str, p: &str) -> laya_core::Result<()> {
+            self.0.delete_file(r, p)
+        }
+        fn file_hash(&self, r: &str, p: &str) -> laya_core::Result<Option<String>> {
+            self.0.file_hash(r, p)
+        }
+        fn list_files(&self, r: &str) -> laya_core::Result<Vec<String>> {
+            self.0.list_files(r)
+        }
+        fn bm25(&self, _: &str, _: &[String], _: usize) -> laya_core::Result<Vec<(String, f32)>> {
+            panic!("injected bm25 panic")
+        }
+        fn chunks_defining(
+            &self,
+            r: &str,
+            i: &[String],
+            l: usize,
+        ) -> laya_core::Result<Vec<String>> {
+            self.0.chunks_defining(r, i, l)
+        }
+        fn get_chunks(&self, r: &str, ids: &[String]) -> laya_core::Result<Vec<Chunk>> {
+            self.0.get_chunks(r, ids)
+        }
+        fn memo_get(&self, k: &str) -> laya_core::Result<Option<String>> {
+            self.0.memo_get(k)
+        }
+        fn memo_put(&self, k: &str, v: &str, t: u64) -> laya_core::Result<()> {
+            self.0.memo_put(k, v, t)
+        }
+    }
+
+    fn query_line(repo: &str) -> String {
+        let q = Request::Query {
+            repo: repo.into(),
+            session: Some("s".into()),
+            prompt: "replay wal".into(),
+            budget_ms: Some(0),
+            top_n: None,
+            render: None,
+        };
+        format!("{}\n", serde_json::to_string(&q).unwrap())
+    }
+
+    #[test]
+    fn a_panicking_request_gets_an_error_and_the_connection_keeps_serving() {
+        let d = Daemon::new(Arc::new(PanicStore::default()), RetrieverConfig::default());
+        let repo = std::env::temp_dir().to_string_lossy().into_owned();
+        let (client, server) = UnixStream::pair().unwrap();
+        let t = std::thread::spawn(move || serve_conn(d, server, &|| {}));
+        (&client).write_all(query_line(&repo).as_bytes()).unwrap();
+        (&client).write_all(b"{\"op\":\"ping\"}\n").unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut lines = BufReader::new(client.try_clone().unwrap()).lines();
+        let first = lines
+            .next()
+            .expect("a reply to the panicking request")
+            .unwrap();
+        assert!(
+            first.contains("\"error\"") && first.contains("internal error"),
+            "{first}"
+        );
+        let second = lines.next().expect("the connection still serves").unwrap();
+        assert!(second.contains("pong"), "{second}");
+        t.join().expect("serve_conn does not propagate the panic");
+    }
+
+    #[test]
+    fn a_panic_while_holding_the_session_lock_does_not_wedge_sessions() {
+        let d = Daemon::new(Arc::new(MemoStore::default()), RetrieverConfig::default());
+        let d2 = Arc::clone(&d);
+        let _ = std::thread::spawn(move || {
+            let _g = d2.sessions.lock().unwrap();
+            panic!("injected panic under the session lock");
+        })
+        .join();
+        assert_eq!(
+            d.handle(Request::NoteRead {
+                session: "s".into(),
+                path: "a.rs".into(),
+                full: false
+            }),
+            Response::Count { count: 1 }
+        );
+    }
+
+    #[test]
+    fn a_panicking_index_job_clears_the_indexing_flag() {
+        let d = Daemon::new(Arc::new(PanicStore::default()), RetrieverConfig::default());
+        let root = tempfile_dir("idxpanic");
+        let repo = root.to_string_lossy().into_owned();
+        assert_eq!(
+            d.handle(Request::IndexRepo { repo: repo.clone() }),
+            Response::Ok
+        );
+        let t0 = std::time::Instant::now();
+        while !d
+            .indexing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+        {
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "indexing flag never cleared after the job panicked"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn tempfile_dir(tag: &str) -> PathBuf {

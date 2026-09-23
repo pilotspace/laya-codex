@@ -140,7 +140,7 @@ crates/ core (types, errors) · parse (tree-sitter, cAST, tags) · graph (PageRa
         laya (candle model, head, tokenizer) · daemon (layad, unix socket, tracing)
         cli (laya index|query|hook|mcp) · bench (token/time harness)
 ```
-Release profile: `lto="fat"`, `codegen-units=1`, `panic="abort"`, `strip=true`, mimalloc,
+Release profile: `lto="fat"`, `codegen-units=1`, `panic="unwind"` (panics are caught per request, index job and file), `strip=true`, mimalloc,
 cargo-pgo on the index and query paths; no `target-cpu=native` for distributed builds.
 
 ## 4. Decision record (2026-09-23)

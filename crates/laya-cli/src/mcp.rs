@@ -123,8 +123,8 @@ pub fn serve(
             ),
         };
         if let Some(r) = reply {
-            writeln!(out, "{r}")?;
-            out.flush()?;
+            writeln!(out, "{r}").map_err(crate::sys::stdout_err)?;
+            out.flush().map_err(crate::sys::stdout_err)?;
         }
     }
     Ok(())
