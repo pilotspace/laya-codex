@@ -241,16 +241,15 @@ fn select_by_threshold(
     caps: &SizingCaps,
     policy: &SizingPolicy,
 ) -> (Vec<RankedSpan>, Vec<RankedSpan>) {
-    let mut full_idx: Vec<usize> = candidates
+    let passing = candidates
         .iter()
         .enumerate()
         .filter(|(_, s)| s.p_relevant.is_some_and(|p| p >= policy.tau_full))
-        .map(|(i, _)| i)
-        .take(caps.full_spans)
-        .collect();
+        .map(|(i, _)| i);
+    let mut full_idx = distinct_files(candidates, passing, caps.full_spans);
     if full_idx.len() < policy.min_full {
-        let need = policy.min_full.min(candidates.len()).min(caps.full_spans);
-        full_idx = (0..need).collect();
+        let need = policy.min_full.min(caps.full_spans);
+        full_idx = distinct_files(candidates, 0..candidates.len(), need);
     }
     let full_set: HashSet<usize> = full_idx.iter().copied().collect();
 
@@ -290,15 +289,29 @@ fn select_lexical(
     candidates: &[RankedSpan],
     caps: &SizingCaps,
 ) -> (Vec<RankedSpan>, Vec<RankedSpan>) {
-    let full: Vec<RankedSpan> = candidates.iter().take(caps.full_spans).cloned().collect();
-    let map_budget = caps.map_spans.saturating_sub(full.len());
-    let map: Vec<RankedSpan> = candidates
-        .iter()
-        .skip(full.len())
+    let full_idx = distinct_files(candidates, 0..candidates.len(), caps.full_spans);
+    let map_budget = caps.map_spans.saturating_sub(full_idx.len());
+    let map: Vec<RankedSpan> = (0..candidates.len())
+        .filter(|i| !full_idx.contains(i))
         .take(map_budget)
-        .cloned()
+        .map(|i| candidates[i].clone())
         .collect();
-    (full, map)
+    (full_idx.iter().map(|&i| candidates[i].clone()).collect(), map)
+}
+
+/// Up to `k` of `indices` (in order), at most one per file: full code for one span in each of
+/// several files covers more of what the task needs than several spans of one file.
+fn distinct_files(candidates: &[RankedSpan], indices: impl Iterator<Item = usize>, k: usize) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::new();
+    for i in indices {
+        if out.len() == k {
+            break;
+        }
+        if !out.iter().any(|&j| candidates[j].path == candidates[i].path) {
+            out.push(i);
+        }
+    }
+    out
 }
 
 const ALREADY_PREFIX: &str = "\nAlready provided earlier in this session: ";
@@ -332,7 +345,8 @@ pub fn render_sized_with_keys(ctx: &SizedContext, budget_tokens: usize) -> (Stri
     for span in &ctx.full {
         let block = render_span(span);
         let t = estimate_tokens(&block);
-        if used + t > budget_tokens {
+        // Reserve room for the footer and the "Already provided" line after the code blocks.
+        if used + t > budget_tokens || !crate::render::fits(&out, &block, COMPACT_FOOTER.len() + 400) {
             // Degrade to a map entry: it's already in the "Ranked locations:" listing above, so
             // simply not inlining its code block is exactly that degradation — no truncated code.
             continue;
@@ -412,6 +426,38 @@ mod tests {
 
     fn key(s: &RankedSpan) -> SpanKey {
         SpanKey::of(s)
+    }
+
+    #[test]
+    fn full_code_goes_to_distinct_files_in_both_modes() {
+        let spans = vec![
+            span("a.rs", 1, 20, "", Some(0.9), 1.0),
+            span("a.rs", 40, 60, "", Some(0.9), 0.9),
+            span("b.rs", 1, 20, "", Some(0.9), 0.8),
+            span("c.rs", 1, 20, "", Some(0.9), 0.7),
+        ];
+        let lexical: Vec<RankedSpan> = spans.iter().map(|s| RankedSpan { p_relevant: None, ..s.clone() }).collect();
+        let policy = SizingPolicy { tau_full: 0.0, tau_map: 0.0, ..SizingPolicy::default() };
+        for r in [result(RankMode::Laya, spans, vec![]), result(RankMode::Lexical, lexical, vec![])] {
+            let ctx = size_context(&r, None, &policy, &[]);
+            let full: Vec<(&str, u32)> = ctx.full.iter().map(|s| (s.path.as_str(), s.start_line)).collect();
+            assert_eq!(full, vec![("a.rs", 1), ("b.rs", 1), ("c.rs", 1)]);
+            assert!(ctx.map.iter().any(|s| s.path == "a.rs" && s.start_line == 40), "second a.rs span stays in the map");
+        }
+    }
+
+    #[test]
+    fn sized_render_stays_under_the_hook_cap_and_reports_only_inlined_keys() {
+        let spans: Vec<RankedSpan> = ["a.rs", "b.rs", "c.rs"]
+            .iter()
+            .map(|p| RankedSpan { text: "z".repeat(4_000), ..span(p, 1, 200, "", Some(0.9), 1.0) })
+            .collect();
+        let related: Vec<Related> = (0..100).map(|i| related(&format!("r{i}.rs"), 1, 9, "calls `x` (#1)")).collect();
+        let ctx = size_context(&result(RankMode::Laya, spans, related), None, &SizingPolicy::default(), &[]);
+        let (out, keys) = render_sized_with_keys(&ctx, 100_000);
+        assert!(out.len() <= crate::render::MAX_INJECT_CHARS, "{} chars", out.len());
+        assert_eq!(keys.len(), out.matches("```").count() / 2, "keys = inlined blocks only");
+        assert!(keys.len() < 3, "not every 4k-char block fits");
     }
 
     // ---- Scope::caps ----
