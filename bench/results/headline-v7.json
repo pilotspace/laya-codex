@@ -1,0 +1,149 @@
+{
+  "version": "v7",
+  "release": "v0.1.0 defaults (adaptive injection)",
+  "n_tasks": 20,
+  "repos": [
+    "moon"
+  ],
+  "model": "Claude Sonnet",
+  "turns_per_session": 2,
+  "source": "docs/RESULTS.md section 3a; raw rows in bench/results/claude-v7/",
+  "metrics": {
+    "reading_tokens": {
+      "label": "Code-reading tokens",
+      "pct": -50.1,
+      "lo": -61.6,
+      "hi": -33.0
+    },
+    "total_input": {
+      "label": "Total input tokens",
+      "pct": -26.8,
+      "lo": -42.2,
+      "hi": -6.4
+    },
+    "cost": {
+      "label": "Cost",
+      "pct": -27.2,
+      "lo": -39.2,
+      "hi": -11.1
+    },
+    "turns": {
+      "label": "Turns",
+      "pct": -23.4,
+      "lo": -34.1,
+      "hi": -10.5
+    },
+    "wall_clock": {
+      "label": "Wall-clock time",
+      "pct": -17.4,
+      "lo": -31.5,
+      "hi": -1.0
+    }
+  },
+  "reads": {
+    "read_precision": {
+      "label": "Read precision",
+      "baseline": 0.373,
+      "laya": 0.546,
+      "better": "higher",
+      "fmt": "{:.2f}"
+    },
+    "gold_seen": {
+      "label": "Relevant code found",
+      "baseline": 0.871,
+      "laya": 0.933,
+      "better": "higher",
+      "fmt": "{:.0%}"
+    },
+    "first_gold_turn": {
+      "label": "Turn of first relevant Read",
+      "baseline": 8.2,
+      "laya": 4.0,
+      "better": "lower",
+      "fmt": "{:.1f}"
+    },
+    "wasted_read_tokens": {
+      "label": "Wasted read tokens",
+      "baseline": 4993,
+      "laya": 2118,
+      "better": "lower",
+      "fmt": "{:,.0f}"
+    }
+  },
+  "answer_recall": {
+    "baseline": 0.975,
+    "laya": 0.933,
+    "diff": -0.042,
+    "lo": -0.108,
+    "hi": 0.0
+  },
+  "journey": {
+    "note": "Assistant turn at which a gold (correct) file first entered Claude's context; 0 = before Claude's first turn (laya injected its code with the prompt). From bench/read_accuracy.py --json on the v7 raw transcripts.",
+    "baseline": [
+      4,
+      4,
+      4,
+      5,
+      5,
+      5,
+      5,
+      6,
+      6,
+      6,
+      7,
+      7,
+      7,
+      8,
+      9,
+      11,
+      12,
+      15,
+      18,
+      20
+    ],
+    "laya_seen": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      2,
+      2,
+      4,
+      8,
+      10
+    ],
+    "laya_read": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      3,
+      3,
+      4,
+      8,
+      10,
+      23
+    ]
+  }
+}

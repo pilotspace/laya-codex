@@ -1,7 +1,7 @@
-//! `laya` — code retrieval for Claude Code: tree-sitter chunks, Moon BM25, Laya re-ranking.
+//! `laya-codex` — code retrieval for Claude Code: tree-sitter chunks, Moon BM25, Laya re-ranking.
 
 /// `println!` that returns an error instead of panicking when stdout is gone; a reader that
-/// closed early (`laya query ... | head`) becomes [`sys::StdoutClosed`], which exits quietly.
+/// closed early (`laya-codex query ... | head`) becomes [`sys::StdoutClosed`], which exits quietly.
 macro_rules! outln {
     ($($arg:tt)*) => {{
         use std::io::Write as _;
@@ -44,7 +44,7 @@ use crate::protocol::{Request, Response};
 
 #[derive(Parser)]
 #[command(
-    name = "laya",
+    name = "laya-codex",
     version,
     about = "Ranked code retrieval for Claude Code (tree-sitter + Moon + Laya)"
 )]
@@ -75,18 +75,18 @@ enum Cmd {
     Status,
     /// Claude Code hook entry point: reads the hook JSON on stdin, prints the hook output.
     Hook,
-    /// MCP server over stdio exposing `laya_search`.
+    /// MCP server over stdio exposing `search`.
     Mcp {
         #[arg(long)]
         repo: Option<PathBuf>,
     },
-    /// Enable laya for a repo: merge the hooks into .claude/settings.local.json, add the MCP
+    /// Enable laya-codex for a repo: merge the hooks into .claude/settings.local.json, add the MCP
     /// server to .mcp.json, then start indexing in the background.
     Init {
         /// Repository (any path inside it; the git root is used). Default: current directory.
         #[arg(long)]
         repo: Option<PathBuf>,
-        /// Pin adaptive injection on the hook command (LAYA_ADAPTIVE=1; already the default).
+        /// Pin adaptive injection on the hook command (LAYA_CODEX_ADAPTIVE=1; already the default).
         #[arg(long)]
         adaptive: bool,
         /// Show what would change; write nothing and do not index.
@@ -99,7 +99,7 @@ enum Cmd {
         #[arg(long)]
         no_index: bool,
     },
-    /// Diagnose the install: Moon, model, LAYA_HOME, daemon, index and hooks (exit 1 on failure).
+    /// Diagnose the install: Moon, model, LAYA_CODEX_HOME, daemon, index and hooks (exit 1 on failure).
     Doctor {
         /// Repository to check. Default: current directory.
         #[arg(long)]
@@ -157,7 +157,7 @@ fn main() {
         if e.downcast_ref::<sys::StdoutClosed>().is_some() {
             std::process::exit(0);
         }
-        eprintln!("laya: {e:#}");
+        eprintln!("laya-codex: {e:#}");
         std::process::exit(1);
     }
 }
@@ -230,8 +230,8 @@ fn cmd_query(
 
 fn cmd_daemon(cfg: &Config) -> anyhow::Result<()> {
     laya_store::create_private_dir(&cfg.home)
-        .with_context(|| format!("LAYA_HOME {}", cfg.home.display()))?;
-    // One daemon per LAYA_HOME: the lock is taken before touching the pidfile or the socket and
+        .with_context(|| format!("LAYA_CODEX_HOME {}", cfg.home.display()))?;
+    // One daemon per LAYA_CODEX_HOME: the lock is taken before touching the pidfile or the socket and
     // held until the process exits. A second daemon (racing autostarts) exits quietly.
     let Some(_lock) = sys::DaemonLock::try_acquire(&cfg.daemon_lock())
         .with_context(|| format!("lock {}", cfg.daemon_lock().display()))?
@@ -278,10 +278,10 @@ fn cmd_init(
     let root = config::existing_repo_root(repo)?;
     let exe = std::env::current_exe()
         .and_then(|p| p.canonicalize())
-        .context("locate the laya executable")?;
+        .context("locate the laya-codex executable")?;
     let plans = init::run(&root, &exe, adaptive, dry_run, force)?;
     outln!(
-        "laya init{}: {}",
+        "laya-codex init{}: {}",
         if dry_run {
             " (dry run, nothing written)"
         } else {
@@ -315,7 +315,7 @@ fn cmd_init(
     }
     if no_index {
         outln!(
-            "indexing skipped; run `laya index {}` before the first session",
+            "indexing skipped; run `laya-codex index {}` before the first session",
             root.display()
         );
         return Ok(());
@@ -323,14 +323,14 @@ fn cmd_init(
     // Fail open: the hooks work (as no-ops) without an index, so a setup problem is a hint here.
     match kick_index(cfg, &root) {
         Ok(()) => outln!(
-            "indexing {} in the background; `laya doctor --repo {}` shows progress",
+            "indexing {} in the background; `laya-codex doctor --repo {}` shows progress",
             root.display(),
             root.display()
         ),
         Err(e) => {
             outln!("indexing not started: {e:#}");
             outln!(
-                "the hooks fail open (Claude Code runs unchanged) until then; after fixing it run `laya index {}`",
+                "the hooks fail open (Claude Code runs unchanged) until then; after fixing it run `laya-codex index {}`",
                 root.display()
             );
         }
@@ -373,7 +373,7 @@ fn cmd_doctor(
             )?
         );
     } else {
-        outln!("laya doctor: {}", root.display());
+        outln!("laya-codex doctor: {}", root.display());
         out!("{}", doctor::render(&checks));
     }
     use std::io::Write;
@@ -416,14 +416,14 @@ fn hook_inner(cfg: &Config) {
         budget_ms: cfg.budget_ms,
         inject_tokens: INJECT_TOKENS,
         // Defaults match the benchmarked configuration (calibrated laya-code, compact injection).
-        compact: std::env::var("LAYA_RENDER")
+        compact: std::env::var("LAYA_CODEX_RENDER")
             .map(|v| v != "full")
             .unwrap_or(true),
         // Default on: v7 adaptive arm, -50.1% code reading and -17.4% wall (significant).
-        adaptive: std::env::var("LAYA_ADAPTIVE")
+        adaptive: std::env::var("LAYA_CODEX_ADAPTIVE")
             .map(|v| v != "0")
             .unwrap_or(true),
-        related: std::env::var("LAYA_RELATED")
+        related: std::env::var("LAYA_CODEX_RELATED")
             .map(|v| v != "0")
             .unwrap_or(true),
     };

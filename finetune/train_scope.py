@@ -28,7 +28,7 @@ from rl_common import QTYPES, auroc, build_sequence, collate_items  # noqa: E402
 from train import (StratifiedSampler, atomic_save, enable_checkpointing, load_base_model, load_rows,  # noqa: E402
                    make_items, predict, set_trainable, trainable_names, trainable_state, val_metrics)
 
-CKPT_DIR = os.environ.get("LAYA_SCOPE_CKPT", os.path.join(common.WORK, "ckpt_scope"))
+CKPT_DIR = os.environ.get("LAYA_CODEX_SCOPE_CKPT", os.path.join(common.WORK, "ckpt_scope"))
 K = len(scope.CLASSES)
 
 

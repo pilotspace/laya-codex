@@ -1,4 +1,4 @@
-//! Minimal MCP server over stdio (newline-delimited JSON-RPC 2.0) exposing `laya_search`.
+//! Minimal MCP server over stdio (newline-delimited JSON-RPC 2.0) exposing `search`.
 //! Kept dependency-free: the protocol surface we need is initialize, tools/list, tools/call, ping.
 
 use std::io::{BufRead, Write};
@@ -13,7 +13,7 @@ const DEFAULT_PROTOCOL: &str = "2025-06-18";
 
 pub fn tool_list() -> Value {
     json!({"tools": [{
-        "name": "laya_search",
+        "name": "search",
         "description": "Ranked code search over this repository (tree-sitter chunks + BM25 + the Laya relevance model). \
     Returns the most relevant 10-50 line code spans with file paths and line ranges. Use it to locate where something \
     is implemented before reading files; then Read only the returned ranges (offset/limit).",
@@ -66,7 +66,7 @@ fn call_tool(
     budget_ms: u64,
 ) -> Value {
     let text_result = |text: String, is_error: bool| json!({"content": [{"type": "text", "text": text}], "isError": is_error});
-    if params["name"] != "laya_search" {
+    if params["name"] != "search" {
         return text_result(format!("unknown tool {}", params["name"]), true);
     }
     let query = params["arguments"]["query"]
@@ -97,7 +97,7 @@ fn call_tool(
         ),
         Ok(other) => text_result(format!("unexpected daemon response: {other:?}"), true),
         Err(e) => text_result(
-            format!("laya daemon unavailable ({e}); fall back to Grep/Glob"),
+            format!("laya-codex daemon unavailable ({e}); fall back to Grep/Glob"),
             true,
         ),
     }
@@ -176,7 +176,7 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(t["result"]["tools"][0]["name"], "laya_search");
+        assert_eq!(t["result"]["tools"][0]["name"], "search");
         assert_eq!(
             call(
                 json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn search_returns_spans_or_graceful_error() {
-        let msg = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "laya_search", "arguments": {"query": "wal replay"}}});
+        let msg = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "search", "arguments": {"query": "wal replay"}}});
         let ok = call(msg.clone(), true).unwrap();
         assert!(
             ok["result"]["content"][0]["text"]

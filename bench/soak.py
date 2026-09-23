@@ -1,16 +1,16 @@
-"""Soak test: concurrent Claude-like hook traffic against the laya daemon, with injected faults.
+"""Soak test: concurrent Claude-like hook traffic against the laya-codex daemon, with injected faults.
 
 Workers loop over sessions:
   SessionStart(startup) → UserPromptSubmit → Read (whole) → Read (again) → PostToolUse(Edit)
   → follow-up prompt → SessionStart(compact)
 across the given repos. Faults, at fractions of the duration:
 - 30%: append a line to an indexed file (stale index), restored at 60%;
-- 50%: `laya stop` (the daemon dies; hooks must fail open, and the daemon must autostart).
+- 50%: `laya-codex stop` (the daemon dies; hooks must fail open, and the daemon must autostart).
 
 Reports per-event latency p50/p95/max, hook failures (non-zero exit or invalid JSON output; a
 fail-open empty output is fine), fail-open counts, and the daemon's RSS over time.
 
-    python3 bench/soak.py <laya binary> <duration s> <repo> [<repo> ...]
+    python3 bench/soak.py <laya-codex binary> <duration s> <repo> [<repo> ...]
 """
 import json
 import os

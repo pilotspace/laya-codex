@@ -10,7 +10,7 @@ pub(crate) fn estimate_tokens(s: &str) -> usize {
     (s.chars().count() as f32 / CHARS_PER_TOKEN).ceil() as usize
 }
 
-const HEADER: &str = "<!-- laya: pre-ranked code spans for this task. \
+const HEADER: &str = "<!-- laya-codex: pre-ranked code spans for this task. \
 Prefer these ranges over exploring; use Read with offset/limit to see more of a file. -->\n\n";
 
 /// Render `result` as a markdown block: a one-line header, then one
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn header_always_present() {
         let out = render_context(&result(vec![]), 10_000);
-        assert!(out.starts_with("<!-- laya:"));
+        assert!(out.starts_with("<!-- laya-codex:"));
         assert!(out.contains("Read with offset/limit"));
     }
 
@@ -578,7 +578,7 @@ mod tests {
     fn tiny_budget_still_returns_header_only() {
         let spans = vec![span("a.rs", 1, 5, "", Some(0.9), &"x".repeat(1000))];
         let out = render_context(&result(spans), 1);
-        assert!(out.starts_with("<!-- laya:"));
+        assert!(out.starts_with("<!-- laya-codex:"));
         assert!(!out.contains("a.rs"));
     }
 

@@ -40,9 +40,9 @@ Savings figures without a success-rate check are meaningless, so we always repor
 
 ```
  Claude Code
-   │ UserPromptSubmit / PreToolUse(Read|Grep)        MCP: laya_search, laya_expand
+   │ UserPromptSubmit / PreToolUse(Read|Grep)        MCP: search
    ▼                                                  ▼
- laya-hook (tiny client, 1.5 s timeout, fail-open) ──► layad (daemon, unix socket)
+ laya-codex hook (1.5 s timeout, fail-open) ───────► layad (daemon, unix socket)
                                                         │
       ┌─────────────────────────────────────────────────┤
       ▼                     ▼                           ▼
@@ -106,12 +106,12 @@ can be rebuilt from source, so it's never the source of truth.
 ### 3.5 Claude Code integration
 - **UserPromptSubmit hook**: injects ≤10 spans (token budget ~3–5k) as `additionalContext`,
   with a header that tells the agent "prefer these ranges; Read with offset/limit".
-- **MCP server** (`laya_search`, `laya_expand`, `laya_symbol`): model-directed follow-up.
+- **MCP server** (`search`; `expand` and `symbol` were planned): model-directed follow-up.
 - **PreToolUse(Read) guarded rewrite** (D3): rewrite to the ranked range via `updatedInput`
   (`offset`/`limit`, covering the top ranked spans of that file plus 5 lines of context) **only if all hold**:
   file > 300 lines · the Read has no offset/limit · a span in that file has P ≥ 0.7 for the
   current prompt · this is the first Read of that file this session. The response adds a note
-  ("narrowed by laya: lines a–b; Read again for the full file"). **Escape hatch**: a
+  ("narrowed by laya-codex: lines a–b; Read again for the full file"). **Escape hatch**: a
   second Read of the same file passes through untouched. Every rewrite is logged, so the
   benchmark can measure how often the agent needed the full file.
 - **PreToolUse(Agent|Task) span handoff**: append the current top spans (≤5, compact
@@ -138,7 +138,7 @@ can be rebuilt from source, so it's never the source of truth.
 crates/ core (types, errors) · parse (tree-sitter, cAST, tags) · graph (PageRank)
         store (trait Store; MoonRespStore v1, MoonEmbedStore v2) · rank (BM25/RRF)
         laya (candle model, head, tokenizer) · daemon (layad, unix socket, tracing)
-        cli (laya index|query|hook|mcp) · bench (token/time harness)
+        cli (laya-codex index|query|hook|mcp) · bench (token/time harness)
 ```
 Release profile: `lto="fat"`, `codegen-units=1`, `panic="unwind"` (panics are caught per request, index job and file), `strip=true`, mimalloc,
 cargo-pgo on the index and query paths; no `target-cpu=native` for distributed builds.
@@ -159,7 +159,7 @@ cargo-pgo on the index and query paths; no `target-cpu=native` for distributed b
 0. **Spike** (1–2 d): Laya in candle (Metal + CPU) on 3 repos, then measure P@10, latency for
    K=32, and the 0.5/0.7 thresholds' calibration. **Go/no-go gate for D1** (target: P@10 ≥ 0.6,
    p95 ≤ 250 ms on M-series Metal). If it fails, a fine-tune track opens before Phase 2.
-1. Indexer: tree-sitter core grammars, cAST chunker, tags/PageRank, CLI `laya index|query`
+1. Indexer: tree-sitter core grammars, cAST chunker, tags/PageRank, CLI `laya-codex index|query`
    (red/green TDD, golden-chunk tests per language).
 2. `Store` trait + `MoonRespStore` (moon sidecar supervised by `layad`) + BM25/RRF candidate
    generation + Laya stage + memo cache.
@@ -190,14 +190,14 @@ Read hook: the first whole-file Read of an indexed file of 250+ lines gets the b
 (the session ranking, else task-term match) plus an outline. A second whole-file Read passes
 through.
 
-Setup and operations: `laya init` / `laya doctor`; daemon autostart is rate-limited (one attempt
+Setup and operations: `laya-codex init` / `laya-codex doctor`; daemon autostart is rate-limited (one attempt
 per 10 s); every hook fails open.
 
 | Plan item | As built | Why |
 |---|---|---|
 | D1 Laya as final reranker, zero-shot | **Fine-tuned `laya-code`** (git-history weak labels, 8 repos), fused with the lexical rank rather than used alone | Zero-shot laya-base did not beat BM25 on code. Laya-only and w=0.7 lost to w=0.5 end to end (MRR 0.602 / 0.678 vs 0.724), because the lexical rank demotes prose |
-| Thresholds 0.5 / 0.7 on P | **None by default** (rank-based inlining); `LAYA_TAU_FULL/MAP` remain | P's scale shifts with prompt wording; on wrapped prompts every threshold lost gold coverage vs rank at equal code volume |
-| Scope classifier sizing context | **Wired and gated, no effect** (`LAYA_SCOPE=0` disables it) | Zero-shot macro-F1 ≤ 0.28; even oracle scope barely changes what loads |
+| Thresholds 0.5 / 0.7 on P | **None by default** (rank-based inlining); `LAYA_CODEX_TAU_FULL/MAP` remain | P's scale shifts with prompt wording; on wrapped prompts every threshold lost gold coverage vs rank at equal code volume |
+| Scope classifier sizing context | **Wired and gated, no effect** (`LAYA_CODEX_SCOPE=0` disables it) | Zero-shot macro-F1 ≤ 0.28; even oracle scope barely changes what loads |
 | Guarded Read rewrite at p ≥ threshold | **Daemon Read plan** (region + outline, escape hatch) | The p-gated rewrite fired 0/11 times; whole-file Reads were 49% of the remaining Read tokens |
 | Inject more context | **Small, capped injection** (~1.5–2.5k tokens, ≤ 9,500 chars) | Inlining more saves little and costs more; Claude Code replaces output over 10k chars with a file preview |
 | — | **Prompt stoplist + follow-up topic** | Instruction wrappers ("find the source code…, comma-separated paths") beat task words in rarest-first term selection (MRR 0.724 → 0.394) |

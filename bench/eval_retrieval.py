@@ -27,7 +27,7 @@ TEMPLATES = {
             "Please list the key functions and give me a short summary for each one."),
 }
 
-LAYA = os.environ.get("LAYA_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya"))
+LAYA = os.environ.get("LAYA_CODEX_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya-codex"))
 
 
 def devset(args):
@@ -57,7 +57,7 @@ def devset(args):
 
 
 def query(repo, prompt, budget_ms):
-    env = dict(os.environ, LAYA_BUDGET_MS=str(budget_ms))
+    env = dict(os.environ, LAYA_CODEX_BUDGET_MS=str(budget_ms))
     t0 = time.time()
     p = subprocess.run([LAYA, "query", prompt, "--repo", repo, "--json"], capture_output=True, text=True, env=env, timeout=120)
     ms = (time.time() - t0) * 1000

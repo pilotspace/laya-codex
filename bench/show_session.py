@@ -34,7 +34,7 @@ for line in open(path):
         ctx = hook_context(e.get("output"))
         if ev == "UserPromptSubmit":
             prompt_no += 1
-            print(f"\n{'=' * 100}\n[laya → UserPromptSubmit #{prompt_no}] injected {len(ctx)} chars (~{int(len(ctx) / 3.5)} tokens)\n{'-' * 100}")
+            print(f"\n{'=' * 100}\n[laya-codex → UserPromptSubmit #{prompt_no}] injected {len(ctx)} chars (~{int(len(ctx) / 3.5)} tokens)\n{'-' * 100}")
             lines = ctx.splitlines()
             if not full:  # the ranked map in full, code blocks trimmed to 6 lines each
                 out, in_code, kept = [], False, 0
@@ -54,7 +54,7 @@ for line in open(path):
             print("\n".join(lines))
             print("-" * 100)
         elif ev == "PreToolUse" and ctx:
-            print(f"   [laya → PreToolUse] {short(ctx, 220)}")
+            print(f"   [laya-codex → PreToolUse] {short(ctx, 220)}")
     elif t == "user" and isinstance(e.get("message", {}).get("content"), str):
         print(f"\n>>> USER PROMPT: {short(e['message']['content'], 300)}")
     elif t == "assistant":

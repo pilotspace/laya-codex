@@ -8,18 +8,18 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LAYA = os.environ.get("LAYA_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya"))
+LAYA = os.environ.get("LAYA_CODEX_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya-codex"))
 MODELS = os.path.expanduser("~/.cache/laya-codex/models")
 
 CONFIGS = [
-    ("code-rrf-s256-k24-t0", {"LAYA_MODEL_DIR": MODELS + "/laya-code", "LAYA_P_THRESHOLD": "0"}),
-    ("code-w0.5-s256-k24-t0", {"LAYA_MODEL_DIR": MODELS + "/laya-code", "LAYA_P_THRESHOLD": "0", "LAYA_WEIGHT": "0.5"}),
-    ("code-w0.5-s256-k24-t0.35", {"LAYA_MODEL_DIR": MODELS + "/laya-code", "LAYA_P_THRESHOLD": "0.35", "LAYA_WEIGHT": "0.5", "LAYA_MIN_KEEP": "4"}),
-    ("code-w0.7-s256-k24-t0", {"LAYA_MODEL_DIR": MODELS + "/laya-code", "LAYA_P_THRESHOLD": "0", "LAYA_WEIGHT": "0.7"}),
-    ("code-w0.5-s128-k24-t0", {"LAYA_MODEL_DIR": MODELS + "/laya-code", "LAYA_P_THRESHOLD": "0", "LAYA_WEIGHT": "0.5", "LAYA_STATE_TOKENS": "128"}),
-    ("code-w0.7-s128-k24-t0", {"LAYA_MODEL_DIR": MODELS + "/laya-code", "LAYA_P_THRESHOLD": "0", "LAYA_WEIGHT": "0.7", "LAYA_STATE_TOKENS": "128"}),
-    ("code-w1.0-s128-k24-t0", {"LAYA_MODEL_DIR": MODELS + "/laya-code", "LAYA_P_THRESHOLD": "0", "LAYA_WEIGHT": "1.0", "LAYA_STATE_TOKENS": "128"}),
-    ("base-w0.5-s256-k24-t0", {"LAYA_MODEL_DIR": MODELS + "/laya-base", "LAYA_P_THRESHOLD": "0", "LAYA_WEIGHT": "0.5"}),
+    ("code-rrf-s256-k24-t0", {"LAYA_CODEX_MODEL_DIR": MODELS + "/laya-code", "LAYA_CODEX_P_THRESHOLD": "0"}),
+    ("code-w0.5-s256-k24-t0", {"LAYA_CODEX_MODEL_DIR": MODELS + "/laya-code", "LAYA_CODEX_P_THRESHOLD": "0", "LAYA_CODEX_WEIGHT": "0.5"}),
+    ("code-w0.5-s256-k24-t0.35", {"LAYA_CODEX_MODEL_DIR": MODELS + "/laya-code", "LAYA_CODEX_P_THRESHOLD": "0.35", "LAYA_CODEX_WEIGHT": "0.5", "LAYA_CODEX_MIN_KEEP": "4"}),
+    ("code-w0.7-s256-k24-t0", {"LAYA_CODEX_MODEL_DIR": MODELS + "/laya-code", "LAYA_CODEX_P_THRESHOLD": "0", "LAYA_CODEX_WEIGHT": "0.7"}),
+    ("code-w0.5-s128-k24-t0", {"LAYA_CODEX_MODEL_DIR": MODELS + "/laya-code", "LAYA_CODEX_P_THRESHOLD": "0", "LAYA_CODEX_WEIGHT": "0.5", "LAYA_CODEX_STATE_TOKENS": "128"}),
+    ("code-w0.7-s128-k24-t0", {"LAYA_CODEX_MODEL_DIR": MODELS + "/laya-code", "LAYA_CODEX_P_THRESHOLD": "0", "LAYA_CODEX_WEIGHT": "0.7", "LAYA_CODEX_STATE_TOKENS": "128"}),
+    ("code-w1.0-s128-k24-t0", {"LAYA_CODEX_MODEL_DIR": MODELS + "/laya-code", "LAYA_CODEX_P_THRESHOLD": "0", "LAYA_CODEX_WEIGHT": "1.0", "LAYA_CODEX_STATE_TOKENS": "128"}),
+    ("base-w0.5-s256-k24-t0", {"LAYA_CODEX_MODEL_DIR": MODELS + "/laya-base", "LAYA_CODEX_P_THRESHOLD": "0", "LAYA_CODEX_WEIGHT": "0.5"}),
 ]
 
 

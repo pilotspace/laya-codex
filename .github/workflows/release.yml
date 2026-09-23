@@ -1,9 +1,9 @@
-# Draft release: on a v* tag, builds `laya` and its Moon sidecar for macOS arm64 (Metal) and
+# Draft release: on a v* tag, builds `laya-codex` and its Moon sidecar for macOS arm64 (Metal) and
 # Linux x86_64 (CPU) and attaches tarballs + .sha256 files to a *draft* GitHub release for manual
 # review and publishing. install.sh downloads exactly these assets.
 #
 # Moon is built from a pinned commit (the one every benchmark ran against) and shipped as its own
-# tarball with Moon's own LICENSE and a SOURCE pointer; it is not part of the laya archive.
+# tarball with Moon's own LICENSE and a SOURCE pointer; it is not part of the laya-codex archive.
 # Actions are pinned to commit SHAs and release builds use no shared cache.
 name: release
 
@@ -23,7 +23,7 @@ env:
 
 jobs:
   build:
-    name: laya (${{ matrix.target }})
+    name: laya-codex (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
@@ -57,18 +57,18 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          name="laya-${REF_NAME//\//-}-${TARGET}" # a branch name may contain "/"
+          name="laya-codex-${REF_NAME//\//-}-${TARGET}" # a branch name may contain "/"
           mkdir -p "dist/$name"
-          cp "target/$TARGET/release/laya" "dist/$name/"
+          cp "target/$TARGET/release/laya-codex" "dist/$name/"
           cp LICENSE NOTICE README.md CHANGELOG.md "dist/$name/"
           cargo metadata --format-version 1 --locked --filter-platform "$TARGET" \
             | python3 .github/scripts/third_party_licenses.py > "dist/$name/THIRD-PARTY-LICENSES.txt"
-          "dist/$name/laya" --help > /dev/null
+          "dist/$name/laya-codex" --help > /dev/null
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256" && cat "$name.tar.gz.sha256")
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: laya-${{ matrix.target }}
+          name: laya-codex-${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.sha256
@@ -80,7 +80,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Moon's default features everywhere: the exact build laya was benchmarked on. laya needs
+          # Moon's default features everywhere: the exact build laya-codex was benchmarked on. It needs
           # `text-index` (FT.CREATE / FT.SEARCH). Not runtime-tokio: at this commit its Linux path
           # leaves accepting to per-shard SO_REUSEPORT listeners that fail to bind, so it never
           # answers. monoio accepts centrally and works without io_uring (e.g. in containers).
@@ -129,7 +129,7 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
-  # The built laya and moon together, as install.sh lays them out: index a repo, query it and
+  # The built laya-codex and moon together, as install.sh lays them out: index a repo, query it and
   # run doctor. `--help` alone once let a Moon that never answered a request through.
   smoke:
     name: smoke (${{ matrix.target }})
@@ -154,18 +154,18 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-          LAYA_NO_MODEL: "1"
-          LAYA_HOME: ${{ runner.temp }}/laya-home
+          LAYA_CODEX_NO_MODEL: "1"
+          LAYA_CODEX_HOME: ${{ runner.temp }}/laya-codex-home
         run: |
           set -euo pipefail
           mkdir -p bin
-          for p in laya moon; do tar -xzf dist/$p-*-"$TARGET".tar.gz -C dist; cp dist/$p-*-"$TARGET"/$p bin/; done
-          ./bin/laya index crates/laya-store
-          ./bin/laya query "where is the moon password generated" --repo crates/laya-store | tee query.txt
+          for p in laya-codex moon; do tar -xzf dist/$p-*-"$TARGET".tar.gz -C dist; cp dist/$p-*-"$TARGET"/$p bin/; done
+          ./bin/laya-codex index crates/laya-store
+          ./bin/laya-codex query "where is the moon password generated" --repo crates/laya-store | tee query.txt
           grep -q "secure.rs\|supervisor.rs" query.txt
-          ./bin/laya doctor --repo crates/laya-store | tee doctor.txt || true
+          ./bin/laya-codex doctor --repo crates/laya-store | tee doctor.txt || true
           grep -q "PASS  auth" doctor.txt
-          ./bin/laya stop
+          ./bin/laya-codex stop
 
   release:
     needs: [build, moon, smoke]

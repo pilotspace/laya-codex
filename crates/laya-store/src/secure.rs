@@ -1,6 +1,6 @@
 //! Moon credentials and private filesystem state.
 //!
-//! laya protects its Moon sidecar with a random password kept in a Redis-format ACL file
+//! laya-codex protects its Moon sidecar with a random password kept in a Redis-format ACL file
 //! (`user default on >PASSWORD ~* &* +@all`, mode 0600). The same file is the password store for
 //! the client and is handed to Moon with `--aclfile`.
 
@@ -50,7 +50,7 @@ impl fmt::Debug for Password {
 
 /// Create `dir` (and missing parents, also 0700) and make `dir` itself mode 0700.
 ///
-/// Refuses a directory owned by another user: laya keeps its socket, password and data there.
+/// Refuses a directory owned by another user: laya-codex keeps its socket, password and data there.
 /// A symlinked `dir` is followed (a relocated cache dir); its target is checked the same way.
 pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::DirBuilder::new()
@@ -165,7 +165,7 @@ fn read_acl(path: &Path) -> Result<Option<Password>> {
     let meta = f.metadata()?;
     if !meta.is_file() || meta.uid() != euid() || meta.len() > MAX_ACL_BYTES {
         return Err(Error::Store(format!(
-            "{} is not a regular file owned by this user; delete it so laya can recreate it",
+            "{} is not a regular file owned by this user; delete it so laya-codex can recreate it",
             path.display()
         )));
     }
@@ -177,7 +177,7 @@ fn read_acl(path: &Path) -> Result<Option<Password>> {
     f.read_to_string(&mut text)?;
     parse_acl(&text).map(Some).ok_or_else(|| {
         Error::Store(format!(
-            "{} has no password for the default user; delete it (and stop the Moon using it) so laya can recreate it",
+            "{} has no password for the default user; delete it (and stop the Moon using it) so laya-codex can recreate it",
             path.display()
         ))
     })

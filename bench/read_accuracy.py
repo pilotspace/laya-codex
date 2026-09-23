@@ -6,8 +6,10 @@ For every run (raw stream-json transcript + task gold files):
   its full code in the UserPromptSubmit context)
 - wasted_read_tokens: tokens returned by Reads of non-gold files
 - first_gold_read_turn: assistant turn index of the first Read hitting a gold file (lower = faster)
+- first_gold_seen_turn: turn at which gold code first entered the context, by a Read or by laya
+  injecting its full code with a prompt (0 = before Claude's first turn)
 
-    python3 bench/read_accuracy.py <run dir> bench/tasks.jsonl
+    python3 bench/read_accuracy.py <run dir> bench/tasks.jsonl [--json per-run.json]
 """
 import json
 import os
@@ -16,6 +18,7 @@ import sys
 from collections import defaultdict
 
 out, tasks_path = sys.argv[1], sys.argv[2]
+json_out = sys.argv[sys.argv.index("--json") + 1] if "--json" in sys.argv else None
 gold = {json.loads(l)["id"]: set(json.loads(l)["gold"]) for l in open(tasks_path)}
 
 
@@ -32,7 +35,7 @@ for name in sorted(os.listdir(os.path.join(out, "raw"))):
     g = gold.get(task_id)
     if not g:
         continue
-    reads, names, turn, first_hit = [], {}, 0, None
+    reads, names, turn, first_hit, first_seen = [], {}, 0, None, None
     seen = set()
     wasted = 0
     for line in open(os.path.join(out, "raw", name)):
@@ -46,6 +49,7 @@ for name in sorted(os.listdir(os.path.join(out, "raw"))):
                 hit = rel(m.group(1), g)
                 if hit:
                     seen.add(hit)
+                    first_seen = turn if first_seen is None else first_seen
         if e.get("type") == "assistant":
             turn += 1
             for c in e.get("message", {}).get("content", []) or []:
@@ -57,6 +61,7 @@ for name in sorted(os.listdir(os.path.join(out, "raw"))):
                     if hit:
                         seen.add(hit)
                         first_hit = turn if first_hit is None else first_hit
+                        first_seen = turn if first_seen is None else first_seen
         if e.get("type") == "user":
             for c in e.get("message", {}).get("content", []) or []:
                 if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in names:
@@ -69,6 +74,9 @@ for name in sorted(os.listdir(os.path.join(out, "raw"))):
         "wasted_read_tokens": wasted,
         "reads": len(reads),
         "first_gold_read_turn": first_hit,
+        "first_gold_seen_turn": first_seen,
+        "task_id": task_id,
+        "arm": arm,
     })
 
 print("| arm | n | Read calls | read precision | read recall (saw gold code) | wasted read tokens | first gold Read at turn |")
@@ -80,3 +88,7 @@ for arm, rs in sorted(rows.items(), key=lambda x: (x[0] != "baseline", x[0])):
         arm, len(rs), sum(r["reads"] for r in rs) / len(rs), sum(prec) / max(1, len(prec)),
         sum(r["read_recall"] for r in rs) / len(rs), sum(r["wasted_read_tokens"] for r in rs) / len(rs),
         sum(first) / max(1, len(first)), len(first), len(rs)))
+
+if json_out:
+    with open(json_out, "w") as f:
+        json.dump([r for rs in rows.values() for r in rs], f, indent=1)

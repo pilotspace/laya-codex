@@ -3,7 +3,7 @@ injected its context, and what would each candidate optimisation remove?
 
 Offline only: reads benchmark transcripts (`claude -p --output-format stream-json --verbose
 --include-hook-events`), the task gold files, and the benchmarked repo checkout (to size spans
-that were listed but not inlined). Never talks to the laya daemon or to Claude.
+that were listed but not inlined). Never talks to the laya-codex daemon or to Claude.
 
 Every post-injection Read is split *per returned line* (Read results carry startLine/numLines)
 into one class, in this priority order:
@@ -42,7 +42,7 @@ import sys
 from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_REPO = os.environ.get("LAYA_BENCH_REPO", "moon")  # the benchmarked moon checkout
+DEFAULT_REPO = os.environ.get("LAYA_CODEX_BENCH_REPO", "moon")  # the benchmarked moon checkout
 CLASSES = ["a_redundant", "d_expansion", "b_map_hit", "b2_map_file", "c_gold_miss", "f_other", "h_hook_file",
            "e_grep_locate", "g_grep_explore"]
 READ_CLASSES = CLASSES[:7]

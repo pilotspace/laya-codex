@@ -1,7 +1,7 @@
 //! Parity tests against the official Python reference (`fixtures/laya_parity.json`).
 //!
 //! The model weights are local files (`~/.cache/laya-codex/models/laya-base` or
-//! `$LAYA_MODEL_DIR`). When they are absent the tests are skipped with a message so that
+//! `$LAYA_CODEX_MODEL_DIR`). When they are absent the tests are skipped with a message so that
 //! weight-less CI (Linux) still passes; on a developer machine they must be green.
 
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ struct Case {
 }
 
 fn model_dir() -> Option<PathBuf> {
-    let dir = std::env::var_os("LAYA_MODEL_DIR")
+    let dir = std::env::var_os("LAYA_CODEX_MODEL_DIR")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME")
