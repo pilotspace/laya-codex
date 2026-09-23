@@ -4,7 +4,7 @@ Owner/orchestrator: the lead session. Architecture: `docs/architecture.md` (v1.0
 Research: `docs/research/*.md`. Spike: `spike/`, results in `spike/results/`.
 
 ## Product in one paragraph
-`laya` is a single Rust binary that indexes a repo with tree-sitter into 10–50-line AST-aligned
+`laya-codex` is a single Rust binary that indexes a repo with tree-sitter into 10–50-line AST-aligned
 chunks, stores them in **Moon** (Redis-compatible server, pilotspace/moon, run as a sidecar),
 retrieves candidates with BM25 (Moon `FT.SEARCH`) plus symbol matches, re-ranks them with the
 **Laya** model (ModernBERT-large typed-decision classifier, run in-process via candle), and hands
@@ -63,7 +63,7 @@ server. Goal: −50% codebase-reading tokens, −30% task time, no drop in task 
 | laya-model | B | `LayaModel::load(dir, DeviceKind)`, `LayaModel::noul(question, states)->Vec<f32>`, `LayaScorer` implementing `Scorer` |
 | laya-store | C | `MoonStore` implementing `Store`, `MoonSupervisor` (spawn/health/restart moon) |
 | laya-rank | E | `Retriever` (candidate gen + Laya gate + span shaping) over `dyn Store` + `dyn Scorer` |
-| laya-cli | lead (after merge) | bin `laya`: `index`, `query`, `daemon`, `hook`, `mcp` |
+| laya-cli | lead (after merge) | bin `laya-codex`: `index`, `query`, `daemon`, `hook`, `mcp` |
 | spike/, finetune/ | D (Python) | fine-tuned model dir `~/.cache/laya-codex/models/laya-code/` (same layout/keys as laya-base) |
 
 ## Engineering rules (all tracks)

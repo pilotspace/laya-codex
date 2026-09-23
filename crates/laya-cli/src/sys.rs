@@ -6,7 +6,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-/// Exclusive `flock` on `$LAYA_HOME/daemon.lock`, held for the daemon's lifetime and released by
+/// Exclusive `flock` on `$LAYA_CODEX_HOME/daemon.lock`, held for the daemon's lifetime and released by
 /// the kernel when the process exits (however it exits). The fd is close-on-exec, so the Moon the
 /// daemon spawns does not inherit it.
 #[derive(Debug)]
@@ -90,9 +90,9 @@ pub fn peer_uid(s: &UnixStream) -> std::io::Result<u32> {
     }
 }
 
-/// Is `pid` a live process running a `laya` executable (not this process)?
+/// Is `pid` a live process running a `laya-codex` executable (not this process)?
 pub fn is_laya_process(pid: u32) -> bool {
-    pid != std::process::id() && laya_store::process_basename(pid).as_deref() == Some("laya")
+    pid != std::process::id() && laya_store::process_basename(pid).as_deref() == Some("laya-codex")
 }
 
 /// Is `pid` alive (or at least not known to be gone)?
@@ -118,7 +118,7 @@ pub fn terminate(pid: u32) -> std::io::Result<()> {
     }
 }
 
-/// Stdout was closed by its reader (`laya query ... | head`). Not a failure: `main` exits 0
+/// Stdout was closed by its reader (`laya-codex query ... | head`). Not a failure: `main` exits 0
 /// without a message, as a command killed by SIGPIPE would be silent.
 #[derive(Debug)]
 pub struct StdoutClosed;

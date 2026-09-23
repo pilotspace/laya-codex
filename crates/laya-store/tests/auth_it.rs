@@ -1,5 +1,5 @@
-//! Password-protected Moon: the supervisor spawns Moon with laya's ACL file and password, the
-//! store authenticates every connection, and a Moon laya cannot authenticate against is refused.
+//! Password-protected Moon: the supervisor spawns Moon with laya-codex's ACL file and password, the
+//! store authenticates every connection, and a Moon laya-codex cannot authenticate against is refused.
 
 mod common;
 
@@ -136,8 +136,8 @@ fn unprotected_moon_on_the_port_is_refused() {
     let e = sup.ensure_running().expect_err("must refuse").to_string();
     assert!(
         e.contains(&format!("port {}", m.port))
-            && e.contains("without laya's password")
-            && e.contains("LAYA_MOON_PORT"),
+            && e.contains("without laya-codex's password")
+            && e.contains("LAYA_CODEX_MOON_PORT"),
         "{e}"
     );
     // The client refuses it too (Moon without a password accepts any AUTH, so it checks).
@@ -145,7 +145,7 @@ fn unprotected_moon_on_the_port_is_refused() {
         .ensure_index("cccccccccccc")
         .expect_err("store must refuse")
         .to_string();
-    assert!(e.contains("without laya's password"), "{e}");
+    assert!(e.contains("without laya-codex's password"), "{e}");
     let mut raw = m.raw();
     let n: usize = redis::cmd("DBSIZE").query(&mut raw).expect("dbsize");
     assert_eq!(n, 0, "nothing may be written into an unprotected moon");
@@ -171,7 +171,7 @@ fn moon_with_another_password_is_refused() {
     assert_eq!(sup_b.probe(), MoonProbe::WrongPassword);
     let e = sup_b.ensure_running().expect_err("must refuse").to_string();
     assert!(
-        e.contains("rejects laya's password") && e.contains("LAYA_MOON_PORT"),
+        e.contains("rejects laya-codex's password") && e.contains("LAYA_CODEX_MOON_PORT"),
         "{e}"
     );
 }
@@ -183,7 +183,7 @@ fn legacy_passwordless_moon_started_by_laya_is_replaced_and_keeps_its_data() {
     };
     let home = tempfile::tempdir().expect("tempdir");
     let port = common::free_port();
-    // An older laya: same data dir, no password.
+    // An older laya-codex: same data dir, no password.
     let old = MoonSupervisor::new(&bin, port, home.path().join("moon"));
     let _c = Cleanup(MoonSupervisor::new(&bin, port, home.path().join("moon")));
     let SupervisorStatus::Spawned { pid: old_pid } = old.ensure_running().expect("old") else {

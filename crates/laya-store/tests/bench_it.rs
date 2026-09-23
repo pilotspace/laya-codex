@@ -120,8 +120,8 @@ fn build_corpus() -> Vec<(String, Vec<Chunk>)> {
 #[test]
 #[ignore = "latency microbench; run with --ignored --nocapture"]
 fn bm25_latency_10_terms_over_10k_chunks() {
-    // LAYA_BENCH_PORT=<p> benchmarks an already-running moon (data is left in place).
-    let external = std::env::var("LAYA_BENCH_PORT")
+    // LAYA_CODEX_BENCH_PORT=<p> benchmarks an already-running moon (data is left in place).
+    let external = std::env::var("LAYA_CODEX_BENCH_PORT")
         .ok()
         .and_then(|p| p.parse::<u16>().ok());
     let _own;

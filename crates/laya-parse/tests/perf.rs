@@ -1,5 +1,5 @@
 //! Throughput check on a large Rust repo (e.g. a moon checkout). Run with:
-//! `LAYA_TEST_MOON_REPO=/path/to/moon cargo test -p laya-parse --release --test perf -- --ignored --nocapture`
+//! `LAYA_CODEX_TEST_MOON_REPO=/path/to/moon cargo test -p laya-parse --release --test perf -- --ignored --nocapture`
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -8,10 +8,10 @@ use std::time::Instant;
 use laya_parse::{ChunkConfig, chunk_files, chunk_source_with, walk_repo};
 
 /// Env var naming the repository to time.
-const MOON_REPO_VAR: &str = "LAYA_TEST_MOON_REPO";
+const MOON_REPO_VAR: &str = "LAYA_CODEX_TEST_MOON_REPO";
 
 #[test]
-#[ignore = "perf: needs LAYA_TEST_MOON_REPO and a release build"]
+#[ignore = "perf: needs LAYA_CODEX_TEST_MOON_REPO and a release build"]
 fn moon_parse_and_chunk_timing() {
     let Some(repo) = std::env::var_os(MOON_REPO_VAR) else {
         eprintln!("SKIP: set {MOON_REPO_VAR} to a large repository (e.g. a moon checkout)");

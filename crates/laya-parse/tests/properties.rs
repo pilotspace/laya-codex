@@ -16,7 +16,7 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Env var naming an extra real-world repository (e.g. a moon checkout) to check.
-const MOON_REPO_VAR: &str = "LAYA_TEST_MOON_REPO";
+const MOON_REPO_VAR: &str = "LAYA_CODEX_TEST_MOON_REPO";
 
 fn check_tree(root: &Path, limit: usize) -> usize {
     let cfg = ChunkConfig::default();

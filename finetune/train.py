@@ -29,7 +29,7 @@ sys.path.insert(0, HERE)
 import common  # noqa: E402
 from rl_common import QTYPES, auroc, build_model, collate_items, load_cfg  # noqa: E402
 
-CKPT_DIR = os.environ.get("LAYA_FT_CKPT", os.path.join(common.WORK, "ckpt"))
+CKPT_DIR = os.environ.get("LAYA_CODEX_FT_CKPT", os.path.join(common.WORK, "ckpt"))
 Q_PROBS = [0.6, 0.2, 0.2]  # primary inference question most of the time, paraphrases for robustness
 
 

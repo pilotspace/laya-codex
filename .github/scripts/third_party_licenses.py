@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the license texts of every crate linked into the `laya` binary (THIRD-PARTY-LICENSES.txt).
+"""Write the license texts of every crate linked into the `laya-codex` binary (THIRD-PARTY-LICENSES.txt).
 
 Reads `cargo metadata --filter-platform <triple>` and walks normal + build dependencies of the
 workspace members (dev-dependencies are not shipped). For each crate it copies the LICENSE* /
@@ -56,7 +56,7 @@ def main():
     meta = json.load(sys.stdin)
     out, missing = sys.stdout, []
     pkgs = shipped_packages(meta)
-    out.write("Third-party software linked into laya (%d crates)\n\n" % len(pkgs))
+    out.write("Third-party software linked into laya-codex (%d crates)\n\n" % len(pkgs))
     for p in pkgs:
         spdx = p.get("license") or ""
         if not spdx and not p.get("license_file"):

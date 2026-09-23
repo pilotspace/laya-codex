@@ -1,4 +1,4 @@
-//! End-to-end checks of the `laya` binary that need no Moon and no daemon.
+//! End-to-end checks of the `laya-codex` binary that need no Moon and no daemon.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -10,13 +10,13 @@ fn scratch(tag: &str) -> PathBuf {
     d
 }
 
-/// `laya` with a private LAYA_HOME, no Moon and no model, so nothing global is touched.
+/// `laya-codex` with a private LAYA_CODEX_HOME, no Moon and no model, so nothing global is touched.
 fn laya(home: &Path) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_laya"));
-    c.env("LAYA_HOME", home)
-        .env("LAYA_MOON_BIN", home.join("no-such-moon"))
-        .env("LAYA_MOON_PORT", "1")
-        .env("LAYA_NO_MODEL", "1")
+    let mut c = Command::new(env!("CARGO_BIN_EXE_laya-codex"));
+    c.env("LAYA_CODEX_HOME", home)
+        .env("LAYA_CODEX_MOON_BIN", home.join("no-such-moon"))
+        .env("LAYA_CODEX_MOON_PORT", "1")
+        .env("LAYA_CODEX_NO_MODEL", "1")
         .stdin(Stdio::null());
     c
 }
@@ -51,7 +51,7 @@ fn writing_to_a_closed_stdout_exits_quietly() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Runs `laya <args>` and expects a quick failure whose message names `path` and says why.
+/// Runs `laya-codex <args>` and expects a quick failure whose message names `path` and says why.
 fn expect_bad_repo(home: &Path, args: &[&str], path: &Path, why: &str) {
     let t0 = std::time::Instant::now();
     let out = laya(home).args(args).output().unwrap();
@@ -67,6 +67,26 @@ fn expect_bad_repo(home: &Path, args: &[&str], path: &Path, why: &str) {
         "{args:?} took {:?}",
         t0.elapsed()
     );
+}
+
+#[test]
+fn the_cli_calls_itself_laya_codex() {
+    let home = scratch("name");
+    let out = laya(&home).arg("--help").output().unwrap();
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(help.contains("Usage: laya-codex "), "{}", describe(&out));
+    // The MCP tool is `search` (the server is already called laya-codex).
+    assert!(help.contains("exposing `search`"), "{help}");
+
+    // Errors carry the program's name.
+    let missing = home.join("no-such-repo");
+    let out = laya(&home)
+        .args(["index", missing.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.starts_with("laya-codex: "), "{}", describe(&out));
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 #[test]

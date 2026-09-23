@@ -1,4 +1,4 @@
-//! Wire protocol between the short-lived `laya hook`/`laya mcp` clients and the `laya daemon`.
+//! Wire protocol between the short-lived `laya-codex hook`/`laya-codex mcp` clients and the `laya-codex daemon`.
 //! One JSON object per line over a unix socket; one response line per request.
 //! The daemon bounds the connection (see `daemon::Limits`): at most 64 at once, request lines
 //! up to 1 MiB, 30 s idle and 10 s per reply write; size fields are clamped (constants below).
@@ -7,7 +7,7 @@ use laya_core::{QueryResult, RankedSpan};
 use serde::{Deserialize, Serialize};
 
 /// Bounds the daemon applies to `Request::Query` size parameters, whatever the client sent
-/// (MCP `laya_search` documents the same `top_n` range).
+/// (MCP `search` documents the same `top_n` range).
 pub const MAX_TOP_N: usize = 20;
 /// Upper bound on `budget_ms` (the Laya time budget of one query).
 pub const MAX_BUDGET_MS: u64 = 60_000;
@@ -62,7 +62,7 @@ pub enum Request {
         session: String,
         path: String,
     },
-    /// Ask the daemon to exit (`laya stop`). Answered with `Response::Ok` before it exits; the
+    /// Ask the daemon to exit (`laya-codex stop`). Answered with `Response::Ok` before it exits; the
     /// Moon it supervises keeps running. Older daemons answer "bad request".
     Shutdown,
 }

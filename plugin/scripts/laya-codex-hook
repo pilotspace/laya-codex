@@ -1,0 +1,36 @@
+#!/bin/sh
+# laya-codex plugin hook: find the laya-codex binary and hand it the hook event (stdin) unchanged.
+#
+# Fails open. Without a laya-codex binary every event exits 0 silently, except SessionStart,
+# which shows one line on how to install it. In a repository that `laya-codex init` already wired
+# up, the plugin steps aside so the hooks do not run twice.
+input="$(cat)"
+
+if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+    for f in "$CLAUDE_PROJECT_DIR/.claude/settings.local.json" "$CLAUDE_PROJECT_DIR/.claude/settings.json"; do
+        if [ -f "$f" ] && grep -q 'laya-codex hook"' "$f" 2>/dev/null; then
+            exit 0
+        fi
+    done
+fi
+
+bin=""
+if [ -n "${LAYA_CODEX_BIN:-}" ] && [ -x "$LAYA_CODEX_BIN" ]; then
+    bin="$LAYA_CODEX_BIN"
+elif command -v laya-codex >/dev/null 2>&1; then
+    bin="$(command -v laya-codex)"
+elif [ -x "$HOME/.local/bin/laya-codex" ]; then
+    bin="$HOME/.local/bin/laya-codex"
+fi
+
+if [ -z "$bin" ]; then
+    case "$input" in
+        *'"hook_event_name":"SessionStart"'* | *'"hook_event_name": "SessionStart"'*)
+            printf '%s\n' '{"systemMessage":"laya-codex: the laya-codex binary is not installed, so the plugin is idle. Install it with: curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh"}'
+            ;;
+    esac
+    exit 0
+fi
+
+printf '%s' "$input" | "$bin" hook
+exit 0

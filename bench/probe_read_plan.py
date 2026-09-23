@@ -1,8 +1,8 @@
-"""Probe the large-file Read plan end to end through `laya hook`: submit a prompt in a fresh
+"""Probe the large-file Read plan end to end through `laya-codex hook`: submit a prompt in a fresh
 session, then send PreToolUse Read events (whole file, then the same file again) and print what
 Claude Code would receive.
 
-    python3 bench/probe_read_plan.py <laya binary> <repo> <file relative to repo> "<prompt>"
+    python3 bench/probe_read_plan.py <laya-codex binary> <repo> <file relative to repo> "<prompt>"
 """
 import json
 import os

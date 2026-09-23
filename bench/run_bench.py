@@ -57,14 +57,14 @@ def make_tasks(args):
 
 
 def render_configs(out_dir):
-    """Materialize bench/config/*.json templates with the absolute laya binary path."""
-    laya_bin = os.environ.get("LAYA_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya"))
+    """Materialize bench/config/*.json templates with the absolute laya-codex binary path."""
+    laya_bin = os.environ.get("LAYA_CODEX_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya-codex"))
     if not os.path.exists(laya_bin):
-        sys.exit("laya binary not found at %s (build with cargo build --release -p laya-cli or set LAYA_BIN)" % laya_bin)
+        sys.exit("laya-codex binary not found at %s (build with cargo build --release -p laya-cli or set LAYA_CODEX_BIN)" % laya_bin)
     dst = os.path.join(out_dir, "config")
     os.makedirs(dst, exist_ok=True)
     for name in os.listdir(os.path.join(HERE, "config")):
-        src = open(os.path.join(HERE, "config", name)).read().replace("@LAYA_BIN@", laya_bin)
+        src = open(os.path.join(HERE, "config", name)).read().replace("@LAYA_CODEX_BIN@", laya_bin)
         open(os.path.join(dst, name), "w").write(src)
     return dst
 
@@ -171,9 +171,9 @@ def run_one(arm, task, args, cfg_dir):
     os.makedirs(os.path.dirname(hook_log), exist_ok=True)
     if os.path.exists(hook_log):
         os.remove(hook_log)
-    # LAYA_MEMO=0: score every prompt cold, as a new prompt is in real use; otherwise whichever arm
+    # LAYA_CODEX_MEMO=0: score every prompt cold, as a new prompt is in real use; otherwise whichever arm
     # runs a task first pays the model run and the others hit its cache.
-    env = dict(os.environ, LAYA_HOOK_LOG=hook_log, LAYA_MEMO=os.environ.get("LAYA_MEMO", "0"))
+    env = dict(os.environ, LAYA_CODEX_HOOK_LOG=hook_log, LAYA_CODEX_MEMO=os.environ.get("LAYA_CODEX_MEMO", "0"))
     prompts = [PROMPT.format(task=task["task"])] + [FOLLOWUP] * (args.turns - 1)
     sid = str(uuid.uuid4())
     all_lines, wall, rcs = [], 0.0, []
@@ -218,8 +218,8 @@ def run(args):
     if os.path.exists(res_path):
         done = {(r["arm"], r["task_id"]) for r in map(json.loads, open(res_path))}
     cfg_dir = render_configs(args.out)
-    # Restart the daemon so the first hook starts it with this run's environment (LAYA_MEMO etc.).
-    laya_bin = os.environ.get("LAYA_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya"))
+    # Restart the daemon so the first hook starts it with this run's environment (LAYA_CODEX_MEMO etc.).
+    laya_bin = os.environ.get("LAYA_CODEX_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya-codex"))
     subprocess.run([laya_bin, "stop"], capture_output=True)
     rng = random.Random(7)
     plan = [(a, t) for t in tasks for a in rng.sample(arms, len(arms))]  # interleave arms per task, random order

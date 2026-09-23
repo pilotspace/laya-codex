@@ -2,16 +2,16 @@
   "description": "laya-codex: inject ranked code for each prompt, narrow large Reads, re-index on edit, re-inject after compaction. Every hook fails open.",
   "hooks": {
     "SessionStart": [
-      {"hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/laya-hook", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/laya-codex-hook", "timeout": 5}]}
     ],
     "UserPromptSubmit": [
-      {"hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/laya-hook", "timeout": 8}]}
+      {"hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/laya-codex-hook", "timeout": 8}]}
     ],
     "PreToolUse": [
-      {"matcher": "Read|Agent|Task", "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/laya-hook", "timeout": 5}]}
+      {"matcher": "Read|Agent|Task", "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/laya-codex-hook", "timeout": 5}]}
     ],
     "PostToolUse": [
-      {"matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/laya-hook", "timeout": 5}]}
+      {"matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/laya-codex-hook", "timeout": 5}]}
     ]
   }
 }

@@ -49,15 +49,15 @@ jobs:
           key: ${{ matrix.os }}
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # Tests that need a Moon binary (LAYA_TEST_MOON_BIN) or Laya weights (LAYA_MODEL_DIR /
+      # Tests that need a Moon binary (LAYA_CODEX_TEST_MOON_BIN) or Laya weights (LAYA_CODEX_MODEL_DIR /
       # ~/.cache/laya-codex/models/laya-base) print "SKIP: ..." and return when those are absent,
       # which is always the case here; ignored perf/bench tests stay ignored.
       - name: test
         run: cargo test --workspace --release --locked
-      - name: build laya
+      - name: build laya-codex
         run: cargo build --release --locked -p laya-cli
       - name: smoke
-        run: ./target/release/laya --help
+        run: ./target/release/laya-codex --help
       - name: installer
         run: sh scripts/test-install.sh
       - name: plugin

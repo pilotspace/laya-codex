@@ -6,8 +6,8 @@ pilot-space is the second held-out eval repo.
 import os
 import subprocess
 
-# Directory holding one checkout per repo below (set LAYA_REPOS_ROOT).
-ROOT = os.path.expanduser(os.environ.get("LAYA_REPOS_ROOT", "~/src"))
+# Directory holding one checkout per repo below (set LAYA_CODEX_REPOS_ROOT).
+ROOT = os.path.expanduser(os.environ.get("LAYA_CODEX_REPOS_ROOT", "~/src"))
 
 HELDOUT = {
     "moon": os.path.join(ROOT, "moon"),

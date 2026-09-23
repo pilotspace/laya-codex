@@ -1,5 +1,5 @@
 {
   "mcpServers": {
-    "laya": {"command": "@LAYA_BIN@", "args": ["mcp"]}
+    "laya-codex": {"command": "@LAYA_CODEX_BIN@", "args": ["mcp"]}
   }
 }

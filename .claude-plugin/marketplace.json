@@ -8,7 +8,7 @@
     {
       "name": "laya-codex",
       "source": "./plugin",
-      "description": "Ranked code retrieval: hands Claude the code a task needs before it goes looking (hooks + the laya_search MCP tool).",
+      "description": "Ranked code retrieval: hands Claude the code a task needs before it goes looking (hooks + the laya-codex `search` MCP tool).",
       "homepage": "https://github.com/pilotspace/laya-codex",
       "repository": "https://github.com/pilotspace/laya-codex",
       "license": "Apache-2.0",

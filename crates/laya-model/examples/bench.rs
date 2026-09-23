@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let dir = arg(&args, "--model")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("LAYA_MODEL_DIR").map(PathBuf::from))
+        .or_else(|| std::env::var_os("LAYA_CODEX_MODEL_DIR").map(PathBuf::from))
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var("HOME").unwrap_or_default())
                 .join(".cache/laya-codex/models/laya-base")

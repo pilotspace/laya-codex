@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "laya": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/laya-mcp",
+    "laya-codex": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/laya-codex-mcp",
       "args": []
     }
   }

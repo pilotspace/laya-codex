@@ -1,4 +1,4 @@
-"""Smoke-test adaptive injection end to end: prompts in one session through `laya hook`, then a
+"""Smoke-test adaptive injection end to end: prompts in one session through `laya-codex hook`, then a
 compact reset. Shows which spans got full code, which were skipped as already sent, and timing.
 
     python3 bench/smoke_adaptive.py <repo> [prompt ...]
@@ -9,13 +9,13 @@ import subprocess
 import sys
 import time
 
-LAYA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laya")
+LAYA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laya-codex")
 REPO = sys.argv[1]
 PROMPTS = sys.argv[2:] or [
     "Where is the WAL replayed on startup and how are corrupted segments handled?",
     "Where is the WAL replayed on startup and how are corrupted segments handled? Also show the tests.",
 ]
-ENV = dict(os.environ, LAYA_ADAPTIVE="1", LAYA_RENDER="compact")
+ENV = dict(os.environ, LAYA_CODEX_ADAPTIVE="1", LAYA_CODEX_RENDER="compact")
 
 
 def hook(payload):

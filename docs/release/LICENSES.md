@@ -4,7 +4,7 @@ Checked 2026-09-23 against the license files and metadata listed per row (not fr
 Project license: **Apache-2.0** (`LICENSE`, `NOTICE`; `license = "Apache-2.0"` in
 `[workspace.package]`, `license.workspace = true` in all six crates).
 
-**Verdict: no blocker.** Every Rust dependency that ships in the `laya` binary is under a
+**Verdict: no blocker.** Every Rust dependency that ships in the `laya-codex` binary is under a
 permissive license compatible with Apache-2.0; no copyleft-only dependency is linked. The Laya
 base model is Apache-2.0, so `laya-code` may be redistributed under Apache-2.0 with attribution.
 Two follow-ups (not blockers) are listed at the end.
@@ -34,7 +34,7 @@ is not settled law; the model card says so.
 |---|---|---|---|---|
 | Moon (`pilotspace/moon`) | declared Apache-2.0 (`Cargo.toml`: `license = "Apache-2.0"`, v0.8.9 at HEAD) | GitHub API reports `NOASSERTION` ("Other"); `LICENSE` at HEAD diffed against apache.org's `LICENSE-2.0.txt` | yes (separate program) | laya-codex starts `moon` as a separate process and talks RESP over TCP; it does not link, vendor or ship Moon. Its license therefore does not constrain laya-codex's license. **Follow-up 1** below. |
 
-## 3. Rust dependencies linked into `laya`
+## 3. Rust dependencies linked into `laya-codex`
 
 253 third-party crates are reachable through normal/build dependencies of the workspace
 (`cargo metadata --locked`, all targets; dev-dependencies excluded). License expressions:

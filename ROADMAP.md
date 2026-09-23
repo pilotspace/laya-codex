@@ -4,7 +4,7 @@ laya-codex hands Claude Code the code a task needs before Claude goes looking fo
 shows the idea works: **−50% code-reading tokens** and **−17% wall-clock** against stock
 Claude Code on 20 held-out tasks ([docs/RESULTS.md](docs/RESULTS.md)). The rest of the road is
 about three things: reaching the time goal, proving the effect beyond one repository, and making
-laya something people can install in one line and forget about.
+laya-codex something people can install in one line and forget about.
 
 ## Goals and how they are measured
 
@@ -21,12 +21,12 @@ laya something people can install in one line and forget about.
 
 | channel | audience | status |
 |---|---|---|
-| `install.sh` from GitHub Releases (laya + pinned Moon + model from Hugging Face, checksums verified) | everyone on macOS arm64 / Linux x86_64 | **v0.1.0** |
+| `install.sh` from GitHub Releases (laya-codex + pinned Moon + model from Hugging Face, checksums verified) | everyone on macOS arm64 / Linux x86_64 | **v0.1.0** |
 | Hugging Face model `tindang/laya-code` | the re-ranker weights | **v0.1.0** |
 | Build from source (`cargo build --release -p laya-cli`) | contributors, other platforms | **v0.1.0** |
 | Claude Code plugin (`/plugin marketplace add pilotspace/laya-codex`) | Claude Code users — the most direct channel | **v0.1.2** |
-| Homebrew tap `pilotspace/tap/laya` | macOS developers | v0.2 |
-| `laya upgrade` / `laya uninstall` | existing users | v0.2 |
+| Homebrew tap `pilotspace/tap/laya-codex` | macOS developers | v0.2 |
+| `laya-codex upgrade` / `laya-codex uninstall` | existing users | v0.2 |
 | Linux aarch64 and static musl builds | servers, containers, Graviton | v0.2 |
 | crates.io (`cargo install laya-cli`) | Rust users | after the embedded store removes the Moon sidecar (v0.4) |
 
@@ -40,7 +40,7 @@ Done in v0.1.2 (see [CHANGELOG.md](CHANGELOG.md)):
   file, and hooks swallow them. Writes to a closed stdout exit quietly.
 - **Daemon limits:** 64 connections, 1 MiB request lines, 30 s read and 10 s write
   timeouts; `top_n`, `budget_ms` and the render budget are clamped on the socket path.
-- **CLI usability:** `laya index`, `laya query --repo` and `laya init --repo` reject a
+- **CLI usability:** `laya-codex index`, `laya-codex query --repo` and `laya-codex init --repo` reject a
   path that does not exist or is not a directory.
 
 Open:
@@ -52,12 +52,12 @@ Open:
   re-running the benchmark and soak test against it; fix Moon's `LICENSE` file so it matches its
   `Cargo.toml` (see [docs/release/LICENSES.md](docs/release/LICENSES.md)).
 - **Moon password off the command line:** at the pinned Moon commit an ACL file alone does not
-  require authentication, so laya also passes `--requirepass` and the password shows in `ps`.
+  require authentication, so laya-codex also passes `--requirepass` and the password shows in `ps`.
   Needs Moon to enforce its ACL file (or read the password from a file); then drop the flag.
-  Related: `ACL SAVE` against Moon rewrites `moon.acl` with a hashed password laya cannot read.
+  Related: `ACL SAVE` against Moon rewrites `moon.acl` with a hashed password laya-codex cannot read.
 - **One walker:** re-index-on-edit copies the full walk's ignore settings; export one helper from
   `laya-parse` so they cannot drift.
-- **Upgrades:** the installer stops the running daemon; add a version handshake so a new `laya`
+- **Upgrades:** the installer stops the running daemon; add a version handshake so a new `laya-codex`
   never talks to an old daemon.
 
 ## v0.2 — adoption
@@ -65,16 +65,16 @@ Open:
 Make the first five minutes painless and the tool visible where Claude Code users look.
 
 - ~~**Claude Code plugin**~~ — shipped in v0.1.2. Next: list it in the community plugin
-  directories. Original plan: package the hooks and the `laya` MCP server as a plugin in a
-  marketplace repo, so `/plugin install laya` replaces `laya init` for most users. The binary
+  directories. Original plan: package the hooks and the `laya-codex` MCP server as a plugin in a
+  marketplace repo, so `/plugin install laya-codex` replaces `laya-codex init` for most users. The binary
   still comes from `install.sh`, and the plugin checks for it and points to the installer.
-- **Homebrew tap**, `laya upgrade`, `laya uninstall` (removes hooks, the MCP entry, caches).
+- **Homebrew tap**, `laya-codex upgrade`, `laya-codex uninstall` (removes hooks, the MCP entry, caches).
 - **More platforms:** Linux aarch64, static musl builds, and macOS x86_64 (lexical-only).
-- **First-run experience:** `laya init` asks for nothing, indexes in the background and prints
-  a one-screen summary. `laya doctor` checks for a newer release.
-- **Docs:** a short demo (recorded session before/after), a "how laya decides what to inject"
+- **First-run experience:** `laya-codex init` asks for nothing, indexes in the background and prints
+  a one-screen summary. `laya-codex doctor` checks for a newer release.
+- **Docs:** a short demo (recorded session before/after), a "how laya-codex decides what to inject"
   page built from the request/response examples, and troubleshooting for every doctor check.
-- **Feedback loop:** a `laya report` command that writes an anonymised, local-only session
+- **Feedback loop:** a `laya-codex report` command that writes an anonymised, local-only session
   summary (tokens injected, spans used) that users can attach to an issue. No telemetry.
 
 ## v0.3 — reach the time goal and widen the evidence
@@ -82,7 +82,7 @@ Make the first five minutes painless and the tool visible where Claude Code user
 - **Close the time gap (−17% → −30%).** Time is now spent in the final answer and verification
   turns (forensics §6). Candidates:
   - richer usage lists for the identifiers the answer names;
-  - `laya_search` (MCP) as the cheap default for follow-up lookups;
+  - `search` (MCP) as the cheap default for follow-up lookups;
   - fix third-file misses on multi-file tasks (e.g. the `warm_search.rs` pattern).
 - **Per-repo IDF-aware term selection** so generic chunks stop recurring across unrelated tasks.
 - **Benchmark v2:** 60+ tasks over 3+ repositories and languages, plus SWE-bench-style edit
@@ -94,7 +94,7 @@ Make the first five minutes painless and the tool visible where Claude Code user
 
 - **Embedded store:** run Moon's index in-process (`moon-embed`, architecture D2 v2). No second
   process, no port, no password file; `cargo install` becomes a real channel.
-- **Upstream Moon features** laya works around today: OR queries and DEL de-indexing
+- **Upstream Moon features** laya-codex works around today: OR queries and DEL de-indexing
   ([crates/laya-store/MOON_NOTES.md](crates/laya-store/MOON_NOTES.md)).
 
 ## 1.0 — criteria, not a date
