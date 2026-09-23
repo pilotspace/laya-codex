@@ -215,11 +215,17 @@ pub fn size_context(
         .chain(map.iter())
         .chain(already_spans.iter())
         .collect();
-    let related: Vec<Related> = result
+    // Usage lines (grep-style definition/use lines) are not reference neighbours: a map entry
+    // shows only a range, so they stay unless the renderer finds them inside visible code.
+    let (usages, neighbours): (Vec<&Related>, Vec<&Related>) = result
         .related
         .iter()
+        .partition(|r| crate::render::is_usage(r));
+    let related: Vec<Related> = neighbours
+        .into_iter()
         .filter(|r| !covered.iter().any(|s| related_overlaps_span(r, s)))
         .take(caps.related)
+        .chain(usages)
         .cloned()
         .collect();
 
@@ -488,6 +494,46 @@ mod tests {
                 "second a.rs span stays in the map"
             );
         }
+    }
+
+    #[test]
+    fn usage_lines_survive_map_overlap_and_the_related_cap() {
+        let spans: Vec<RankedSpan> = (0..5)
+            .map(|i| span(&format!("f{i}.rs"), 1, 50, "", Some(0.9), 1.0))
+            .collect();
+        let mut rel: Vec<Related> = (0..20)
+            .map(|i| related(&format!("r{i}.rs"), 1, 9, "calls `x` (#1)"))
+            .collect();
+        rel.push(Related {
+            symbol: "x();".into(),
+            ..related("f4.rs", 7, 7, "use of `x`")
+        });
+        let ctx = size_context(
+            &result(RankMode::Laya, spans, rel),
+            None,
+            &SizingPolicy {
+                tau_full: 0.0,
+                tau_map: 0.0,
+                ..SizingPolicy::default()
+            },
+            &[],
+        );
+        assert!(
+            ctx.map.iter().any(|s| s.path == "f4.rs"),
+            "f4.rs is map-only"
+        );
+        assert!(
+            ctx.related
+                .iter()
+                .any(|r| r.path == "f4.rs" && r.relation == "use of `x`")
+        );
+        assert_eq!(
+            ctx.related
+                .iter()
+                .filter(|r| !crate::render::is_usage(r))
+                .count(),
+            8
+        );
     }
 
     #[test]
