@@ -1,6 +1,7 @@
 #!/bin/sh
-# laya-codex installer: puts `laya` and its pinned Moon sidecar in one directory and downloads the
-# laya-code re-ranker from Hugging Face. Re-running it upgrades in place.
+# laya-codex installer: puts `laya-codex` and its pinned Moon sidecar in one directory and downloads
+# the laya-code re-ranker (a fine-tune of the Laya model) from Hugging Face. Re-running it upgrades
+# in place.
 #
 #   curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- --version v0.1.0 --dir ~/bin --no-model
@@ -8,32 +9,32 @@
 #
 # Every download is retried, time-limited and checked against a SHA-256 before anything is
 # installed. Binaries are swapped in with a rename, so an interrupted run leaves the previous
-# install working. Environment overrides: LAYA_VERSION, LAYA_INSTALL_DIR, LAYA_HOME, LAYA_MODEL
-# (1 = download the model, 0 = skip), LAYA_RELEASES_URL and LAYA_MODEL_URL (mirrors and tests).
+# install working. Environment overrides: LAYA_CODEX_VERSION, LAYA_CODEX_INSTALL_DIR, LAYA_CODEX_HOME, LAYA_CODEX_MODEL
+# (1 = download the model, 0 = skip), LAYA_CODEX_RELEASES_URL and LAYA_CODEX_MODEL_URL (mirrors and tests).
 set -eu
 
 REPO="pilotspace/laya-codex"
-VERSION="${LAYA_VERSION:-latest}"
-INSTALL_DIR="${LAYA_INSTALL_DIR:-$HOME/.local/bin}"
-LAYA_HOME="${LAYA_HOME:-$HOME/.cache/laya-codex}"
-RELEASES_URL="${LAYA_RELEASES_URL:-https://github.com/$REPO/releases}"
-MODEL_URL="${LAYA_MODEL_URL:-https://huggingface.co/tindang/laya-code/resolve/main}"
-MODEL="${LAYA_MODEL:-auto}"
+VERSION="${LAYA_CODEX_VERSION:-latest}"
+INSTALL_DIR="${LAYA_CODEX_INSTALL_DIR:-$HOME/.local/bin}"
+LAYA_CODEX_HOME="${LAYA_CODEX_HOME:-$HOME/.cache/laya-codex}"
+RELEASES_URL="${LAYA_CODEX_RELEASES_URL:-https://github.com/$REPO/releases}"
+MODEL_URL="${LAYA_CODEX_MODEL_URL:-https://huggingface.co/tindang/laya-code/resolve/main}"
+MODEL="${LAYA_CODEX_MODEL:-auto}"
 MODEL_ONLY=0
 
-say() { printf 'laya-install: %s\n' "$*"; }
-die() { printf 'laya-install: error: %s\n' "$*" >&2; exit 1; }
+say() { printf 'laya-codex-install: %s\n' "$*"; }
+die() { printf 'laya-codex-install: error: %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat <<'EOF'
 Usage: install.sh [--version vX.Y.Z] [--dir DIR] [--no-model | --model | --model-only]
 
   --version   release tag to install (default: the latest release)
-  --dir       where laya and moon go (default: ~/.local/bin)
-  --no-model  skip the ~850 MB re-ranker download (laya then ranks lexically)
+  --dir       where laya-codex and moon go (default: ~/.local/bin)
+  --no-model  skip the ~850 MB re-ranker download (laya-codex then ranks lexically)
   --model     download the re-ranker even on Linux (it runs on CPU there, which is slow)
   --model-only
-              download and verify only the re-ranker into $LAYA_HOME/models/laya-code and leave
+              download and verify only the re-ranker into $LAYA_CODEX_HOME/models/laya-code and leave
               the binaries alone (for installs made another way, e.g. Homebrew)
 EOF
 }
@@ -65,7 +66,7 @@ else
 fi
 
 # Transfers slower than 10 KB/s for this many seconds are abandoned and retried.
-STALL_SECONDS="${LAYA_STALL_SECONDS:-30}"
+STALL_SECONDS="${LAYA_CODEX_STALL_SECONDS:-30}"
 # Also retry after a stall or a dropped connection (curl 7.71+; older curl retries fewer cases).
 RETRY_ALL=""
 if curl --help all 2>/dev/null | grep -q -- --retry-all-errors; then RETRY_ALL="--retry-all-errors"; fi
@@ -83,7 +84,7 @@ fetch() {
 
 # Download the laya-code re-ranker listed in the Hugging Face MANIFEST.sha256, verifying each file.
 get_model() {
-    dest="$LAYA_HOME/models/laya-code"
+    dest="$LAYA_CODEX_HOME/models/laya-code"
     say "fetching the laya-code re-ranker manifest"
     fetch "$MODEL_URL/MANIFEST.sha256" "$tmp/MANIFEST.sha256" 60 || die "could not fetch the model manifest"
     mkdir -p "$dest"
@@ -116,7 +117,7 @@ arch="$(uname -m)"
 case "$os/$arch" in
     Darwin/arm64) target="aarch64-apple-darwin" ;;
     Linux/x86_64 | Linux/amd64) target="x86_64-unknown-linux-gnu" ;;
-    *) die "no prebuilt laya for $os/$arch yet; build from source: https://github.com/$REPO#build" ;;
+    *) die "no prebuilt laya-codex for $os/$arch yet; build from source: https://github.com/$REPO#build" ;;
 esac
 if [ "$MODEL" = auto ]; then
     # Linux has no GPU path yet: the model would run on CPU and mostly miss its time budget.
@@ -148,49 +149,55 @@ get_asset() {
     tar -xzf "$tmp/$asset" -C "$tmp" || die "could not unpack $asset"
 }
 
-laya_pkg="laya-$VERSION-$target"
+cli_pkg="laya-codex-$VERSION-$target"
 moon_pkg="moon-$VERSION-$target"
-get_asset "$laya_pkg.tar.gz"
+get_asset "$cli_pkg.tar.gz"
 get_asset "$moon_pkg.tar.gz"
-[ -x "$tmp/$laya_pkg/laya" ] || die "$laya_pkg.tar.gz has no laya binary"
+[ -x "$tmp/$cli_pkg/laya-codex" ] || die "$cli_pkg.tar.gz has no laya-codex binary"
 [ -x "$tmp/$moon_pkg/moon" ] || die "$moon_pkg.tar.gz has no moon binary"
-"$tmp/$laya_pkg/laya" --help >/dev/null 2>&1 || die "the downloaded laya does not run on this machine"
+"$tmp/$cli_pkg/laya-codex" --help >/dev/null 2>&1 || die "the downloaded laya-codex does not run on this machine"
 
-# Stop a running daemon first, so the next hook starts the new binaries.
-if [ -x "$INSTALL_DIR/laya" ]; then
-    "$INSTALL_DIR/laya" stop >/dev/null 2>&1 || true
-fi
+# Stop a running daemon first (whichever version serves $LAYA_CODEX_HOME), so the next hook starts
+# the new binaries.
+LAYA_CODEX_HOME="$LAYA_CODEX_HOME" "$tmp/$cli_pkg/laya-codex" stop >/dev/null 2>&1 || true
 
 mkdir -p "$INSTALL_DIR" || die "cannot create $INSTALL_DIR"
-for bin in "$laya_pkg/laya" "$moon_pkg/moon"; do
+for bin in "$cli_pkg/laya-codex" "$moon_pkg/moon"; do
     name="${bin##*/}"
     cp "$tmp/$bin" "$INSTALL_DIR/.$name.new" || die "cannot write to $INSTALL_DIR"
     chmod 755 "$INSTALL_DIR/.$name.new"
     mv -f "$INSTALL_DIR/.$name.new" "$INSTALL_DIR/$name"
 done
-share="$LAYA_HOME/share"
+share="$LAYA_CODEX_HOME/share"
 mkdir -p "$share"
 cp "$tmp/$moon_pkg/LICENSE" "$share/moon-LICENSE" 2>/dev/null || true
 cp "$tmp/$moon_pkg/SOURCE" "$share/moon-SOURCE" 2>/dev/null || true
-say "installed laya $VERSION and moon to $INSTALL_DIR"
+say "installed laya-codex $VERSION and moon to $INSTALL_DIR"
 
 if [ "$MODEL" = 1 ]; then
     get_model
 else
-    say "skipped the model: laya ranks lexically (re-run with --model to add it)"
+    say "skipped the model: laya-codex ranks lexically (re-run with --model to add it)"
 fi
 
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *) say "note: $INSTALL_DIR is not on PATH; add it, e.g. export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
+# 0.1.x installed the CLI as `laya`; v0.2.0 renamed it without an alias, so the old one is dead
+# weight (and its `laya hook` entries in repos need `laya-codex init`).
+if [ -x "$INSTALL_DIR/laya" ]; then
+    say "note: $INSTALL_DIR/laya is the 0.1.x CLI (renamed laya-codex in v0.2.0); remove it: rm $INSTALL_DIR/laya"
+    say "note: in each repo set up with \`laya init\`, run \`laya-codex init\` and delete the old \`laya hook\` entries (see the CHANGELOG)"
+fi
+
 cat <<EOF
 
-Next, enable laya in Claude Code, either everywhere with the plugin (inside Claude Code):
+Next, enable laya-codex in Claude Code, either everywhere with the plugin (inside Claude Code):
   /plugin marketplace add pilotspace/laya-codex
   /plugin install laya-codex@laya-codex
 or per repository:
-  laya init --repo /path/to/repo     # add laya's hooks and MCP server, then index the repo
+  laya-codex init --repo /path/to/repo     # add the hooks and MCP server, then index the repo
 Then check it:
-  laya doctor --repo /path/to/repo
+  laya-codex doctor --repo /path/to/repo
 EOF

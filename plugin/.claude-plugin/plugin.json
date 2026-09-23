@@ -2,7 +2,7 @@
   "name": "laya-codex",
   "displayName": "laya-codex",
   "version": "0.1.2",
-  "description": "Ranked code retrieval for Claude Code: tree-sitter chunks, BM25 and the Laya re-ranker put the code a task needs in front of Claude before it goes looking. Needs the laya binary (install.sh).",
+  "description": "Ranked code retrieval for Claude Code: tree-sitter chunks and BM25, re-ranked with the Laya model, put the code a task needs in front of Claude before it goes looking. Needs the laya-codex binary (install.sh or Homebrew).",
   "author": {
     "name": "PilotSpace",
     "url": "https://github.com/pilotspace"

@@ -1,0 +1,11 @@
+#!/bin/sh
+# laya-codex plugin MCP server: run `laya-codex mcp` (the `search` tool) from the installed binary.
+if [ -n "${LAYA_CODEX_BIN:-}" ] && [ -x "$LAYA_CODEX_BIN" ]; then
+    exec "$LAYA_CODEX_BIN" mcp
+elif command -v laya-codex >/dev/null 2>&1; then
+    exec laya-codex mcp
+elif [ -x "$HOME/.local/bin/laya-codex" ]; then
+    exec "$HOME/.local/bin/laya-codex" mcp
+fi
+echo "laya-codex: the laya-codex binary is not installed. Install it with: curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh" >&2
+exit 1

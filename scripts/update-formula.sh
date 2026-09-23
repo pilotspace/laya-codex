@@ -5,15 +5,14 @@
 #   scripts/update-formula.sh 0.2.0                    # or v0.2.0
 #   scripts/update-formula.sh 0.2.0 path/to/laya-codex.rb
 #
-# The CLI's name is detected from the release: if laya-codex-v<ver>-<target>.tar.gz exists the
-# formula installs and tests `laya-codex` with LAYA_CODEX_* env vars (v0.2.0 on), otherwise
-# `laya` with LAYA_* (v0.1.x). LAYA_FORMULA_BIN=laya|laya-codex skips the detection.
-# The formula is written only after every checksum was fetched and validated, so a failed run
-# leaves it untouched. LAYA_RELEASES_URL points at a mirror (or a file:// tree in tests).
+# Releases from v0.2.0 on ship laya-codex-v<ver>-<target>.tar.gz (the CLI `laya-codex`, env vars
+# LAYA_CODEX_*) and moon-v<ver>-<target>.tar.gz. The formula is written only after every checksum
+# was fetched and validated, so a failed run leaves it untouched. LAYA_CODEX_RELEASES_URL points
+# at a mirror (or a file:// tree in tests).
 set -eu
 
 REPO="pilotspace/laya-codex"
-RELEASES_URL="${LAYA_RELEASES_URL:-https://github.com/$REPO/releases}"
+RELEASES_URL="${LAYA_CODEX_RELEASES_URL:-https://github.com/$REPO/releases}"
 MAC=aarch64-apple-darwin
 LINUX=x86_64-unknown-linux-gnu
 
@@ -41,19 +40,8 @@ get_sum() {
     printf '%s' "$s"
 }
 
-bin="${LAYA_FORMULA_BIN:-}"
-if [ -z "$bin" ]; then
-    if get_sum "laya-codex-$tag-$MAC.tar.gz" >/dev/null; then bin=laya-codex; else bin=laya; fi
-fi
-case "$bin" in
-    laya) env_prefix=LAYA ;;
-    laya-codex) env_prefix=LAYA_CODEX ;;
-    *) die "LAYA_FORMULA_BIN must be laya or laya-codex (got '$bin')" ;;
-esac
-printf 'update-formula: %s: binary %s, env %s_*\n' "$tag" "$bin" "$env_prefix"
-
-for a in "$bin-$tag-$MAC" "moon-$tag-$MAC" "$bin-$tag-$LINUX" "moon-$tag-$LINUX"; do
-    s="$(get_sum "$a.tar.gz")" || die "cannot fetch $a.tar.gz.sha256 (is $tag published?)"
+for a in "laya-codex-$tag-$MAC" "moon-$tag-$MAC" "laya-codex-$tag-$LINUX" "moon-$tag-$LINUX"; do
+    s="$(get_sum "$a.tar.gz")" || die "cannot fetch $a.tar.gz.sha256 (is $tag published? v0.2.0 is the first release named laya-codex)"
     printf 'update-formula: %s.tar.gz %s\n' "$a" "$s"
     eval "sum_$(printf '%s' "$a" | tr -c 'a-zA-Z0-9\n' _)=\$s"
 done
@@ -77,8 +65,8 @@ class LayaCodex < Formula
 
   on_macos do
     on_arm do
-      url "$base/$bin-$tag-$MAC.tar.gz"
-      sha256 "$(val "$bin-$tag-$MAC")"
+      url "$base/laya-codex-$tag-$MAC.tar.gz"
+      sha256 "$(val "laya-codex-$tag-$MAC")"
 
       resource "moon" do
         url "$base/moon-$tag-$MAC.tar.gz"
@@ -89,8 +77,8 @@ class LayaCodex < Formula
 
   on_linux do
     on_intel do
-      url "$base/$bin-$tag-$LINUX.tar.gz"
-      sha256 "$(val "$bin-$tag-$LINUX")"
+      url "$base/laya-codex-$tag-$LINUX.tar.gz"
+      sha256 "$(val "laya-codex-$tag-$LINUX")"
 
       resource "moon" do
         url "$base/moon-$tag-$LINUX.tar.gz"
@@ -99,21 +87,11 @@ class LayaCodex < Formula
     end
   end
 
-  # The CLI's name and env-var prefix for this release (renamed laya -> laya-codex in v0.2.0).
-  def cli
-    "$bin"
-  end
-
-  def env_prefix
-    "$env_prefix"
-  end
-
   def install
-    # The CLI runs \`moon\` from beside its own binary first, so both live in libexec. Only the CLI
-    # is exposed: homebrew-core's unrelated \`moon\` (moonrepo) owns bin/moon. The wrapper execs
-    # the real binary, so the CLI's own path (and so the moon it picks) is libexec.
-    libexec.install cli
-    bin.write_exec_script libexec/cli
+    # laya-codex resolves its own symlink and runs the Moon in ../libexec, so the binary is linked
+    # into bin as usual and \`init\` writes the bare \`laya-codex\` command (not a versioned Cellar
+    # path). Moon stays in libexec: homebrew-core's unrelated \`moon\` (moonrepo) owns bin/moon.
+    bin.install "laya-codex"
     pkgshare.install "THIRD-PARTY-LICENSES.txt"
     resource("moon").stage do
       libexec.install "moon"
@@ -123,39 +101,43 @@ class LayaCodex < Formula
 
   def caveats
     <<~EOS
-      The laya-code re-ranker (~850 MB) is not part of this formula. Without it #{cli} ranks
-      lexically. To download and verify it:
+      The laya-code re-ranker (~850 MB, a fine-tune of the Laya model) is not part of this
+      formula. Without it laya-codex ranks lexically. To download and verify it:
         curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh -s -- --model-only
 
       Enable it in Claude Code, either everywhere with the plugin (inside Claude Code):
         /plugin marketplace add pilotspace/laya-codex
         /plugin install laya-codex@laya-codex
-      or per repository (hooks then point at this version's Cellar path, so re-run it after
-      \`brew upgrade laya-codex\`):
-        #{cli} init --repo /path/to/repo
+      or per repository:
+        laya-codex init --repo /path/to/repo
       Then check the setup with:
-        #{cli} doctor --repo /path/to/repo
+        laya-codex doctor --repo /path/to/repo
+
+      Upgrading from 0.1.x: the CLI is now \`laya-codex\` (was \`laya\`) and its environment
+      variables are LAYA_CODEX_* (were LAYA_*). Re-run \`laya-codex init\` in repositories set up
+      with \`laya init\` and delete their old \`laya hook\` entries.
     EOS
   end
 
   test do
     require "json"
 
-    assert_match "Usage: #{cli}", shell_output("#{bin}/#{cli} --help")
+    assert_match "Usage: laya-codex", shell_output("#{bin}/laya-codex --help")
     assert_match "Usage: moon", shell_output("#{libexec}/moon --help")
 
     # Offline self-check in a private home: nothing is started, no model is needed.
-    ENV["#{env_prefix}_HOME"] = (testpath/"home").to_s
-    ENV["#{env_prefix}_NO_MODEL"] = "1"
-    ENV["#{env_prefix}_MOON_PORT"] = free_port.to_s
+    ENV["LAYA_CODEX_HOME"] = (testpath/"home").to_s
+    ENV["LAYA_CODEX_NO_MODEL"] = "1"
+    ENV["LAYA_CODEX_MOON_PORT"] = free_port.to_s
     (testpath/"repo").mkpath
     system "git", "-C", testpath/"repo", "init", "--quiet"
     # Exit status is 1 because the test repo has no hooks; the report must still parse, and it
-    # must pick the bundled moon beside the CLI (not another \`moon\` on PATH) and a usable home.
-    report = JSON.parse(shell_output("#{bin}/#{cli} doctor --json --repo #{testpath}/repo", 1))
+    # must pick the bundled moon in libexec (found through the bin/ symlink, not another \`moon\`
+    # on PATH) and a usable home.
+    report = JSON.parse(shell_output("#{bin}/laya-codex doctor --json --repo #{testpath}/repo", 1))
     checks = report["checks"].to_h { |c| [c["name"], c] }
     assert_equal "pass", checks["moon"]["level"]
-    assert_match "#{libexec}/moon", checks["moon"]["detail"]
+    assert_match "#{libexec.realpath}/moon", checks["moon"]["detail"]
     assert_equal "pass", checks["home"]["level"]
     assert_equal "fail", checks["hooks"]["level"]
   end
@@ -166,4 +148,4 @@ EOF
 if grep -q 'sha256 ""' "$tmp/formula.rb"; then die "a checksum is missing"; fi
 mkdir -p "$(dirname "$formula")"
 cp "$tmp/formula.rb" "$formula"
-printf 'update-formula: wrote %s (%s %s)\n' "$formula" "$bin" "$ver"
+printf 'update-formula: wrote %s (laya-codex %s)\n' "$formula" "$ver"
