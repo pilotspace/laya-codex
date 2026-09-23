@@ -25,6 +25,9 @@ METRICS = {
     "cost": sp.METRICS["cost usd"],
 }
 
+LABELS = {"reading_tokens": "Code-reading tokens", "reading_plus_injected": "Reading + injected",
+          "total_input": "Total input tokens", "wall_clock": "Wall-clock time", "turns": "Turns", "cost": "Cost"}
+
 
 def compare(runs, arm, base, keys, B=10000):
     repos = {name: sp.load(d, arm, base)[0] for name, d in runs}
@@ -64,7 +67,10 @@ def main():
     lex, lex_repo, lex_q, _ = compare(runs, "laya-adaptive", "laya-lex", keys)
     lexb, _, lexb_q, _ = compare(runs, "laya-lex", "baseline", keys)
     out = {"version": "v8", "n_tasks": n, "repos": [r for r, _ in runs], "model": "sonnet", "arm": "laya-adaptive",
-           "metrics": pooled, "per_repo": per_repo,
+           "metrics": {k: {"label": LABELS[k], **v} for k, v in pooled.items()},
+           "chart_metrics": ["reading_tokens", "turns", "cost", "total_input", "wall_clock"],
+           "chart_title": "With laya-codex, Claude reads less code and takes fewer turns",
+           "per_repo": per_repo,
            "answer_recall": {"baseline": q["answer_recall"]["baseline"], "laya": q["answer_recall"]["laya-adaptive"],
                              "diff": q["answer_recall"]["diff"], "lo": q["answer_recall"]["lo"], "hi": q["answer_recall"]["hi"]},
            "answer_recall_both_turns": {"baseline": q["answer_recall_both_turns"]["baseline"],
@@ -90,7 +96,28 @@ def main():
         out["first_gold_read_turn"] = {"baseline": round(mean(pooled_rows["baseline"], "first_gold_read_turn"), 2),
                                        "laya": round(mean(pooled_rows["laya-adaptive"], "first_gold_read_turn"), 2),
                                        "lex": round(mean(pooled_rows["laya-lex"], "first_gold_read_turn"), 2)}
-    json.dump(out, open(a.out, "w"), indent=1)
+        base, laya = pooled_rows["baseline"], pooled_rows["laya-adaptive"]
+        out["reads"] = {  # scripts/charts.py: reads chart
+            "read_precision": {"label": "Read precision", "baseline": mean(base, "read_precision"),
+                               "laya": mean(laya, "read_precision"), "better": "higher", "fmt": "{:.2f}"},
+            "gold_seen": {"label": "Relevant code found", "baseline": mean(base, "read_recall"),
+                          "laya": mean(laya, "read_recall"), "better": "higher", "fmt": "{:.0%}"},
+            "first_gold_turn": {"label": "Turn of first relevant Read", "baseline": mean(base, "first_gold_read_turn"),
+                                "laya": mean(laya, "first_gold_read_turn"), "better": "lower", "fmt": "{:.1f}"},
+            "wasted_read_tokens": {"label": "Wasted read tokens", "baseline": round(mean(base, "wasted_read_tokens")),
+                                   "laya": round(mean(laya, "wasted_read_tokens")), "better": "lower", "fmt": "{:,.0f}"},
+        }
+        turns = lambda rs, k: sorted((r[k] for r in rs), key=lambda x: (x is None, x or 0))
+        out["journey"] = {  # scripts/charts.py: journey chart
+            "note": "Assistant turn at which a gold (correct) file first entered Claude's context; 0 = before "
+                    "Claude's first turn (laya-codex injected its code with the prompt); null = never.",
+            "baseline": turns(base, "first_gold_seen_turn"),
+            "laya_seen": turns(laya, "first_gold_seen_turn"),
+            "laya_read": turns(laya, "first_gold_read_turn"),
+            "lex_seen": turns(pooled_rows["laya-lex"], "first_gold_seen_turn"),
+        }
+    with open(a.out, "w") as f:
+        f.write(json.dumps(out, indent=1) + "\n")
     print(json.dumps(out, indent=1))
 
 

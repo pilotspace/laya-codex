@@ -7,7 +7,7 @@ settings/plugins/MCP (`--setting-sources project --strict-mcp-config`), tools Re
 ## v8 — benchmark v2 (3 repos, 60 tasks)
 
 **Bottom line.** The v7 result did not hold up over three repositories:
-- Stock Claude Code reads **38% less code** with laya (CI excludes zero), takes **21% fewer
+- With laya-codex, Claude Code reads **38% less code** (CI excludes zero), takes **21% fewer
   turns** and costs **10% less**.
 - Wall-clock did not move: **+3.5%** (n.s.).
 - Total input tokens did not move: −3.7% (n.s.).
@@ -37,7 +37,7 @@ settings/plugins/MCP (`--setting-sources project --strict-mcp-config`), tools Re
   - Gold = the source files the commit touched. For httpx and hono that includes test files, so
     turn-1 recall (which asks for the implementation) is stricter there. Recall over both prompts
     (the second prompt asks for tests) is the fairer quality measure.
-- **Arms.** All arms use the same `laya` 0.1.2 binary (`a38c8be`), the same Claude Code 2.1.280,
+- **Arms.** All arms use the same laya-codex 0.1.2 binary (then named `laya`) (`a38c8be`), the same Claude Code 2.1.280,
   `--model sonnet`, 2 prompts per session and tools Read/Grep/Glob. Order is interleaved at random
   per task.
   - `baseline`: stock Claude Code.
@@ -61,7 +61,7 @@ settings/plugins/MCP (`--setting-sources project --strict-mcp-config`), tools Re
 
 ### Headline: laya-adaptive (v0.1.2 defaults) vs stock Claude Code
 
-Each cell is the change, the 95% CI, and the number of tasks where laya was lower.
+Each cell is the change, the 95% CI, and the number of tasks where laya-codex was lower.
 
 | metric | moon (Rust) | httpx (Python) | hono (TS) | **pooled, 60 tasks** |
 |---|---|---|---|---|
@@ -126,6 +126,23 @@ The Laya effect only favoured the model on hono, and flipped sign between repos.
 v1/v2 ablations, where the Laya-vs-lexical sign also flipped. Over 60 tasks, the evidence now
 points *against* paying for the model by default.
 
+**Robustness of the +13% (added after review).** Per task, from the raw rows:
+- the median per-task ratio is +13.6% and the geometric mean +15.3%, and `laya-adaptive` was
+  faster on 21 of 60 tasks, so the gap is not produced by one outlier;
+- dropping the 3 worst tasks (moon `14ca4f0c12`, moon `624822d46e`, httpx `a682f6f1c7`) leaves
+  +6.9% [−3.6, +17.9], which is not significant; turns go from +12.0% to +6.9% [−2.3, +16.4];
+- the model's own scoring (~1.1 s per prompt) is about 4 points of it; the rest is Claude taking
+  more turns after a different injection.
+
+**Decision (2026-09-23): the model stays on by default.** Choosing which code blocks replace
+Claude's own Search and Read is what laya-codex is for, and offline the model ranks those blocks
+far better than keywords (MRR 0.702 vs 0.480, calibrated). This run says that advantage does not
+yet reach the end-to-end session. Closing that gap, with a larger model-vs-keywords run to confirm
+it, is the top roadmap item. `LAYA_CODEX_NO_MODEL=1` gives lexical-only ranking.
+
+Environment variables in this section use the v0.1.x names (`LAYA_BUDGET_MS`, `LAYA_MEMO`,
+`LAYA_MOON_BIN`); since v0.2.0 they are `LAYA_CODEX_*`.
+
 ### Read accuracy (`bench/read_accuracy.py`, pooled over 60 tasks)
 
 | arm | Read calls | read precision | gold code seen | wasted read tokens | first gold Read at turn |
@@ -147,7 +164,7 @@ Per repo (`bench/results/claude-v8/read-accuracy.md`):
    - Stock Claude reads only 3.3k tokens per session on httpx and 4.5k on hono.
    - So on those repos, reading plus injected tokens *rises* (+70%, +22%), and total input and
      cost stay flat.
-   - The 38% code-reading cut is real, but on small repos laya mostly swaps Reads for injected
+   - The 38% code-reading cut is real, but on small repos laya-codex mostly swaps Reads for injected
      tokens.
 2. **Time goes to the tail, not to finding code.** In every arm, 87–90% of moon wall-clock comes
    after the last new gold file is found. That time goes to verification greps, the second
@@ -159,7 +176,7 @@ Per repo (`bench/results/claude-v8/read-accuracy.md`):
 3. **The largest misses.**
    - moon `14ca4f0c12`: +60 s vs baseline, 28 vs 29 turns (lex: 14).
    - moon `624822d46e`: +56 s, 21 vs 17 turns.
-   - hono `d982f637eb`: +84 s, where *both* laya arms went long (17 and 19 turns vs 10).
+   - hono `d982f637eb`: +84 s, where *both* laya-codex arms went long (17 and 19 turns vs 10).
    - These are long verification tails after the gold file was already in context, not retrieval
      misses.
 
@@ -193,16 +210,16 @@ more than one 20-task run.
     exits and 0 timeouts.
   - Total spend was about $51 including the discarded sessions below.
 - **Incident: disk full.** The machine's data volume was about 96% full. Moon's default guard
-  (`--disk-free-min-pct 5`) paused writes, and every laya query failed (`query_failed`) from moon
+  (`--disk-free-min-pct 5`) paused writes, and every laya-codex query failed (`query_failed`) from moon
   session 21 on.
-  - 15 moon laya-arm sessions had run with no injection. They are archived in
+  - 15 moon laya-codex-arm sessions had run with no injection. They are archived in
     `moon/runs.dropped.jsonl` ($5.41) and were re-run once, all successfully.
   - For the re-run, Moon was restarted through an `LAYA_MOON_BIN` wrapper that adds
     `--disk-free-min-pct 1`, and its AOF was compacted from 4.1 GB to 63 MB. No later session
     lost its injection.
-  - Side effect: on 8 moon tasks the laya arms ran about an hour after their baseline, so those
+  - Side effect: on 8 moon tasks the laya-codex arms ran about an hour after their baseline, so those
     pairs were not interleaved in time.
-  - Sensitivity: on those 8 tasks both laya arms look worse than on the other 12. Adaptive/baseline
+  - Sensitivity: on those 8 tasks both laya-codex arms look worse than on the other 12. Adaptive/baseline
     wall ratio is 1.28 vs 1.06, and lex/baseline is 1.00 vs 0.80.
   - Excluding them does not change any verdict. The adaptive-vs-lex comparison is unaffected,
     since both arms were re-run together.

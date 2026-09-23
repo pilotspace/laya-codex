@@ -254,22 +254,26 @@ files and never needed the whole file.
 
 Without laya-codex, Claude Code finds code by searching: Grep, Glob, then whole-file Reads, many of
 them of the wrong file. laya-codex front-loads a small, ranked answer (about 1.5–2.5k tokens), so
-fewer of those steps happen. From [RESULTS.md](RESULTS.md) (v0.1.0 defaults vs stock Claude
-Code, 20 held-out tasks, two prompts per session, paired, Claude Sonnet):
+fewer of those steps happen. From [RESULTS.md](RESULTS.md) (benchmark v2: v0.1.2 defaults vs
+stock Claude Code, 60 tasks on moon, httpx and hono, two prompts per session, paired, Claude
+Sonnet):
 
 | | stock Claude Code | with laya-codex |
 |---|---|---|
-| code-reading tokens (Read/Grep/Glob output) | 100% | **−50.1%** (95% CI −61.6%…−33.0%) |
-| total input tokens | 100% | −26.8% |
-| wall-clock | 100% | −17.4% (CI −31.5%…−1.0%) |
-| read precision | 0.373 | 0.546 |
-| first Read of a gold file | turn 8.2 | turn 4.0 |
-| wasted Read tokens per task | 4,993 | 2,118 |
-| answer recall | 0.975 | 0.933 (difference not significant) |
+| code-reading tokens (Read/Grep/Glob output) | 100% | **−38.2%** (95% CI −50.8%…−21.8%) |
+| turns | 100% | −20.9% (CI −27.7%…−13.7%) |
+| total input tokens | 100% | −3.7% (not significant) |
+| wall-clock | 100% | +3.5% (not significant) |
+| correct code in context before the first turn | 0 of 60 tasks | 46 of 60 tasks |
+| read precision | 0.595 | 0.624 |
+| first Read of a gold file | turn 5.9 | turn 3.3 |
+| wasted Read tokens per task | 2,005 | 1,187 |
+| answer recall, first prompt | 0.815 | 0.899 (+0.083, significant) |
 
-The injected text itself costs tokens. Counting reading and injected tokens together, the saving
-is −27.9%. That is why the injection is capped at 9,500 characters and adaptive mode never
-re-sends code. Inlining more saved little and cost more.
+The injected text itself costs tokens. On small repositories, where stock Claude reads little,
+it roughly cancels the reading it saves (reading plus injected tokens: +7%, not significant,
+pooled). That is why the injection is capped at 9,500 characters and adaptive mode never re-sends
+code. Inlining more saved little and cost more.
 
 ## 7. Tuning
 

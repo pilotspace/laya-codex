@@ -1,10 +1,11 @@
 # laya-codex roadmap
 
-laya-codex hands Claude Code the code a task needs before Claude goes looking for it. v0.1.0
-shows the idea works: **−50% code-reading tokens** and **−17% wall-clock** against stock
-Claude Code on 20 held-out tasks ([docs/RESULTS.md](docs/RESULTS.md)). The rest of the road is
-about three things: reaching the time goal, proving the effect beyond one repository, and making
-laya-codex something people can install in one line and forget about.
+laya-codex hands Claude Code the code a task needs before Claude goes looking for it. Across
+three repositories and 60 tasks (benchmark v2), Claude reads **38% less code** and takes **21%
+fewer turns**, and its first answers name the right files more often; task time does not change yet
+([docs/RESULTS.md](docs/RESULTS.md)). The rest of the road is about three things: turning the
+Laya model's better ranking into an end-to-end gain, reaching the time goal, and keeping laya-codex
+something people can install in one line and forget about.
 
 ## Goals and how they are measured
 
@@ -79,16 +80,24 @@ Make the first five minutes painless and the tool visible where Claude Code user
 
 ## v0.3 — reach the time goal and widen the evidence
 
-- **Close the time gap (−17% → −30%).** Time is now spent in the final answer and verification
-  turns (forensics §6). Candidates:
+- **Close the time gap (no measurable change today → −30%).** Time is spent in the final answer and
+  verification turns, after the right code is already in context (forensics §6, v8). Candidates:
   - richer usage lists for the identifiers the answer names;
   - `search` (MCP) as the cheap default for follow-up lookups;
   - fix third-file misses on multi-file tasks (e.g. the `warm_search.rs` pattern).
 - **Per-repo IDF-aware term selection** so generic chunks stop recurring across unrelated tasks.
 - **Benchmark v2:** done for localisation tasks (v8: moon, httpx, hono; 60 tasks;
   [docs/RESULTS.md](docs/RESULTS.md)).
-  - Pooled, the Laya model was 13% *slower* than lexical-only ranking, with a CI that excludes
-    zero, so the default needs re-deciding.
+  - Pooled, sessions with the Laya model were 13% longer than with lexical-only ranking [+2, +27].
+    The model's scoring is ~4% of that; the rest is extra turns, and the sign flips by repository
+    (hono −10%). Dropping the 3 worst tasks leaves +7% [−4, +18], not significant.
+  - **Decision (2026-09-23): the model stays on by default.** Choosing which code blocks replace
+    Claude's own searching and reading is what laya-codex is for, and the model ranks those blocks
+    far better offline (MRR 0.702 vs 0.480). The work item is to make that show up end to end:
+    fewer verification turns after an injection, a tighter score budget, and a re-run that
+    separates model from keywords with more tasks. `LAYA_CODEX_NO_MODEL=1` stays the opt-out.
+  - **Moon's append-only log grew to 4.1 GB** during the run and Moon paused writes on a nearly
+    full disk. laya-codex should compact it automatically.
   - The fixed ~3.4k-token injection exceeds what stock Claude reads on small repos.
   - SWE-bench-style edit tasks are still open.
 - **Linux performance:** a smaller distilled re-ranker or a CUDA path, so Linux users get the

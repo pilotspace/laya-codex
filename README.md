@@ -2,7 +2,8 @@
 
 # laya-codex
 
-**Claude Code finds the right code faster, and reads half as much to get there.**
+**Claude Code gets the right code with your prompt: it reads 38% less, takes 21% fewer turns, and
+names the right files more often.**
 
 laya-codex indexes your repository on your machine and, before Claude starts each task, gives it the
 code that task needs. Claude skips most of the grep-and-open-files hunt.
@@ -15,7 +16,7 @@ code that task needs. Claude skips most of the grep-and-open-files hunt.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-savings-dark.svg">
-  <img alt="With laya-codex, Claude Code reads 50% fewer code tokens, uses 27% fewer input tokens, costs 27% less, takes 23% fewer turns and finishes 17% faster (paired benchmark, 20 tasks, 95% confidence intervals)" src="docs/assets/benchmark-savings-light.svg" width="760">
+  <img alt="With laya-codex, Claude Code reads 38% fewer code tokens, takes 21% fewer turns and costs 10% less; total input (−3.7%) and wall-clock time (+3.5%) show no significant change (paired benchmark, 60 tasks on three repositories, 95% confidence intervals)" src="docs/assets/benchmark-savings-light.svg" width="760">
 </picture>
 
 </div>
@@ -72,7 +73,7 @@ helping from the next prompt. To check the setup, run `laya-codex doctor --repo 
 |---|---|---|
 | **What Claude has before its first turn** | Only your prompt | Your prompt, plus the function that does the check (`check_target`), its code, and the line that calls it |
 | **What Claude does first** | Searches with grep and opens files until it finds the check | Reads the check it was given and starts fixing it |
-| **Turn at which a correct file is in context** (benchmark median, 20 tasks) | 6.5 | **0** (15 of 20 tasks) |
+| **Turn at which a correct file is in context** (benchmark median, 60 tasks) | 5.5 | **0** (46 of 60 tasks) |
 
 What laya-codex added to the prompt, trimmed from real output on this repository:
 
@@ -95,12 +96,12 @@ laya-codex had one in context before Claude's first turn in most tasks:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-journey-dark.svg">
-  <img alt="Share of tasks with a correct file in Claude's context by turn: with laya-codex 75% before the first turn (median turn 0); stock Claude Code starts at turn 4 (median 6.5)" src="docs/assets/benchmark-journey-light.svg" width="760">
+  <img alt="Share of tasks with a correct file in Claude's context by turn: with laya-codex 77% before the first turn (median turn 0); stock Claude Code starts at turn 3 (median 5.5)" src="docs/assets/benchmark-journey-light.svg" width="760">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-reads-dark.svg">
-  <img alt="Read behaviour: precision 0.37 → 0.55, relevant code found 87% → 93%, first relevant Read at turn 8.2 → 4.0, wasted read tokens 4,993 → 2,118" src="docs/assets/benchmark-reads-light.svg" width="760">
+  <img alt="Read behaviour: precision 0.59 → 0.62, relevant code found 82% → 91%, first relevant Read at turn 5.9 → 3.3, wasted read tokens 2,005 → 1,187" src="docs/assets/benchmark-reads-light.svg" width="760">
 </picture>
 
 **More examples** in [docs/use-cases.md](docs/use-cases.md):
@@ -112,10 +113,13 @@ laya-codex had one in context before Claude's first turn in most tasks:
 
 ## Why you might want it
 
-- **Lower bills and longer sessions.** Claude reads about half as many code tokens, so it
-  costs 27% less per task and uses up the context window more slowly.
-- **Faster answers.** 23% fewer turns and 17% less wall-clock time per task, because
-  Claude doesn't have to search for the code first.
+- **Claude starts with the right code.** On 46 of 60 benchmark tasks, the code the task needed
+  arrived with the prompt, so Claude skipped most of the grep-and-open-files hunt and took 21%
+  fewer turns.
+- **Longer sessions, lower bills.** Claude reads 38% fewer code tokens, so it uses up the context
+  window more slowly, and a task costs 10% less.
+- **Better first answers.** On the first question of each task, Claude named the right files more
+  often (answer recall 0.82 → 0.90).
 - **Nothing to learn.** It runs through Claude Code's own hooks. You keep prompting as usual.
 - **Everything stays on your machine.** Indexing and ranking run locally, with no server, account or
   telemetry. Only the code laya-codex adds to a prompt goes to Anthropic, the same way code Claude
@@ -125,27 +129,40 @@ laya-codex had one in context before Claude's first turn in most tasks:
 
 ## Benchmark
 
-We compared stock Claude Code with Claude Code plus laya-codex on 20 real code-change tasks held out
-from training. The tasks come from the history of [pilotspace/moon](https://github.com/pilotspace/moon), a Rust
-database. Each session asks two questions, both arms use the same model (Claude Sonnet), and
-all numbers are paired with 95% bootstrap confidence intervals.
+We compared stock Claude Code with Claude Code plus laya-codex on 60 real code-change tasks from
+three open-source repositories: [moon](https://github.com/pilotspace/moon) (Rust),
+[httpx](https://github.com/encode/httpx) (Python) and [hono](https://github.com/honojs/hono)
+(TypeScript), 20 tasks each, none of them used in training. Each task comes from a commit in the
+repository's history, and each session asks two questions: where the change goes, then which tests
+cover it. Both arms use the same model (Claude Sonnet), and all numbers are paired, with 95%
+bootstrap confidence intervals.
 
 | vs stock Claude Code | change | 95% CI |
 |---|---|---|
-| Code-reading tokens | **−50.1%** | −61.6% … −33.0% |
-| Total input tokens | −26.8% | −42.2% … −6.4% |
-| Cost | −27.2% | −39.2% … −11.1% |
-| Turns | −23.4% | −34.1% … −10.5% |
-| Wall-clock time | **−17.4%** | −31.5% … −1.0% |
-| Answer recall | 0.933 vs 0.975 | difference −0.042 … 0.000, not significant |
+| Code-reading tokens | **−38.2%** | −50.8% … −21.8% |
+| Turns | **−20.9%** | −27.7% … −13.7% |
+| Cost | −9.9% | −18.7% … −0.4% |
+| Total input tokens | −3.7% | −16.9% … +11.9%, not significant |
+| Wall-clock time | +3.5% | −6.2% … +14.8%, not significant |
+| Answer recall, first question | **0.90 vs 0.82** | difference +0.03 … +0.14 |
+| Answer recall, both questions | 0.96 vs 0.93 | difference −0.01 … +0.08, not significant |
+
+Code reading fell on every repository: −37% on moon, −32% on httpx and −47% on hono.
 
 **Limits of this result:**
-- **One repository and 20 tasks.** A three-repository benchmark (Rust, Python, TypeScript) is in progress.
-- **Time goal not met.** Our target is −30% wall-clock, and this run reached −17%.
-- **Model vs keywords not separated yet.** With 20 tasks, the benchmark can't tell how much the Laya model adds over plain keyword ranking.
+- **Not faster yet.** Task time did not change. Most of a session goes to checking and writing
+  the answer after the right code is already in context (87–90% of it on moon), and laya-codex
+  doesn't shorten that part yet. Our −30% time goal is not met.
+- **An earlier single-repository run didn't replicate.** The first benchmark (v7 in the results)
+  measured −50% reading and −17% time on the same 20 moon tasks; this run measured −37% and +14%.
+  Treat any single 20-task result as noisy.
+- **Small repositories trade reads for injected code.** Stock Claude already reads little on httpx
+  and hono, so the code laya-codex adds roughly cancels what it saves, and total input doesn't fall.
+- **Scope.** Tasks that find and explain code, not edits; one model (Sonnet).
 
-Full method, ablations and raw data: [docs/RESULTS.md](docs/RESULTS.md). To regenerate the
-charts: `python3 scripts/charts.py bench/results/headline-v7.json docs/assets`.
+Full method, per-repository results, the model-vs-keywords comparison and raw data:
+[docs/RESULTS.md](docs/RESULTS.md). To regenerate the charts:
+`python3 scripts/charts.py bench/results/headline-v8.json docs/assets`.
 
 ## How it works
 
@@ -210,18 +227,27 @@ How well each stage ranks the files a real change touched, over the 40 most rece
 On a separate development set, the full blended pipeline reached an MRR of 0.724, against
 0.602 for the model alone and 0.678 with the model weighted more heavily.
 
-**What isn't proven yet:** in the end-to-end Claude Code benchmark, 20 tasks aren't enough to
-separate the model's contribution from keyword ranking alone, and the two have traded places
-between runs. Benchmark v2 (three repositories, including a keyword-only arm) is measuring
-exactly that. Without the model, for example with `--no-model` or on Linux, laya-codex still
-works on keyword ranking, as in the examples above.
+**What the end-to-end benchmark shows so far.** Benchmark v2 included a keyword-only arm: the
+same hooks with the model switched off.
+- Over 60 tasks, the model did not put more correct files in front of Claude than keyword ranking
+  alone (73 vs 76 files inlined).
+- Sessions with the model ran 13% longer (95% CI +2% … +27%). Its own scoring accounts for about
+  1 s per prompt, around 4% of a session; the rest came from Claude taking more turns.
+- The effect changes sign by repository (hono was 10% *faster* with the model) and between earlier
+  runs.
+
+We keep the model on. Choosing which code blocks Claude gets, instead of what it would find by
+searching and reading, is the decision laya-codex exists to make, and the model makes it far
+better than keywords on ranking quality (table above). Turning that into an end-to-end gain is the
+top item on the roadmap. To rank by keywords only, set `LAYA_CODEX_NO_MODEL=1` or install with
+`--no-model`; everything else works the same.
 
 ## FAQ
 
 <details>
 <summary><b>What does it cost to run?</b></summary>
 
-- **Money:** nothing. laya-codex is free and runs locally, and it lowers what you pay Claude (−27% per task in the benchmark).
+- **Money:** nothing. laya-codex is free and runs locally, and it lowers what you pay Claude (−10% per task in the benchmark).
 - **Disk:** about 45 MB for the binaries and about 850 MB for the model.
 - **Memory:** the daemon uses about 1 GB of RAM while it is running.
 
@@ -286,8 +312,10 @@ output.
 - **v0.2.0, current:** one name everywhere: the CLI is `laya-codex` (was `laya`), env vars are
   `LAYA_CODEX_*`; a Homebrew formula; the plugin, crash isolation and daemon limits from 0.1.x.
 - **Next:**
-  - benchmark v2 across three repositories and languages;
-  - closing the gap from −17% to the −30% time goal;
+  - turning the model's better ranking into an end-to-end gain (benchmark v2 shows none yet);
+  - shortening the checking-and-answering tail, where the time goal is lost;
+  - smaller injections on small repositories;
+  - compacting Moon's data log automatically (it reached 4.1 GB during the benchmark);
   - a faster model for Linux.
 
 See [ROADMAP.md](ROADMAP.md) for the full plan to 1.0.
@@ -377,13 +405,22 @@ cargo test --workspace --release
 <details>
 <summary><b>Reproducing the benchmark</b></summary>
 
+Pinned commits and task sets are listed in [docs/RESULTS.md](docs/RESULTS.md) (v8). For each
+repository:
+
 ```sh
-python3 bench/run_bench.py tasks --repo <moon clone> --skip 40 --n 20 --out bench/tasks.jsonl
-laya-codex index <moon clone>
-python3 bench/run_bench.py run --repo <moon clone> --tasks bench/tasks.jsonl \
-    --arms baseline,laya-adaptive --turns 2 --out /tmp/bench-run
-python3 bench/stats.py /tmp/bench-run laya-adaptive
-python3 bench/read_accuracy.py /tmp/bench-run bench/tasks.jsonl
+python3 bench/run_bench.py tasks --repo <clone> --skip 40 --n 20 [--code-only] --out bench/tasks-v8/<repo>.jsonl
+laya-codex index <clone>
+python3 bench/run_bench.py run --repo <clone> --tasks bench/tasks-v8/<repo>.jsonl \
+    --arms baseline,laya-adaptive,laya-lex --turns 2 --out /tmp/bench/<repo>
+```
+
+Then pool the three runs:
+
+```sh
+python3 bench/stats_pooled.py laya-adaptive baseline /tmp/bench/moon /tmp/bench/httpx /tmp/bench/hono
+python3 bench/read_accuracy.py /tmp/bench/moon bench/tasks-v8/moon.jsonl /tmp/bench/httpx bench/tasks-v8/httpx.jsonl \
+    /tmp/bench/hono bench/tasks-v8/hono.jsonl
 ```
 
 </details>
