@@ -91,26 +91,30 @@ def table(rows):
             sum(first) / max(1, len(first)), len(first), len(rs)))
 
 
-args = sys.argv[1:]
-json_out = None
-if "--json" in args:
-    i = args.index("--json")
-    json_out = args[i + 1]
-    del args[i:i + 2]
-pairs = list(zip(args[0::2], args[1::2]))
-pooled = defaultdict(list)
-for out, tasks_path in pairs:
-    rows = defaultdict(list)
-    collect(out, tasks_path, rows)
+def main():
+    args = sys.argv[1:]
+    json_out = None
+    if "--json" in args:
+        i = args.index("--json")
+        json_out = args[i + 1]
+        del args[i:i + 2]
+    pairs = list(zip(args[0::2], args[1::2]))
+    pooled = defaultdict(list)
+    for out, tasks_path in pairs:
+        rows = defaultdict(list)
+        collect(out, tasks_path, rows)
+        if len(pairs) > 1:
+            print("\n%s" % out)
+        table(rows)
+        for a, rs in rows.items():
+            pooled[a] += rs
     if len(pairs) > 1:
-        print("\n%s" % out)
-    table(rows)
-    for a, rs in rows.items():
-        pooled[a] += rs
-if len(pairs) > 1:
-    print("\npooled (%d run dirs)" % len(pairs))
-    table(pooled)
+        print("\npooled (%d run dirs)" % len(pairs))
+        table(pooled)
+    if json_out:
+        with open(json_out, "w") as f:
+            json.dump([r for rs in pooled.values() for r in rs], f, indent=1)
 
-if json_out:
-    with open(json_out, "w") as f:
-        json.dump([r for rs in pooled.values() for r in rs], f, indent=1)
+
+if __name__ == "__main__":
+    main()
