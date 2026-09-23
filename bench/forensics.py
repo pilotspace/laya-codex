@@ -42,7 +42,7 @@ import sys
 from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_REPO = "/Users/tindang/.claude/jobs/f80e04be/tmp/bench/moon"
+DEFAULT_REPO = os.environ.get("LAYA_BENCH_REPO", "moon")  # the benchmarked moon checkout
 CLASSES = ["a_redundant", "d_expansion", "b_map_hit", "b2_map_file", "c_gold_miss", "f_other", "h_hook_file",
            "e_grep_locate", "g_grep_explore"]
 READ_CLASSES = CLASSES[:7]

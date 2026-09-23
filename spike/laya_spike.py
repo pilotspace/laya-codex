@@ -3,7 +3,7 @@
 Ground truth comes from git history: commit subject = task, files touched by the
 commit = relevant files. Corpus = 40-line windows (stride 30) of source files at HEAD.
 
-    python3 spike/laya_spike.py --repo ~/workspaces/tind-repo/moon --model <laya dir> --n 40
+    python3 spike/laya_spike.py --repo <moon checkout> --model <laya dir> --n 40
 """
 import argparse
 import json

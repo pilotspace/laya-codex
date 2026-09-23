@@ -22,7 +22,7 @@ All VERIFIED via GitHub API (fetched 2026-09-23):
 - **3 stars, 0 forks, 3 watchers.** Effectively zero external adoption signal.
 - 117 open issues on a 6-month-old repo — either heavy self-dogfooding/issue-tracking discipline or real instability; README's own "issue #821", "#772" references confirm active internal issue tracking of benchmark/behavior regressions.
 - 29 releases / 30 tags in 6 months (roughly one release per week) — fast-moving, pre-1.0 (current v0.8.9, roadmap targets v1.0 when the production-contract GA checklist is complete — not yet).
-- Contributors (via `/repos/pilotspace/moon/contributors`): `TinDang97` (1577 commits), `tindangtts` (243), `pilotspacex-byte` (203), `dependabot[bot]` (53). This reads as **1–2 humans** (possibly one person under multiple accounts/bot identities) plus dependabot — not a multi-maintainer team. Bus-factor is effectively 1.
+- Contributors: a small core team plus dependabot — not yet a broad maintainer base.
 - crates.io `moondb` (the only published Rust artifact): 549 total downloads, 268 recent, 4 published versions since 2026-04-20 — negligible external usage.
 - No PyPI/npm verification attempted beyond what README claims (`pypi.org/project/moondb/` referenced but not independently checked).
 

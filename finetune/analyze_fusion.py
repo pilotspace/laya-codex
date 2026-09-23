@@ -2,7 +2,7 @@
 Spearman(Laya score, BM25 rank), first-gold rank under BM25 / Laya / RRF, and alternative fusions
 (RRF with different k, weighted RRF, BM25-score x P).
 
-    python3 finetune/analyze_fusion.py --repo moon=~/workspaces/tind-repo/moon --models laya-base probe-s150
+    python3 finetune/analyze_fusion.py --repo moon=<moon checkout> --models laya-base probe-s150
 """
 import argparse
 import json

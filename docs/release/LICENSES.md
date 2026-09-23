@@ -96,7 +96,7 @@ BSD and ISC require the notice to travel with binaries; this file satisfies that
 1. **Moon's LICENSE text is not the canonical Apache-2.0 text.** At `pilotspace/moon` HEAD the
    `LICENSE` file is a paraphrase of Apache-2.0 (e.g. §4 "You may add Your own license statement…
    sublicense, and/or sell", reworded "Contribution" and patent clauses), which is why GitHub
-   cannot detect it. The local clone used by the benchmark (`~/workspaces/tind-repo/moon`,
+   cannot detect it. The local clone used by the benchmark (pinned commit `8bba3ced`,
    v0.1.12) has a **GPL-3.0** `LICENSE` while its `Cargo.toml` says Apache-2.0. Moon belongs to
    the same author, so the fix is on Moon's side: replace `LICENSE` with the verbatim
    apache.org text. Until then, tell users Moon is licensed per its own repository; laya-codex

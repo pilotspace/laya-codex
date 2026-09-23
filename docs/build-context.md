@@ -35,7 +35,7 @@ server. Goal: −50% codebase-reading tokens, −30% task time, no drop in task 
 - **Spike result (zero-shot, moon repo, 40 commits):** BM25 MRR 0.480 → BM25⊕Laya RRF 0.591;
   Laya's P≥0.5 is not calibrated on code (precision at P≥0.5 = base rate). PyTorch MPS fp32
   latency 4.7 s for 32×~450-token sequences. ⇒ fine-tune track + latency work are required.
-- **Moon**: binary `~/workspaces/tind-repo/moon/target/release/moon` (built). Start:
+- **Moon**: binary built from a pilotspace/moon checkout (`cargo build --release`). Start:
   `moon --port <p> --dir <dir> --shards 1`. `FT.CREATE idx ON HASH PREFIX 1 <pfx> SCHEMA f TEXT g TAG`
   works; `FT.SEARCH idx "a b"` is **AND-only** (`|` OR unsupported), returns `__bm25_score`.
   BM25 is additive over terms ⇒ emulate OR by pipelining one FT.SEARCH per term and summing.

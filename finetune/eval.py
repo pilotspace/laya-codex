@@ -10,7 +10,7 @@
 Scores are cached per (model, repo, budget) so models can be run separately and merged.
 
     python3 finetune/eval.py --models laya-base=~/.cache/laya-codex/models/laya-base laya-code=~/.cache/laya-codex/models/laya-code \
-        --repos moon=~/workspaces/tind-repo/moon pilot-space=~/workspaces/tind-repo/pilot-space --out spike/results/finetune_eval.json
+        --repos moon=<moon checkout> pilot-space=<pilot-space checkout> --out spike/results/finetune_eval.json
 """
 import argparse
 import json

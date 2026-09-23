@@ -11,3 +11,9 @@ tmp/
 
 # Benchmark scratch output
 bench/results/dev-dumps/
+
+# Local AI-assistant tooling (kept out of the published repo)
+.add/
+.serena/
+.claude/
+CLAUDE.md
