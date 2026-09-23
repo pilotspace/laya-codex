@@ -171,7 +171,9 @@ def run_one(arm, task, args, cfg_dir):
     os.makedirs(os.path.dirname(hook_log), exist_ok=True)
     if os.path.exists(hook_log):
         os.remove(hook_log)
-    env = dict(os.environ, LAYA_HOOK_LOG=hook_log)
+    # LAYA_MEMO=0: score every prompt cold, as a new prompt is in real use; otherwise whichever arm
+    # runs a task first pays the model run and the others hit its cache.
+    env = dict(os.environ, LAYA_HOOK_LOG=hook_log, LAYA_MEMO=os.environ.get("LAYA_MEMO", "0"))
     prompts = [PROMPT.format(task=task["task"])] + [FOLLOWUP] * (args.turns - 1)
     sid = str(uuid.uuid4())
     all_lines, wall, rcs = [], 0.0, []
@@ -216,6 +218,9 @@ def run(args):
     if os.path.exists(res_path):
         done = {(r["arm"], r["task_id"]) for r in map(json.loads, open(res_path))}
     cfg_dir = render_configs(args.out)
+    # Restart the daemon so the first hook starts it with this run's environment (LAYA_MEMO etc.).
+    laya_bin = os.environ.get("LAYA_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya"))
+    subprocess.run([laya_bin, "stop"], capture_output=True)
     rng = random.Random(7)
     plan = [(a, t) for t in tasks for a in rng.sample(arms, len(arms))]  # interleave arms per task, random order
     for i, (arm, task) in enumerate(plan):

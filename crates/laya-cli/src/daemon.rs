@@ -14,7 +14,7 @@ use laya_rank::{Retriever, RetrieverConfig, Scope, SizingPolicy, SpanKey};
 
 use crate::config::{Config, rel_path, repo_root};
 use crate::indexer;
-use crate::protocol::{RenderReq, Request, Response};
+use crate::protocol::{ReadPlan, RenderReq, Request, Response};
 use crate::session::Sessions;
 
 /// Caches Laya probabilities in the store, keyed by (task, chunk content), so repeated or
@@ -26,6 +26,9 @@ pub struct MemoScorer {
     /// Set while a model run is in flight. A query that finds the model busy degrades to
     /// lexical ranking instead of queueing behind abandoned (timed-out) runs.
     busy: Arc<std::sync::atomic::AtomicBool>,
+    /// `false` (LAYA_MEMO=0): never serve cached probabilities, so every prompt pays the model
+    /// run as a new prompt does in real use (benchmarks compare arms under equal, cold scoring).
+    read_cache: bool,
 }
 
 struct BusyGuard<'a>(&'a std::sync::atomic::AtomicBool);
@@ -42,7 +45,14 @@ impl MemoScorer {
             store,
             model_tag: model_tag.to_string(),
             busy: Default::default(),
+            read_cache: true,
         }
+    }
+
+    /// Score every call with the model (results are still written, reads are skipped).
+    pub fn without_cache_reads(mut self) -> Self {
+        self.read_cache = false;
+        self
     }
 
     /// The model's busy flag, shared with other users of the same model (the scope classifier).
@@ -67,13 +77,12 @@ impl Scorer for MemoScorer {
         let mut out = vec![f32::NAN; chunks.len()];
         let mut miss = Vec::new();
         for (i, k) in keys.iter().enumerate() {
-            match self
-                .store
-                .memo_get(k)
-                .ok()
-                .flatten()
-                .and_then(|v| v.parse::<f32>().ok())
-            {
+            let cached = if self.read_cache {
+                self.store.memo_get(k).ok().flatten()
+            } else {
+                None
+            };
+            match cached.and_then(|v| v.parse::<f32>().ok()) {
                 Some(p) => out[i] = p,
                 None => miss.push(i),
             }
@@ -398,7 +407,18 @@ impl Daemon {
                 }
                 Response::Ok
             }
+            Request::ReadPlan {
+                repo,
+                session,
+                path,
+            } => Response::ReadPlan {
+                plan: self.read_plan(&repo, &session, &path),
+            },
         }
+    }
+
+    fn read_plan(&self, _repo: &str, _session: &str, _path: &str) -> Option<ReadPlan> {
+        None
     }
 }
 
@@ -508,7 +528,10 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
                     scorer.max_state_tokens = state_tokens;
                     let scorer = Arc::new(scorer);
                     let inner: Arc<dyn Scorer> = scorer.clone();
-                    let memo = MemoScorer::new(inner, Arc::clone(&d.store), &tag);
+                    let mut memo = MemoScorer::new(inner, Arc::clone(&d.store), &tag);
+                    if std::env::var("LAYA_MEMO").is_ok_and(|v| v == "0") {
+                        memo = memo.without_cache_reads();
+                    }
                     if use_scope {
                         let scope = LayaScope {
                             scorer,
@@ -651,6 +674,21 @@ mod tests {
         assert!((p1[0] - p2[1]).abs() < 1e-4 && (p1[1] - p2[0]).abs() < 1e-4);
         m.score("other task", &[&a]).unwrap();
         assert_eq!(inner.0.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn memo_scorer_without_cache_reads_scores_every_call() {
+        let inner = Arc::new(CountingScorer(AtomicUsize::new(0)));
+        let store: Arc<dyn Store> = Arc::new(MemoStore::default());
+        let m = MemoScorer::new(inner.clone(), store, "laya-code").without_cache_reads();
+        let a = chunk(10);
+        m.score("task", &[&a]).unwrap();
+        m.score("task", &[&a]).unwrap();
+        assert_eq!(
+            inner.0.load(Ordering::SeqCst),
+            2,
+            "every prompt is scored cold"
+        );
     }
 
     struct FixedScope(Option<Scope>);
