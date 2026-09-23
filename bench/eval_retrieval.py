@@ -60,10 +60,13 @@ def evaluate(args):
     tasks = [json.loads(l) for l in open(args.tasks)][: args.limit or None]
     rows, lat, modes = [], [], {}
     text_share = []
+    dump = open(args.dump, "w") if args.dump else None
     for t in tasks:
         r, ms = query(args.repo, t["task"], args.budget_ms)
         if r is None:
             continue
+        if dump:
+            dump.write(json.dumps({"task": t["task"], "gold": t["gold"], "result": r}) + "\n")
         lat.append(r["elapsed_ms"])
         modes[r["mode"]] = modes.get(r["mode"], 0) + 1
         files = [s["path"] for s in r["spans"]][:10]
@@ -107,6 +110,7 @@ def main():
     e.add_argument("--limit", type=int, default=0)
     e.add_argument("--tag", default="")
     e.add_argument("--out", default=None)
+    e.add_argument("--dump", default=None, help="write per-task results (task, gold, QueryResult) as JSONL")
     args = ap.parse_args()
     {"devset": devset, "score": evaluate}[args.cmd](args)
 

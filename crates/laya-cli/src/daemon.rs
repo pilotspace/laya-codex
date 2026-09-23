@@ -367,13 +367,13 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     }
     let state_tokens = env_num::<usize>("LAYA_STATE_TOKENS").unwrap_or(128);
     eprintln!("[laya] retriever config {base:?} state_tokens={state_tokens}");
-    let mut sizing = SizingPolicy::default();
-    if let Some(t) = env_num::<f32>("LAYA_TAU_FULL") {
-        sizing.tau_full = t;
-    }
-    if let Some(t) = env_num::<f32>("LAYA_TAU_MAP") {
-        sizing.tau_map = t;
-    }
+    // Tuned for laya-code on the dev set (bench/size_sweep.py): tau_full 0.45 halves inlined code
+    // vs 0.40 for -0.02 gold recall; map entries are cheap, so tau_map 0.10 keeps map recall.
+    let sizing = SizingPolicy {
+        tau_full: env_num::<f32>("LAYA_TAU_FULL").unwrap_or(0.45),
+        tau_map: env_num::<f32>("LAYA_TAU_MAP").unwrap_or(0.10),
+        ..SizingPolicy::default()
+    };
     let scope_p = env_num::<f32>("LAYA_SCOPE_P").unwrap_or(0.4);
     let use_scope = std::env::var("LAYA_SCOPE").map(|v| v != "0").unwrap_or(true);
     eprintln!("[laya] sizing {sizing:?} scope={use_scope} scope_p={scope_p}");
