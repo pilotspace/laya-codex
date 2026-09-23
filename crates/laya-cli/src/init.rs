@@ -56,8 +56,9 @@ pub struct Planned {
 /// The program laya-codex's hooks and MCP server should run: the bare `laya-codex` when the
 /// first `laya-codex` on `path_env` is (after resolving symlinks) the same file as `exe`, so the
 /// committed `.mcp.json` stays portable (and a Homebrew install does not pin its versioned Cellar
-/// path, since bin/laya-codex links to it); otherwise `exe` itself. A cwd-relative `PATH` entry (`.`, empty) ahead of the
-/// match makes the lookup depend on where Claude Code runs, so it also yields `exe`.
+/// path, since bin/laya-codex links to it); otherwise `exe` itself. A cwd-relative `PATH` entry
+/// (`.`, empty) ahead of the match makes the lookup depend on where Claude Code runs, so it also
+/// yields `exe`.
 pub fn program_for(exe: &Path, path_env: Option<&OsStr>) -> PathBuf {
     let fallback = exe.to_path_buf();
     let (Ok(me), Some(path)) = (exe.canonicalize(), path_env) else {
@@ -224,7 +225,7 @@ pub fn merge_settings(existing: Value, cmd: &str) -> Result<Value, String> {
     Ok(Value::Object(root))
 }
 
-/// Set `mcpServers.laya` (running `program`) in an `.mcp.json` object; `Err` if its shape is not
+/// Set `mcpServers.laya-codex` (running `program`) in an `.mcp.json` object; `Err` if its shape is not
 /// mergeable.
 pub fn merge_mcp(existing: Value, program: &Path) -> Result<Value, String> {
     let mut root = object(existing)?;

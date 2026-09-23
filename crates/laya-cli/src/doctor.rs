@@ -456,7 +456,7 @@ fn exe_found(exe: &str) -> bool {
         .is_some_and(|p| std::env::split_paths(&p).any(|d| is_executable(&d.join(exe))))
 }
 
-/// `mcpServers.laya` in `.mcp.json`, or the plugin's MCP server.
+/// `mcpServers.laya-codex` in `.mcp.json`, or the plugin's MCP server.
 pub fn check_mcp(root: &Path) -> Check {
     check_mcp_with(root, &user_home())
 }
@@ -471,7 +471,7 @@ pub fn check_mcp_with(root: &Path, home: &Path) -> Check {
         Some(cmd) => Check::new(
             "mcp",
             Level::Pass,
-            format!("mcpServers.laya -> {cmd}"),
+            format!("mcpServers.laya-codex -> {cmd}"),
             None,
         ),
         None if plugin_enabled(root, home).is_some() => Check::new(
@@ -859,7 +859,13 @@ mod tests {
                 fix: None
             }
         );
-        assert_eq!(check_mcp(&root).level, Level::Pass);
+        let m = check_mcp(&root);
+        assert_eq!(m.level, Level::Pass);
+        assert!(
+            m.detail.starts_with("mcpServers.laya-codex -> "),
+            "{}",
+            m.detail
+        );
 
         // A hook pointing at a binary that no longer exists.
         std::fs::remove_file(&exe).unwrap();
