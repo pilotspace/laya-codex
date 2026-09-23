@@ -78,7 +78,7 @@ fn call_tool(
     }
     let top_n = params["arguments"]["top_n"]
         .as_u64()
-        .map(|n| n.clamp(1, 20) as usize);
+        .map(|n| n.clamp(1, crate::protocol::MAX_TOP_N as u64) as usize);
     let req = Request::Query {
         repo: root.to_string_lossy().into_owned(),
         session: None,
@@ -123,8 +123,8 @@ pub fn serve(
             ),
         };
         if let Some(r) = reply {
-            writeln!(out, "{r}")?;
-            out.flush()?;
+            writeln!(out, "{r}").map_err(crate::sys::stdout_err)?;
+            out.flush().map_err(crate::sys::stdout_err)?;
         }
     }
     Ok(())

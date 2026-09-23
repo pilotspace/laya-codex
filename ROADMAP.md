@@ -24,7 +24,7 @@ laya something people can install in one line and forget about.
 | `install.sh` from GitHub Releases (laya + pinned Moon + model from Hugging Face, checksums verified) | everyone on macOS arm64 / Linux x86_64 | **v0.1.0** |
 | Hugging Face model `tindang/laya-code` | the re-ranker weights | **v0.1.0** |
 | Build from source (`cargo build --release -p laya-cli`) | contributors, other platforms | **v0.1.0** |
-| Claude Code plugin (hooks + MCP server in one `/plugin install`) | Claude Code users — the most direct channel | v0.2 |
+| Claude Code plugin (`/plugin marketplace add pilotspace/laya-codex`) | Claude Code users — the most direct channel | **v0.1.2** |
 | Homebrew tap `pilotspace/tap/laya` | macOS developers | v0.2 |
 | `laya upgrade` / `laya uninstall` | existing users | v0.2 |
 | Linux aarch64 and static musl builds | servers, containers, Graviton | v0.2 |
@@ -32,16 +32,22 @@ laya something people can install in one line and forget about.
 
 ## v0.1.x — hardening (patch releases)
 
-Security and robustness items from the v0.1.0 release review that did not block the release:
+Security and robustness items from the v0.1.0 release review that did not block the release.
 
-- **Panic isolation:** the release profile uses `panic = "abort"`, so one parser or tokenizer
-  panic on a strange file kills the daemon; wrap each connection and index job in
-  `catch_unwind`, or build with unwind.
+Done in v0.1.2 (see [CHANGELOG.md](CHANGELOG.md)):
+
+- **Panic isolation:** release builds unwind; panics are caught per request, index job and
+  file, and hooks swallow them. Writes to a closed stdout exit quietly.
+- **Daemon limits:** 64 connections, 1 MiB request lines, 30 s read and 10 s write
+  timeouts; `top_n`, `budget_ms` and the render budget are clamped on the socket path.
+- **CLI usability:** `laya index`, `laya query --repo` and `laya init --repo` reject a
+  path that does not exist or is not a directory.
+
+Open:
+
 - **Hook permission decision:** the Read and Agent hooks return `permissionDecision: "allow"`
   alongside `updatedInput`. Claude Code still applies deny and ask rules, but `allow` can skip a
   prompt; switch to `updatedInput` without a decision once Claude Code confirms that form.
-- **Daemon limits:** cap concurrent connections, request line length and write time; clamp
-  `top_n` on the socket path as the MCP path already does.
 - **Moon upgrade:** move the pinned Moon from `8bba3ced` to the current release (v0.8.9+) after
   re-running the benchmark and soak test against it; fix Moon's `LICENSE` file so it matches its
   `Cargo.toml` (see [docs/release/LICENSES.md](docs/release/LICENSES.md)).
@@ -51,8 +57,6 @@ Security and robustness items from the v0.1.0 release review that did not block 
   Related: `ACL SAVE` against Moon rewrites `moon.acl` with a hashed password laya cannot read.
 - **One walker:** re-index-on-edit copies the full walk's ignore settings; export one helper from
   `laya-parse` so they cannot drift.
-- **CLI usability:** `laya index` on a path that does not exist must error instead of indexing
-  zero files.
 - **Upgrades:** the installer stops the running daemon; add a version handshake so a new `laya`
   never talks to an old daemon.
 
@@ -60,7 +64,8 @@ Security and robustness items from the v0.1.0 release review that did not block 
 
 Make the first five minutes painless and the tool visible where Claude Code users look.
 
-- **Claude Code plugin:** package the hooks and the `laya` MCP server as a plugin in a
+- ~~**Claude Code plugin**~~ — shipped in v0.1.2. Next: list it in the community plugin
+  directories. Original plan: package the hooks and the `laya` MCP server as a plugin in a
   marketplace repo, so `/plugin install laya` replaces `laya init` for most users. The binary
   still comes from `install.sh`, and the plugin checks for it and points to the installer.
 - **Homebrew tap**, `laya upgrade`, `laya uninstall` (removes hooks, the MCP entry, caches).

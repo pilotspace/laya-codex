@@ -1,0 +1,19 @@
+{
+  "name": "laya-codex",
+  "owner": {
+    "name": "PilotSpace",
+    "url": "https://github.com/pilotspace"
+  },
+  "plugins": [
+    {
+      "name": "laya-codex",
+      "source": "./plugin",
+      "description": "Ranked code retrieval: hands Claude the code a task needs before it goes looking (hooks + the laya_search MCP tool).",
+      "homepage": "https://github.com/pilotspace/laya-codex",
+      "repository": "https://github.com/pilotspace/laya-codex",
+      "license": "Apache-2.0",
+      "keywords": ["code-search", "retrieval", "context", "tree-sitter", "mcp"],
+      "category": "development"
+    }
+  ]
+}

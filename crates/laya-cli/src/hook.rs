@@ -275,6 +275,12 @@ fn session_start(source: &str, session: &str, ctx: &HookCtx) -> Outcome {
             action: "reinject_after_compact",
         };
     }
+    // Only git repositories are indexed automatically: with laya enabled everywhere (a user-scope
+    // plugin), Claude Code opened in a home directory or /tmp must not index it wholesale.
+    // `laya index <dir>` still indexes any directory on request.
+    if !ctx.root.join(".git").exists() {
+        return Outcome::skip("not_a_repository");
+    }
     let _ = ctx.api.call(Request::IndexRepo {
         repo: ctx.root.to_string_lossy().into_owned(),
     });
@@ -674,6 +680,26 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    #[test]
+    fn startup_only_auto_indexes_git_repositories() {
+        // A plugin enables laya in every folder Claude Code opens; a folder that is not a git
+        // repository (a home directory, Downloads, /tmp) must never be indexed wholesale.
+        let plain = std::env::temp_dir().join(format!("laya-hook-nogit-{}", std::process::id()));
+        std::fs::create_dir_all(&plain).unwrap();
+        let f = fake(None, 0);
+        let c = HookCtx {
+            root: plain.clone(),
+            ..ctx(&f)
+        };
+        let s = handle(
+            &json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"}),
+            &c,
+        );
+        assert_eq!((s.action, s.output), ("not_a_repository", None));
+        assert!(f.calls.borrow().is_empty(), "nothing may reach the daemon");
+        let _ = std::fs::remove_dir_all(&plain);
     }
 
     #[test]

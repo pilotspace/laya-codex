@@ -26,6 +26,20 @@ laya init --repo /path/to/repo     # adds laya's hooks and MCP server to that re
 laya doctor --repo /path/to/repo   # checks that everything is wired up
 ```
 
+Or, after the installer, enable laya in every repository at once with the Claude Code plugin
+instead of `laya init` per repository:
+
+```
+/plugin marketplace add pilotspace/laya-codex
+/plugin install laya-codex@laya-codex
+```
+
+The plugin adds laya's hooks and its `laya_search` MCP tool. Git repositories are indexed
+automatically at session start; other folders (your home directory, `/tmp`) never are. It finds
+`laya` on `PATH` or in `~/.local/bin` (or `LAYA_BIN`), stays idle with a one-line install hint if
+the binary is missing, and steps aside in repositories already set up with `laya init`. Choose
+*project* scope at install to share it with a team through `.claude/settings.json`.
+
 The installer puts `laya` and its [Moon](https://github.com/pilotspace/moon) sidecar in
 `~/.local/bin`, and on macOS downloads the ~850 MB
 [laya-code](https://huggingface.co/tindang/laya-code) re-ranker to `~/.cache/laya-codex/models`.

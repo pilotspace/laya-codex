@@ -118,6 +118,29 @@ pub fn terminate(pid: u32) -> std::io::Result<()> {
     }
 }
 
+/// Stdout was closed by its reader (`laya query ... | head`). Not a failure: `main` exits 0
+/// without a message, as a command killed by SIGPIPE would be silent.
+#[derive(Debug)]
+pub struct StdoutClosed;
+
+impl std::fmt::Display for StdoutClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("stdout closed")
+    }
+}
+
+impl std::error::Error for StdoutClosed {}
+
+/// Map a stdout write error: a closed pipe becomes [`StdoutClosed`], anything else stays an
+/// error. Only stdout writes go through this, so a broken daemon socket is still reported.
+pub fn stdout_err(e: std::io::Error) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::BrokenPipe {
+        anyhow::Error::new(StdoutClosed)
+    } else {
+        anyhow::Error::new(e).context("write to stdout")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

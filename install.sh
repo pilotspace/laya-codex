@@ -168,7 +168,11 @@ case ":$PATH:" in
 esac
 cat <<EOF
 
-Next, in each repository you use with Claude Code:
+Next, enable laya in Claude Code, either everywhere with the plugin (inside Claude Code):
+  /plugin marketplace add pilotspace/laya-codex
+  /plugin install laya-codex@laya-codex
+or per repository:
   laya init --repo /path/to/repo     # add laya's hooks and MCP server, then index the repo
-  laya doctor --repo /path/to/repo   # check that everything is wired up
+Then check it:
+  laya doctor --repo /path/to/repo
 EOF
