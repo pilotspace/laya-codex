@@ -299,7 +299,44 @@ pub fn check_index(files: Result<usize, String>, root: &Path) -> Check {
 }
 
 /// laya hooks in `.claude/settings.local.json` / `.claude/settings.json`.
+/// The Claude Code settings scope that enables the laya-codex plugin for `root` ("local",
+/// "project" or "user"), or `None`. The most specific scope that mentions the plugin decides, as
+/// in Claude Code: local settings override project settings, which override user settings.
+pub fn plugin_enabled(root: &Path, home: &Path) -> Option<String> {
+    let scopes = [
+        ("local", root.join(".claude/settings.local.json")),
+        ("project", root.join(".claude/settings.json")),
+        ("user", home.join(".claude/settings.json")),
+    ];
+    for (scope, path) in scopes {
+        let Some(v) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        else {
+            continue;
+        };
+        let decided = v["enabledPlugins"].as_object().and_then(|m| {
+            m.iter()
+                .find(|(k, _)| k.starts_with("laya-codex@"))
+                .and_then(|(_, on)| on.as_bool())
+        });
+        if let Some(on) = decided {
+            return on.then(|| scope.to_string());
+        }
+    }
+    None
+}
+
+fn user_home() -> PathBuf {
+    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
+}
+
+/// laya's four hooks, from `laya init` in the repo's `.claude` settings or from the plugin.
 pub fn check_hooks(root: &Path) -> Check {
+    check_hooks_with(root, &user_home())
+}
+
+pub fn check_hooks_with(root: &Path, home: &Path) -> Check {
     let init_fix = Some(format!("laya init --repo {}", root.display()));
     let mut cmds: Vec<(&str, String)> = Vec::new();
     for name in ["settings.local.json", "settings.json"] {
@@ -338,6 +375,19 @@ pub fn check_hooks(root: &Path) -> Check {
             );
         }
     }
+    if cmds.is_empty()
+        && let Some(scope) = plugin_enabled(root, home)
+    {
+        return Check::new(
+            "hooks",
+            Level::Pass,
+            format!(
+                "all {} events via the laya-codex plugin ({scope} settings)",
+                HOOK_EVENTS.len()
+            ),
+            None,
+        );
+    }
     let missing: Vec<&str> = HOOK_EVENTS
         .iter()
         .map(|e| e.0)
@@ -352,7 +402,9 @@ pub fn check_hooks(root: &Path) -> Check {
                 missing.join(", "),
                 root.display()
             ),
-            init_fix,
+            init_fix.map(|f| {
+                format!("{f}, or install the Claude Code plugin: /plugin marketplace add pilotspace/laya-codex")
+            }),
         );
     }
     if let Some((_, exe)) = cmds
@@ -399,8 +451,12 @@ fn exe_found(exe: &str) -> bool {
         .is_some_and(|p| std::env::split_paths(&p).any(|d| is_executable(&d.join(exe))))
 }
 
-/// `mcpServers.laya` in `.mcp.json`.
+/// `mcpServers.laya` in `.mcp.json`, or the plugin's MCP server.
 pub fn check_mcp(root: &Path) -> Check {
+    check_mcp_with(root, &user_home())
+}
+
+pub fn check_mcp_with(root: &Path, home: &Path) -> Check {
     let path = root.join(".mcp.json");
     let v: Value = std::fs::read_to_string(&path)
         .ok()
@@ -411,6 +467,12 @@ pub fn check_mcp(root: &Path) -> Check {
             "mcp",
             Level::Pass,
             format!("mcpServers.laya -> {cmd}"),
+            None,
+        ),
+        None if plugin_enabled(root, home).is_some() => Check::new(
+            "mcp",
+            Level::Pass,
+            "laya server via the laya-codex plugin",
             None,
         ),
         None => Check::new(
@@ -563,6 +625,7 @@ pub fn run(cfg: &Config, root: &Path, start: bool) -> Vec<Check> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("laya-doctor-{tag}-{}", std::process::id()));
@@ -762,6 +825,9 @@ mod tests {
     #[test]
     fn hooks_and_mcp_reflect_laya_init() {
         let root = scratch("hooks");
+        let home = scratch("hooks-home"); // never the developer's real ~/.claude
+        let check_hooks = |r: &Path| check_hooks_with(r, &home);
+        let check_mcp = |r: &Path| check_mcp_with(r, &home);
         assert_eq!(check_hooks(&root).level, Level::Fail);
         assert_eq!(check_mcp(&root).level, Level::Warn);
 
@@ -803,6 +869,47 @@ mod tests {
         assert_eq!(c.level, Level::Fail);
         assert!(c.detail.contains("settings.local.json"), "{}", c.detail);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_claude_code_plugin_counts_as_hooks_and_mcp() {
+        let root = scratch("plugin-root");
+        let home = scratch("plugin-home");
+        let key = "laya-codex@laya-codex";
+        let write = |p: &Path, v: Value| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, v.to_string()).unwrap();
+        };
+        assert_eq!(plugin_enabled(&root, &home), None);
+        assert_eq!(check_hooks_with(&root, &home).level, Level::Fail);
+
+        // Enabled for the user (all projects): hooks and MCP come from the plugin.
+        write(
+            &home.join(".claude/settings.json"),
+            json!({"enabledPlugins": {key: true}}),
+        );
+        assert_eq!(plugin_enabled(&root, &home).as_deref(), Some("user"));
+        let c = check_hooks_with(&root, &home);
+        assert_eq!(c.level, Level::Pass, "{}", c.detail);
+        assert!(c.detail.contains("plugin"), "{}", c.detail);
+        assert_eq!(check_mcp_with(&root, &home).level, Level::Pass);
+
+        // A project's local settings override the user's choice.
+        write(
+            &root.join(".claude/settings.local.json"),
+            json!({"enabledPlugins": {key: false}}),
+        );
+        assert_eq!(plugin_enabled(&root, &home), None);
+        assert_eq!(check_hooks_with(&root, &home).level, Level::Fail);
+
+        // Enabled at project scope.
+        write(
+            &root.join(".claude/settings.local.json"),
+            json!({"enabledPlugins": {key: true}}),
+        );
+        assert_eq!(plugin_enabled(&root, &home).as_deref(), Some("local"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

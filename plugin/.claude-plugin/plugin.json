@@ -1,0 +1,14 @@
+{
+  "name": "laya-codex",
+  "displayName": "laya-codex",
+  "version": "0.1.2",
+  "description": "Ranked code retrieval for Claude Code: tree-sitter chunks, BM25 and the Laya re-ranker put the code a task needs in front of Claude before it goes looking. Needs the laya binary (install.sh).",
+  "author": {
+    "name": "PilotSpace",
+    "url": "https://github.com/pilotspace"
+  },
+  "homepage": "https://github.com/pilotspace/laya-codex",
+  "repository": "https://github.com/pilotspace/laya-codex",
+  "license": "Apache-2.0",
+  "keywords": ["code-search", "retrieval", "context", "tree-sitter", "mcp"]
+}

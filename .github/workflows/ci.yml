@@ -60,3 +60,5 @@ jobs:
         run: ./target/release/laya --help
       - name: installer
         run: sh scripts/test-install.sh
+      - name: plugin
+        run: sh scripts/test-plugin.sh
