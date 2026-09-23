@@ -1,6 +1,13 @@
 tmp/
 
-# Rust
+# Rust (target/ plus side target dirs: target-dev, target-linux, ...)
 /target/
+/target-*/
+/dist/
+
+# Python
 **/__pycache__/
-/target-v2/
+.pytest_cache/
+
+# Benchmark scratch output
+bench/results/dev-dumps/
