@@ -1,0 +1,30 @@
+laya-codex
+Copyright 2026 Tin Dang
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes or links the following third-party software. Their
+licenses are listed in docs/release/LICENSES.md; release archives also carry
+their full texts in THIRD-PARTY-LICENSES.txt.
+
+- tree-sitter and the tree-sitter grammars for Rust, Python, TypeScript/TSX,
+  JavaScript, Go, Java, C, C++, C#, Ruby, PHP, Kotlin and Swift (MIT).
+- candle (candle-core, candle-nn), Copyright Hugging Face (MIT OR Apache-2.0).
+- tokenizers and safetensors, Copyright Hugging Face (Apache-2.0).
+- Oniguruma, Copyright (c) 2002-2021 K.Kosako (BSD-2-Clause), compiled into the
+  binary through onig_sys.
+- mimalloc, Copyright (c) 2018-2025 Microsoft Corporation, Daan Leijen (MIT).
+- redis-rs (BSD-3-Clause).
+
+laya-codex runs the Laya model and its fine-tuned derivative laya-code at
+runtime. Model weights are not part of this repository or its release archives;
+they are downloaded separately:
+
+- Laya, Copyright Convai Innovations (Apache-2.0),
+  https://huggingface.co/convaiinnovations/laya
+- ModernBERT-large encoder and tokenizer, Answer.AI (Apache-2.0),
+  https://huggingface.co/answerdotai/ModernBERT-large
+
+laya-codex talks to a separately installed Moon server
+(https://github.com/pilotspace/moon) over the Redis protocol; Moon is not
+bundled with or linked into laya-codex.
