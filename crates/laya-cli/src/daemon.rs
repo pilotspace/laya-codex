@@ -309,7 +309,7 @@ mod tests {
 
     fn chunk(start: u32) -> Chunk {
         Chunk { path: "a.rs".into(), start_line: start, end_line: start + 9, lang: Lang::Rust, symbol: String::new(),
-            kind: "function_item".into(), defines: vec![], text: format!("fn f{start}() {{}}") }
+            kind: "function_item".into(), defines: vec![], refs: vec![], text: format!("fn f{start}() {{}}") }
     }
 
     #[test]

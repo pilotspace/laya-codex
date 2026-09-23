@@ -74,11 +74,16 @@ def evaluate(args):
         prec = sum(f in gold for f in files) / max(1, len(files))
         text_share.append(sum(not f.endswith(SRC_EXT) for f in files) / max(1, len(files)))
         lines = sum(s["end_line"] - s["start_line"] + 1 for s in r["spans"])
-        rows.append((prec, hit, rr, rec, lines))
+        related = [x["path"] for x in r.get("related", [])]
+        rec_map = len((set(files) | set(related)) & gold) / len(gold)
+        new_hits = len((set(related) - set(files)) & gold)
+        rows.append((prec, hit, rr, rec, lines, rec_map, len(related), new_hits))
     n = len(rows)
-    m = [sum(x[i] for x in rows) / n for i in range(5)]
+    m = [sum(x[i] for x in rows) / n for i in range(8)]
     res = {"tag": args.tag, "budget_ms": args.budget_ms, "n": n, "P@10": round(m[0], 4), "Hit@10": round(m[1], 4),
-           "MRR": round(m[2], 4), "R@10": round(m[3], 4), "mean_lines_returned": round(m[4], 1),
+           "MRR": round(m[2], 4), "R@10": round(m[3], 4), "R@map(spans+related)": round(m[5], 4),
+           "related_per_query": round(m[6], 2), "gold_files_added_by_related": round(m[7] * n),
+           "mean_lines_returned": round(m[4], 1),
            "non_code_share": round(sum(text_share) / n, 4), "modes": modes,
            "elapsed_ms_p50": statistics.median(lat), "elapsed_ms_p95": sorted(lat)[int(0.95 * (len(lat) - 1))]}
     print(json.dumps(res))

@@ -80,7 +80,7 @@ mod tests {
     }
 
     fn result(spans: Vec<RankedSpan>) -> QueryResult {
-        QueryResult { spans, mode: RankMode::Lexical, elapsed_ms: 1, candidates: 3 }
+        QueryResult { spans, mode: RankMode::Lexical, elapsed_ms: 1, candidates: 3, related: vec![] }
     }
 
     #[test]

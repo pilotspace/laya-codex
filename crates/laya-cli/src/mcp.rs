@@ -99,7 +99,7 @@ mod tests {
             Ok(Response::Query { result: QueryResult {
                 spans: vec![RankedSpan { path: "src/a.rs".into(), start_line: 3, end_line: 9, symbol: "fn a".into(),
                     p_relevant: Some(0.8), score: 0.8, text: "fn a() {}".into() }],
-                mode: RankMode::Laya, elapsed_ms: 3, candidates: 5 } })
+                mode: RankMode::Laya, elapsed_ms: 3, candidates: 5, related: vec![] } })
         }
     }
 

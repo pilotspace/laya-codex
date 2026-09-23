@@ -169,7 +169,8 @@ fn cmd_hook(cfg: &Config) {
     let ctx = HookCtx { api: &client, root, budget_ms: cfg.budget_ms, inject_tokens: INJECT_TOKENS,
         // Defaults match the benchmarked configuration (calibrated laya-code, compact injection).
         read_p: std::env::var("LAYA_READ_P").ok().and_then(|v| v.parse().ok()).unwrap_or(0.4),
-        compact: std::env::var("LAYA_RENDER").map(|v| v != "full").unwrap_or(true) };
+        compact: std::env::var("LAYA_RENDER").map(|v| v != "full").unwrap_or(true),
+        related: std::env::var("LAYA_RELATED").map(|v| v != "0").unwrap_or(true) };
     let outcome = hook::handle(&input, &ctx);
     if let Some(out) = &outcome.output {
         println!("{out}");

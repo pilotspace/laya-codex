@@ -219,6 +219,7 @@ fn scorer_trait_scores_chunks_in_order() {
         symbol: "hget".into(),
         kind: "function_item".into(),
         defines: vec!["hget".into()],
+        refs: vec![],
         text: "fn hget(&self, key: &[u8]) -> Option<Bytes> {\n    self.map.get(key).cloned()\n}"
             .into(),
     };

@@ -29,6 +29,8 @@ pub struct HookCtx<'a> {
     pub read_p: f32,
     /// Inject the compact format (ranked map + top spans) instead of every span's full code.
     pub compact: bool,
+    /// Append the "Related by references" section (one-hop callers/callees of the top spans).
+    pub related: bool,
 }
 
 /// What a handler did, for the optional JSONL hook log.
@@ -86,9 +88,9 @@ fn user_prompt(prompt: &str, session: &str, ctx: &HookCtx) -> Outcome {
         return Outcome::skip("no_spans");
     }
     let text = if ctx.compact {
-        laya_rank::render_compact(&result, 3, ctx.inject_tokens)
+        laya_rank::render_compact_opts(&result, 3, ctx.inject_tokens, ctx.related)
     } else {
-        laya_rank::render_context(&result, ctx.inject_tokens)
+        laya_rank::render_context_opts(&result, ctx.inject_tokens, ctx.related)
     };
     Outcome {
         injected_chars: text.len(),
@@ -173,7 +175,7 @@ fn session_start(source: &str, session: &str, ctx: &HookCtx) -> Outcome {
         if view.working_set.is_empty() {
             return Outcome::skip("empty_working_set");
         }
-        let result = QueryResult { spans: view.working_set.into_iter().take(8).collect(), mode: RankMode::Laya, elapsed_ms: 0, candidates: 0 };
+        let result = QueryResult { spans: view.working_set.into_iter().take(8).collect(), mode: RankMode::Laya, elapsed_ms: 0, candidates: 0, related: vec![] };
         let text = laya_rank::render_context(&result, ctx.inject_tokens * 2 / 3);
         return Outcome {
             injected_chars: text.len(),
@@ -233,11 +235,11 @@ mod tests {
     }
 
     fn ctx<'a>(api: &'a dyn DaemonApi) -> HookCtx<'a> {
-        HookCtx { api, root: root(), budget_ms: 500, inject_tokens: 4000, read_p: 0.7, compact: false }
+        HookCtx { api, root: root(), budget_ms: 500, inject_tokens: 4000, read_p: 0.7, compact: false, related: true }
     }
 
     fn res(spans: Vec<RankedSpan>) -> QueryResult {
-        QueryResult { spans, mode: RankMode::Laya, elapsed_ms: 5, candidates: 10 }
+        QueryResult { spans, mode: RankMode::Laya, elapsed_ms: 5, candidates: 10, related: vec![] }
     }
 
     #[test]
