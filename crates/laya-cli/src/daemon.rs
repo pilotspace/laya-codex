@@ -276,7 +276,8 @@ impl Daemon {
             })
             .collect();
         let mut ctx = laya_rank::size_context(result, scope, &self.sizing, &already);
-        self.keep_only_current_code(root, id, &mut ctx);
+        self.plan_inlined_code(root, id, &mut ctx, req.batch_reads);
+        ctx.parallel_reads_hint = req.batch_reads;
         if !req.related {
             ctx.related.clear();
         }
@@ -297,39 +298,155 @@ impl Daemon {
     /// Inline code only from files whose bytes still match the index, so the render can vouch
     /// that each block is the file's current content. A changed, missing or unindexed file is
     /// demoted to a location pointer (the agent can Read it), never inlined possibly stale.
-    /// A kept span's text is taken from the file's own lines `start..=end`: a span merged from
-    /// chunks a few lines apart would otherwise lack the lines between them.
-    fn keep_only_current_code(&self, root: &Path, id: &str, ctx: &mut laya_rank::SizedContext) {
-        let mut current: HashMap<String, Option<String>> = HashMap::new();
-        let mut contents = |path: &str| -> Option<String> {
-            current
-                .entry(path.to_string())
-                .or_insert_with(|| {
-                    let indexed = self.store.file_hash(id, path).ok().flatten()?;
-                    let bytes = std::fs::read(root.join(path)).ok()?;
-                    (indexed == laya_parse::file_hash(&bytes))
-                        .then(|| String::from_utf8_lossy(&bytes).into_owned())
-                })
-                .clone()
-        };
-        let mut stale = Vec::new();
-        for mut span in std::mem::take(&mut ctx.full) {
-            let lines = contents(&span.path).and_then(|text| {
-                let (start, end) = (span.start_line as usize, span.end_line as usize);
-                let lines: Vec<&str> = text.lines().collect();
-                (start >= 1 && end >= start && end <= lines.len())
-                    .then(|| lines[start - 1..end].join("\n"))
-            });
-            match lines {
-                Some(text) => {
-                    span.text = text;
-                    ctx.full.push(span);
+    /// Every inlined block's text is taken from the file's own lines for its range: a span merged
+    /// from chunks a few lines apart would otherwise lack the lines between them.
+    ///
+    /// With `batch`, each inlined file's blocks are planned by [`laya_rank::plan_file_blocks`]:
+    /// the top file's block is widened into its surroundings (snapped to its chunks) and another
+    /// listed span of the same file is added, so the agent needs fewer Read turns. Main blocks
+    /// come first and added spans last, so a tight budget drops the added spans first.
+    fn plan_inlined_code(
+        &self,
+        root: &Path,
+        id: &str,
+        ctx: &mut laya_rank::SizedContext,
+        batch: bool,
+    ) {
+        let policy = laya_rank::BlockPolicy::default();
+        let mut files = CurrentFiles::new(self.store.as_ref(), root, id);
+        let (mut main, mut added, mut stale) = (Vec::new(), Vec::new(), Vec::new());
+        for (i, span) in std::mem::take(&mut ctx.full).into_iter().enumerate() {
+            let Some(lines) = files.lines(&span.path) else {
+                stale.push(span);
+                continue;
+            };
+            let n = lines.len() as u32;
+            let (s, e) = (span.start_line, span.end_line);
+            if s == 0 || e < s || e > n {
+                stale.push(span);
+                continue;
+            }
+            let extras: Vec<laya_core::RankedSpan> = if batch {
+                let mut taken = Vec::new();
+                ctx.map.retain(|m| {
+                    let take = m.path == span.path && taken.len() < policy.extra_spans_per_file;
+                    if take {
+                        taken.push(m.clone());
+                    }
+                    !take
+                });
+                taken
+            } else {
+                Vec::new()
+            };
+            let ranges = if batch {
+                let widen = i == 0;
+                let chunks: Vec<(u32, u32)> = if widen {
+                    self.store
+                        .chunks_of_file(id, &span.path)
+                        .map(|cs| cs.iter().map(|c| (c.start_line, c.end_line)).collect())
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let extra_ranges: Vec<(u32, u32)> =
+                    extras.iter().map(|x| (x.start_line, x.end_line)).collect();
+                laya_rank::plan_file_blocks((s, e), &extra_ranges, widen, &chunks, n, &policy)
+            } else {
+                vec![(s, e)]
+            };
+            let inside =
+                |x: &laya_core::RankedSpan, r: (u32, u32)| r.0 <= x.start_line && x.end_line <= r.1;
+            for &r in &ranges {
+                let holds_ranked = r.0 <= s && e <= r.1;
+                let symbol = if holds_ranked {
+                    span.symbol.clone()
+                } else {
+                    extras
+                        .iter()
+                        .find(|x| inside(x, r))
+                        .map(|x| x.symbol.clone())
+                        .unwrap_or_default()
+                };
+                let block = laya_core::RankedSpan {
+                    start_line: r.0,
+                    end_line: r.1,
+                    symbol,
+                    text: lines[r.0 as usize - 1..r.1 as usize].join("\n"),
+                    ..span.clone()
+                };
+                if holds_ranked {
+                    main.push(block);
+                } else {
+                    added.push(block);
                 }
-                None => stale.push(span),
+            }
+            // Listed spans the plan could not fit stay listed.
+            for x in extras {
+                if !ranges.iter().any(|&r| inside(&x, r)) {
+                    ctx.map.push(x);
+                }
             }
         }
+        main.extend(added);
+        ctx.full = main;
         ctx.map.splice(0..0, stale);
         ctx.verified_current = true;
+    }
+
+    /// The next ranked code for a session that is about to Read `path`: the first span of each
+    /// other file in the last ranking that the session does not have, current on disk, up to
+    /// [`PREFETCH_FILES`] files and [`PREFETCH_MAX_CHARS`]. Once per query; what is sent is
+    /// recorded as sent.
+    fn prefetch(&self, repo: &str, session: &str, path: &str) -> Option<String> {
+        let (root, id) = self.repo(repo);
+        let rel = rel_path(&root, path)?;
+        let mut sessions = self.sessions();
+        let (last, _) = sessions.read_context(session);
+        let last = last?;
+        if !sessions.take_prefetch(session) {
+            return None;
+        }
+        let already = sessions.already(session);
+        let has = |s: &laya_core::RankedSpan| {
+            already
+                .iter()
+                .any(|(p, a, b)| *p == s.path && s.start_line <= *b && *a <= s.end_line)
+        };
+        let mut files = CurrentFiles::new(self.store.as_ref(), &root, &id);
+        let mut out = String::from(PREFETCH_HEADER);
+        let mut sent: Vec<(String, u32, u32)> = Vec::new();
+        let mut seen_files: Vec<&str> = vec![rel.as_str()];
+        for span in &last.spans {
+            if sent.len() == PREFETCH_FILES {
+                break;
+            }
+            if seen_files.contains(&span.path.as_str()) || has(span) {
+                continue;
+            }
+            seen_files.push(&span.path);
+            let Some(lines) = files.lines(&span.path) else {
+                continue;
+            };
+            let (s, e) = (span.start_line, span.end_line);
+            if s == 0 || e < s || e as usize > lines.len() {
+                continue;
+            }
+            let block = laya_rank::render_code_block(&laya_core::RankedSpan {
+                text: lines[s as usize - 1..e as usize].join("\n"),
+                ..span.clone()
+            });
+            if out.len() + block.len() > PREFETCH_MAX_CHARS {
+                continue;
+            }
+            out.push_str(&block);
+            sent.push((span.path.clone(), s, e));
+        }
+        if sent.is_empty() {
+            return None;
+        }
+        sessions.mark_sent(session, &sent);
+        Some(out)
     }
 
     /// The session table. A panic under the lock (see `serve_conn`) leaves it poisoned; the
@@ -476,6 +593,13 @@ impl Daemon {
             } => Response::ReadPlan {
                 plan: self.read_plan(&repo, &session, &path),
             },
+            Request::Prefetch {
+                repo,
+                session,
+                path,
+            } => Response::Prefetch {
+                text: self.prefetch(&repo, &session, &path),
+            },
             // Acknowledged here; `serve_conn` exits the process once the reply is written.
             Request::Shutdown => Response::Ok,
         }
@@ -522,6 +646,52 @@ impl Daemon {
             basis: basis.to_string(),
             outline,
         })
+    }
+}
+
+/// Files the prefetch sends at most, and the size of its context.
+const PREFETCH_FILES: usize = 2;
+const PREFETCH_MAX_CHARS: usize = 4_000;
+const PREFETCH_HEADER: &str = "[laya-codex] Next ranked code for this task, sent with this Read so \
+you need no separate Reads for it. These are the exact current contents of those line ranges \
+(checked against the files on disk):\n\n";
+
+/// Repo files whose bytes still match the index, read once per render, as lines.
+struct CurrentFiles<'a> {
+    store: &'a dyn Store,
+    root: &'a Path,
+    id: &'a str,
+    cache: HashMap<String, Option<std::rc::Rc<Vec<String>>>>,
+}
+
+impl<'a> CurrentFiles<'a> {
+    fn new(store: &'a dyn Store, root: &'a Path, id: &'a str) -> Self {
+        CurrentFiles {
+            store,
+            root,
+            id,
+            cache: HashMap::new(),
+        }
+    }
+
+    /// The file's lines if it is indexed and unchanged since, else `None`.
+    fn lines(&mut self, path: &str) -> Option<std::rc::Rc<Vec<String>>> {
+        let (store, root, id) = (self.store, self.root, self.id);
+        self.cache
+            .entry(path.to_string())
+            .or_insert_with(|| {
+                let indexed = store.file_hash(id, path).ok().flatten()?;
+                let bytes = std::fs::read(root.join(path)).ok()?;
+                (indexed == laya_parse::file_hash(&bytes)).then(|| {
+                    std::rc::Rc::new(
+                        String::from_utf8_lossy(&bytes)
+                            .lines()
+                            .map(str::to_string)
+                            .collect(),
+                    )
+                })
+            })
+            .clone()
     }
 }
 
@@ -964,6 +1134,9 @@ mod tests {
         ) -> laya_core::Result<Vec<String>> {
             self.inner.chunks_defining(r, i, l)
         }
+        fn chunks_of_file(&self, r: &str, p: &str) -> laya_core::Result<Vec<Chunk>> {
+            self.inner.chunks_of_file(r, p)
+        }
         fn get_chunks(&self, _: &str, ids: &[String]) -> laya_core::Result<Vec<Chunk>> {
             let chunks = self.chunks.lock().unwrap();
             Ok(ids
@@ -1078,6 +1251,7 @@ mod tests {
                 budget_tokens: 3000,
                 related: true,
                 adaptive,
+                batch_reads: true,
             }),
         })
     }
@@ -1126,6 +1300,7 @@ mod tests {
                 budget_tokens: 3000,
                 related: true,
                 adaptive: true,
+                batch_reads: true,
             }),
         }) {
             Response::Query {
@@ -1215,6 +1390,123 @@ mod tests {
         );
     }
 
+    fn batch_render(d: &Arc<Daemon>, repo: &str, session: &str, batch_reads: bool) -> String {
+        match d.handle(Request::Query {
+            repo: repo.into(),
+            session: Some(session.into()),
+            prompt: "fix the ordering bug in replay_wal_segment".into(),
+            budget_ms: Some(0),
+            top_n: None,
+            render: Some(RenderReq {
+                budget_tokens: 3000,
+                related: true,
+                adaptive: true,
+                batch_reads,
+            }),
+        }) {
+            Response::Query {
+                rendered: Some(r), ..
+            } => r,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// `### path:start-end` headings of a render, with the number of code lines under each.
+    fn blocks_of(out: &str) -> Vec<(String, u32, u32, usize)> {
+        let mut v = Vec::new();
+        let lines: Vec<&str> = out.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            let Some(h) = l.strip_prefix("### ") else {
+                continue;
+            };
+            let loc = h.split(' ').next().unwrap();
+            let (path, range) = loc.rsplit_once(':').unwrap();
+            let (a, b) = range.split_once('-').unwrap();
+            let body = lines[i + 2..].iter().take_while(|x| **x != "```").count();
+            v.push((
+                path.to_string(),
+                a.parse().unwrap(),
+                b.parse().unwrap(),
+                body,
+            ));
+        }
+        v
+    }
+
+    #[test]
+    fn batch_reads_widen_the_top_block_with_the_files_exact_lines_and_hint_parallel_reads() {
+        // Searchable store (the read-plan repo's has no search), same files.
+        let root = write_big_repo("batch");
+        let d = Daemon::new(Arc::new(MemoStore::default()), RetrieverConfig::default());
+        let repo = root.to_string_lossy().into_owned();
+        let (root, id) = d.repo(&repo);
+        for f in ["src/big.rs", "src/small.rs"] {
+            indexer::index_file(&root, d.store.as_ref(), &id, f).unwrap();
+        }
+        let plain = batch_render(&d, &repo, "plain", false);
+        let wide = batch_render(&d, &repo, "wide", true);
+        let (p0, w0) = (&blocks_of(&plain)[0], &blocks_of(&wide)[0]);
+        assert_eq!(p0.0, w0.0, "same top file: {plain}\n---\n{wide}");
+        assert!(
+            w0.1 < p0.1 || w0.2 > p0.2,
+            "top block widened: {p0:?} -> {w0:?}"
+        );
+        for (path, a, b, body) in blocks_of(&wide) {
+            assert_eq!(
+                body as u32,
+                b - a + 1,
+                "{path}:{a}-{b} shows exactly its lines"
+            );
+        }
+        assert!(wide.contains("in one message"), "{wide}");
+        assert!(!plain.contains("in one message"), "{plain}");
+    }
+
+    fn prefetch(d: &Arc<Daemon>, repo: &str, session: &str, path: &str) -> Option<String> {
+        match d.handle(Request::Prefetch {
+            repo: repo.into(),
+            session: session.into(),
+            path: path.into(),
+        }) {
+            Response::Prefetch { text } => text,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn prefetch_sends_the_next_ranked_files_once_per_prompt() {
+        let (d, repo) = daemon_with_code();
+        assert_eq!(
+            prefetch(&d, &repo, "p", "src/wal0.rs"),
+            None,
+            "no ranking yet"
+        );
+        let first = render_in(&d, &repo, "p");
+        let inlined: Vec<String> = blocks_of(&first).into_iter().map(|b| b.0).collect();
+        let text = prefetch(&d, &repo, "p", "src/wal0.rs").expect("next ranked code");
+        let sent: Vec<String> = blocks_of(&text).into_iter().map(|b| b.0).collect();
+        assert!(!sent.is_empty(), "{text}");
+        for p in &sent {
+            assert_ne!(p, "src/wal0.rs", "not the file being read");
+            assert!(!inlined.contains(p), "{p} was already inlined");
+        }
+        assert!(text.contains("exact current contents"), "{text}");
+        assert_eq!(
+            prefetch(&d, &repo, "p", "src/wal1.rs"),
+            None,
+            "once per prompt"
+        );
+        // The next prompt opens a new prefetch, without resending what the session has.
+        let second = render_in(&d, &repo, "p");
+        let again = prefetch(&d, &repo, "p", "src/wal0.rs").unwrap_or_default();
+        for p in &sent {
+            assert!(
+                !again.contains(&format!("### {p}:")),
+                "{p} resent: {second}\n{again}"
+            );
+        }
+    }
+
     #[test]
     fn session_reset_forgets_sent_spans() {
         let (d, repo) = daemon_with_code();
@@ -1300,7 +1592,9 @@ mod tests {
 
     /// A repo with an indexed 390-line `src/big.rs` (30 thirteen-line fns; `handler_17`, at
     /// lines 222-234, calls `replay_wal_segment`) and an indexed 10-line `src/small.rs`.
-    fn plan_repo(tag: &str) -> (Arc<Daemon>, PathBuf, String) {
+    /// A repo on disk with a 390-line `src/big.rs` (30 handlers; handler 17 calls
+    /// `replay_wal_segment`) and a small `src/small.rs`.
+    fn write_big_repo(tag: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("laya-plan-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -1322,6 +1616,11 @@ mod tests {
         assert_eq!(big.lines().count(), 390);
         std::fs::write(root.join("src/big.rs"), &big).unwrap();
         std::fs::write(root.join("src/small.rs"), "fn tiny() {}\n".repeat(10)).unwrap();
+        root
+    }
+
+    fn plan_repo(tag: &str) -> (Arc<Daemon>, PathBuf, String) {
+        let root = write_big_repo(tag);
         let d = Daemon::new(Arc::new(MemStore::default()), RetrieverConfig::default());
         let repo = root.to_string_lossy().into_owned();
         let (root, id) = d.repo(&repo);

@@ -14,8 +14,8 @@ use laya_core::{QueryResult, RankMode, RankedSpan, Related};
 use serde::{Deserialize, Serialize};
 
 use crate::render::{
-    COMPACT_FOOTER, COMPACT_HEADER, TRUST_LINE, append_ranked_locations, append_related,
-    estimate_tokens, render_span,
+    COMPACT_FOOTER, COMPACT_HEADER, PARALLEL_READS_HINT, TRUST_LINE, append_ranked_locations,
+    append_related, estimate_tokens, render_span,
 };
 
 /// How much of the codebase a prompt's task spans, used to pick [`SizingCaps`]. `serde` uses
@@ -154,6 +154,9 @@ pub struct SizedContext {
     /// index (so each inlined block is the file's current content). Only then does the render
     /// say so ([`crate::render::TRUST_LINE`]). [`size_context`] never sets it.
     pub verified_current: bool,
+    /// Ask the agent to Read several of the listed locations in one message (parallel tool
+    /// calls) instead of one Read per turn ([`crate::render::PARALLEL_READS_HINT`]).
+    pub parallel_reads_hint: bool,
 }
 
 fn overlaps(
@@ -243,6 +246,7 @@ pub fn size_context(
         related,
         already: already_spans,
         verified_current: false,
+        parallel_reads_hint: false,
     }
 }
 
@@ -376,7 +380,8 @@ pub fn render_sized_with_keys(ctx: &SizedContext, budget_tokens: usize) -> (Stri
         let block = render_span(span);
         let t = estimate_tokens(&block);
         // Reserve room for the footer and the "Already provided" line after the code blocks.
-        let reserve = code.len() + trust.len() + COMPACT_FOOTER.len() + 400;
+        let reserve =
+            code.len() + trust.len() + COMPACT_FOOTER.len() + PARALLEL_READS_HINT.len() + 400;
         if used + t > budget_tokens || !crate::render::fits(&out, &block, reserve) {
             // Degrade to a map entry: it's already in the "Ranked locations:" listing above, so
             // simply not inlining its code block is exactly that degradation — no truncated code.
@@ -392,6 +397,9 @@ pub fn render_sized_with_keys(ctx: &SizedContext, budget_tokens: usize) -> (Stri
     }
     out.push_str(&code);
     out.push_str(COMPACT_FOOTER);
+    if ctx.parallel_reads_hint {
+        out.push_str(PARALLEL_READS_HINT);
+    }
 
     if !ctx.already.is_empty() {
         let mut line = String::from(ALREADY_PREFIX);
@@ -619,6 +627,26 @@ mod tests {
         assert!(
             !out.contains(crate::render::TRUST_LINE),
             "no code, no claim: {out}"
+        );
+    }
+
+    #[test]
+    fn parallel_reads_hint_is_added_only_when_asked_for() {
+        let spans = vec![span("a.rs", 1, 20, "fn a", Some(0.9), 1.0)];
+        let mut ctx = size_context(
+            &result(RankMode::Laya, spans, vec![]),
+            None,
+            &SizingPolicy::default(),
+            &[],
+        );
+        assert!(!ctx.parallel_reads_hint);
+        assert!(!render_sized(&ctx, 10_000).contains(crate::render::PARALLEL_READS_HINT));
+        ctx.parallel_reads_hint = true;
+        let out = render_sized(&ctx, 10_000);
+        assert!(out.contains(crate::render::PARALLEL_READS_HINT), "{out}");
+        assert!(
+            out.find(crate::render::COMPACT_FOOTER) < out.find(crate::render::PARALLEL_READS_HINT),
+            "the hint extends the footer"
         );
     }
 
@@ -980,6 +1008,7 @@ mod tests {
             related: vec![related("src/x.rs", 10, 40, "calls `bar` (#1)")],
             already: vec![],
             verified_current: false,
+            parallel_reads_hint: false,
         };
         let out = render_sized(&ctx, 10_000);
         assert!(out.starts_with("<!-- laya-codex:"));
@@ -1004,6 +1033,7 @@ mod tests {
                 span("b.rs", 10, 20, "", None, 0.0),
             ],
             verified_current: false,
+            parallel_reads_hint: false,
         };
         let out = render_sized(&ctx, 10_000);
         assert!(out.contains("Already provided earlier in this session: a.rs:1-5, b.rs:10-20"));
@@ -1020,6 +1050,7 @@ mod tests {
             related: vec![],
             already: vec![],
             verified_current: false,
+            parallel_reads_hint: false,
         };
         let keys = sized_keys(&ctx);
         assert_eq!(keys, vec![key(&ctx.full[0]), key(&ctx.full[1])]);
@@ -1037,6 +1068,7 @@ mod tests {
             related: vec![],
             already: vec![],
             verified_current: false,
+            parallel_reads_hint: false,
         };
         let mut ctx = ctx;
         ctx.full[1].text = big;
@@ -1063,6 +1095,7 @@ mod tests {
             related: vec![],
             already: vec![],
             verified_current: false,
+            parallel_reads_hint: false,
         };
         assert_eq!(
             render_sized(&ctx, 10_000),

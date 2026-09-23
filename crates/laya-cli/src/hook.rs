@@ -32,6 +32,10 @@ pub struct HookCtx<'a> {
     pub related: bool,
     /// Let the daemon size the injection (scope + calibrated P) and skip spans already sent.
     pub adaptive: bool,
+    /// Batch reads: widen the top block, bundle same-file spans, ask for parallel Reads.
+    pub batch_reads: bool,
+    /// On the first Read after a prompt, attach the next ranked code of other files.
+    pub prefetch: bool,
 }
 
 /// What a handler did, for the optional JSONL hook log.
@@ -90,6 +94,7 @@ fn user_prompt(prompt: &str, session: &str, ctx: &HookCtx) -> Outcome {
             budget_tokens: ctx.inject_tokens,
             related: ctx.related,
             adaptive: ctx.adaptive,
+            batch_reads: ctx.batch_reads,
         }),
     };
     let (result, rendered) = match ctx.api.call(req) {
@@ -130,7 +135,59 @@ fn session_view(session: &str, reset: bool, ctx: &HookCtx) -> Option<SessionView
     }
 }
 
+/// A Read: plan it (narrowing a large whole-file Read), then, with prefetch on, attach the next
+/// ranked code the agent would otherwise Read in later turns.
 fn pre_read(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
+    let planned = plan_read(tool_input, session, ctx);
+    if !ctx.prefetch
+        || matches!(
+            planned.action,
+            "no_path" | "outside_repo" | "daemon_unavailable"
+        )
+    {
+        return planned;
+    }
+    let Some(file) = tool_input["file_path"].as_str() else {
+        return planned;
+    };
+    match ctx.api.call(Request::Prefetch {
+        repo: ctx.root.to_string_lossy().into_owned(),
+        session: session.to_string(),
+        path: file.to_string(),
+    }) {
+        Ok(Response::Prefetch { text: Some(text) }) if !text.is_empty() => {
+            with_context(planned, &text)
+        }
+        _ => planned,
+    }
+}
+
+/// `outcome` plus `text` as PreToolUse `additionalContext` (appended to any note it has). A
+/// Read the hook otherwise leaves alone gets only the context: no permission decision, no
+/// changed input.
+fn with_context(mut outcome: Outcome, text: &str) -> Outcome {
+    outcome.injected_chars += text.len();
+    match &mut outcome.output {
+        Some(out) => {
+            let hs = &mut out["hookSpecificOutput"];
+            let note = hs["additionalContext"].as_str().unwrap_or_default();
+            hs["additionalContext"] = json!(if note.is_empty() {
+                text.to_string()
+            } else {
+                format!("{note}\n\n{text}")
+            });
+        }
+        None => {
+            outcome.output = Some(
+                json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}}),
+            );
+            outcome.action = "prefetch";
+        }
+    }
+    outcome
+}
+
+fn plan_read(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
     let Some(file) = tool_input["file_path"].as_str() else {
         return Outcome::skip("no_path");
     };
@@ -338,6 +395,8 @@ mod tests {
         plan_down: bool,
         /// Every call fails (no daemon).
         down: bool,
+        /// What `Prefetch` answers.
+        prefetch: Option<String>,
     }
 
     impl DaemonApi for Fake {
@@ -360,6 +419,9 @@ mod tests {
                         scope: Some("file".into()),
                     },
                     None => anyhow::bail!("down"),
+                },
+                Request::Prefetch { .. } => Response::Prefetch {
+                    text: self.prefetch.clone(),
                 },
                 Request::NoteRead { .. } => Response::Count {
                     count: self.read_count,
@@ -400,6 +462,7 @@ mod tests {
             plan: None,
             plan_down: false,
             down: false,
+            prefetch: None,
         }
     }
 
@@ -412,6 +475,8 @@ mod tests {
             compact: false,
             related: true,
             adaptive: false,
+            batch_reads: true,
+            prefetch: false,
         }
     }
 
@@ -662,6 +727,61 @@ mod tests {
             &c,
         );
         assert_eq!((o.action, o.output), ("already_in_context", None));
+    }
+
+    fn ranged_read() -> Value {
+        json!({"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": "Read",
+            "tool_input": {"file_path": root().join("crates/laya-cli/src/hook.rs").to_string_lossy(),
+                "offset": 10, "limit": 40}})
+    }
+
+    #[test]
+    fn read_with_prefetch_attaches_the_next_ranked_code_without_a_decision() {
+        let mut f = fake(None, 1);
+        f.prefetch = Some("NEXT RANKED CODE".into());
+        let c = HookCtx {
+            prefetch: true,
+            ..ctx(&f)
+        };
+        let o = handle(&ranged_read(), &c);
+        assert_eq!(o.action, "prefetch");
+        let out = &o.output.unwrap()["hookSpecificOutput"];
+        assert_eq!(out["hookEventName"], "PreToolUse");
+        assert_eq!(out["additionalContext"], "NEXT RANKED CODE");
+        assert!(
+            out.get("permissionDecision").is_none(),
+            "permission flow untouched: {out}"
+        );
+        assert!(
+            out.get("updatedInput").is_none(),
+            "the Read itself is unchanged: {out}"
+        );
+        assert_eq!(o.injected_chars, "NEXT RANKED CODE".len());
+        assert!(f.calls.borrow().iter().any(|r| matches!(
+            r,
+            Request::Prefetch { session, path, .. } if session == "s" && path.ends_with("hook.rs")
+        )));
+    }
+
+    #[test]
+    fn prefetch_is_off_by_default_and_fails_open() {
+        let mut f = fake(None, 1);
+        f.prefetch = Some("NEXT".into());
+        let o = handle(&ranged_read(), &ctx(&f));
+        assert_eq!((o.action, o.output), ("already_ranged", None));
+        assert!(
+            !f.calls
+                .borrow()
+                .iter()
+                .any(|r| matches!(r, Request::Prefetch { .. }))
+        );
+        // Nothing to prefetch: the Read goes through as before.
+        let g = fake(None, 1);
+        let c = HookCtx {
+            prefetch: true,
+            ..ctx(&g)
+        };
+        assert_eq!(handle(&ranged_read(), &c).action, "already_ranged");
     }
 
     #[test]

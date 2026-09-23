@@ -426,6 +426,12 @@ fn hook_inner(cfg: &Config) {
         related: std::env::var("LAYA_CODEX_RELATED")
             .map(|v| v != "0")
             .unwrap_or(true),
+        batch_reads: std::env::var("LAYA_CODEX_BATCH_READS")
+            .map(|v| v != "0")
+            .unwrap_or(true),
+        prefetch: std::env::var("LAYA_CODEX_PREFETCH")
+            .map(|v| v == "1")
+            .unwrap_or(false),
     };
     let outcome = hook::handle(&input, &ctx);
     if let Some(out) = &outcome.output {

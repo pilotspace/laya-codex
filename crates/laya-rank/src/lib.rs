@@ -17,6 +17,7 @@
 //! [`render_context`] and [`read_narrowing`] turn a [`laya_core::QueryResult`] into what the
 //! hooks/MCP layer actually sends to Claude Code.
 
+mod blocks;
 mod config;
 mod fusion;
 mod read_narrow;
@@ -30,10 +31,12 @@ mod span;
 #[cfg(test)]
 pub(crate) mod fakes;
 
+pub use blocks::{BlockPolicy, plan_file_blocks};
 pub use config::RetrieverConfig;
 pub use read_narrow::{ReadPolicy, read_narrowing};
 pub use render::{
-    TRUST_LINE, render_compact, render_compact_opts, render_context, render_context_opts,
+    TRUST_LINE, render_code_block, render_compact, render_compact_opts, render_context,
+    render_context_opts,
 };
 pub use retriever::Retriever;
 pub use signals::{PromptSignals, content_terms, extract_signals, is_follow_up};

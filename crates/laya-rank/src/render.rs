@@ -66,6 +66,12 @@ or grep to re-check them.\n\n";
 /// the size cap cuts one of the identifier's lines.
 pub(crate) const COMPLETE_USES: &str = " (all indexed uses shown)";
 
+/// Appended to the footer when the caller asks for it ([`crate::SizedContext::parallel_reads_hint`]).
+/// Benchmark v2: with an injection, Claude issued 1.15 Reads per Read message (stock: 1.27) and
+/// about 0.5 follow-up Read turns per session went to files the injection had already named.
+pub(crate) const PARALLEL_READS_HINT: &str = "If you need several of the listed locations, Read \
+them all in one message (parallel tool calls) rather than one per turn.\n";
+
 pub(crate) const COMPACT_FOOTER: &str = "Use the code above directly. Search or Read further only for what is \
 still missing, and prefer Read with offset/limit around the listed lines.\n";
 
@@ -264,6 +270,11 @@ fn render_related_line(r: &Related) -> String {
             r.path, r.start_line, r.end_line, r.symbol, r.relation
         )
     }
+}
+
+/// One `### path:start-end — symbol (p=…)` heading and fenced code block, as in every render.
+pub fn render_code_block(span: &RankedSpan) -> String {
+    render_span(span)
 }
 
 pub(crate) fn render_span(span: &RankedSpan) -> String {

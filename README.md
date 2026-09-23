@@ -336,6 +336,8 @@ Flags:
 | `LAYA_CODEX_MOON_START_SECS` | `30` | how long a freshly started Moon may take to answer |
 | `LAYA_CODEX_MOON_PORT` / `LAYA_CODEX_MOON_BIN` | `16379` / `moon` beside the real `laya-codex` binary, else in `../libexec` (Homebrew), else on `PATH` | Moon sidecar; a missing binary is reported with every path tried |
 | `LAYA_CODEX_BIN` | unset | the `laya-codex` binary the Claude Code plugin should use |
+| `LAYA_CODEX_BATCH_READS` | `1` | `0` = inline only the ranked span per file (no widening, no same-file span, no parallel-Read hint) |
+| `LAYA_CODEX_PREFETCH` | `0` | `1` = on the first Read after a prompt, attach the next ranked code of other files |
 
 </details>
 

@@ -25,6 +25,19 @@ prompt carried about 5.8k characters.
   every indexed use is listed or visible in the inlined code, so Claude can skip the grep for call
   sites. It is only claimed for a complete list and is dropped if the 9,500-character cap cuts a
   line.
+- **Batch reads** (on by default; `LAYA_CODEX_BATCH_READS=0` turns them off). In benchmark v2,
+  43% of Claude's Reads after an injection went to a file whose code was already inlined, and
+  Claude sent 1.15 Reads per Read message (stock Claude: 1.27).
+  - The top file's block is widened by 30 lines each side, snapped to the indexed chunks at its
+    edges, and at most 150 lines per file.
+  - One more listed span of each inlined file is inlined with it; blocks that touch are merged.
+    Added spans are the first to go when the size cap is tight.
+  - The footer asks Claude to Read several listed locations in one message rather than one per
+    turn.
+- **Prefetch on Read** (off by default; `LAYA_CODEX_PREFETCH=1`): on the first Read after a prompt,
+  the hook attaches the next ranked code of up to two other files that Claude does not have yet
+  (current on disk, at most 4,000 characters), as `additionalContext` without a permission
+  decision. Once per prompt; what is sent counts as sent for the session.
 
 ### Fixed
 - Adaptive injection could inline code from a file edited outside Claude since the last index

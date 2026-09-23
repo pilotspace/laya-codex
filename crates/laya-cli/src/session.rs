@@ -25,6 +25,8 @@ struct Session {
     topic: Option<String>,
     /// Text the last query retrieved with (see `effective_query`): what Reads are planned for.
     last_query: Option<String>,
+    /// The last query's next ranked code has not been prefetched yet.
+    prefetch_pending: bool,
     touched: Option<Instant>,
 }
 
@@ -54,6 +56,7 @@ impl Sessions {
     pub fn record_query(&mut self, id: &str, result: &QueryResult) {
         let s = self.get(id);
         s.last = Some(result.clone());
+        s.prefetch_pending = true;
         for span in &result.spans {
             if let Some(existing) = s.working_set.iter_mut().find(|w| {
                 w.path == span.path
@@ -124,6 +127,12 @@ impl Sessions {
     pub fn read_context(&mut self, id: &str) -> (Option<QueryResult>, Option<String>) {
         let s = self.get(id);
         (s.last.clone(), s.last_query.clone())
+    }
+
+    /// Whether the last query's next ranked code may still be prefetched; claims it (once per
+    /// query).
+    pub fn take_prefetch(&mut self, id: &str) -> bool {
+        std::mem::take(&mut self.get(id).prefetch_pending)
     }
 
     /// A whole-file Read was narrowed to `start..=end`: only that window is in the agent's

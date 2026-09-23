@@ -62,6 +62,15 @@ pub enum Request {
         session: String,
         path: String,
     },
+    /// The agent is about to Read `path`: the next ranked code of the session's last query that
+    /// the agent does not have yet (other files, current on disk), at most once per prompt.
+    /// Answered with `Response::Prefetch` (`text: None` = nothing to send). Older daemons answer
+    /// "bad request"; the hook then sends nothing.
+    Prefetch {
+        repo: String,
+        session: String,
+        path: String,
+    },
     /// Ask the daemon to exit (`laya-codex stop`). Answered with `Response::Ok` before it exits; the
     /// Moon it supervises keeps running. Older daemons answer "bad request".
     Shutdown,
@@ -89,6 +98,14 @@ pub struct RenderReq {
     /// Size adaptively (scope + calibrated P) and skip spans already sent in this session;
     /// `false` = the fixed compact format.
     pub adaptive: bool,
+    /// Batch reads (adaptive only): widen the top block into its surroundings, add another
+    /// listed span of each inlined file, and ask for parallel Reads. Absent (older hooks) = on.
+    #[serde(default = "yes")]
+    pub batch_reads: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -122,6 +139,10 @@ pub enum Response {
     ReadPlan {
         #[serde(default)]
         plan: Option<ReadPlan>,
+    },
+    Prefetch {
+        #[serde(default)]
+        text: Option<String>,
     },
     Ok,
     Error {
