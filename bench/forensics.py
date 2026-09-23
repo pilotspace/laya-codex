@@ -3,7 +3,7 @@ injected its context, and what would each candidate optimisation remove?
 
 Offline only: reads benchmark transcripts (`claude -p --output-format stream-json --verbose
 --include-hook-events`), the task gold files, and the benchmarked repo checkout (to size spans
-that were listed but not inlined). Never talks to the laya daemon or to Claude.
+that were listed but not inlined). Never talks to the laya-codex daemon or to Claude.
 
 Every post-injection Read is split *per returned line* (Read results carry startLine/numLines)
 into one class, in this priority order:

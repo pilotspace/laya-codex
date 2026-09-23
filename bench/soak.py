@@ -1,4 +1,4 @@
-"""Soak test: concurrent Claude-like hook traffic against the laya daemon, with injected faults.
+"""Soak test: concurrent Claude-like hook traffic against the laya-codex daemon, with injected faults.
 
 Workers loop over sessions:
   SessionStart(startup) → UserPromptSubmit → Read (whole) → Read (again) → PostToolUse(Edit)
