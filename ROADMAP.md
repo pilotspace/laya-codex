@@ -8,14 +8,14 @@ laya-codex something people can install in one line and forget about.
 
 ## Goals and how they are measured
 
-| goal | target | v0.1.0 | measured by |
-|---|---|---|---|
-| Code-reading tokens | −50% | **−50.1%** [−61.6, −33.0] | `bench/stats.py`, paired bootstrap |
-| Task wall-clock | −30% | −17.4% [−31.5, −1.0] | same |
-| Answer quality | no loss | recall 0.933 vs 0.975, n.s. | `bench/read_accuracy.py` |
-| Evidence | 3+ repos, 60+ tasks, edit tasks | 1 repo, 20 tasks | benchmark suite |
-| Install | one command, < 2 min | `install.sh` (macOS arm64, Linux x86_64) | installer test in CI |
-| Robustness | hooks never break Claude Code | 151k hook calls, 0 failures (soak) | `bench/soak.py` |
+| goal | target | v0.1.0 (v7: moon, 20 tasks) | v0.1.2 (v8: 3 repos, 60 tasks, pooled) | measured by |
+|---|---|---|---|---|
+| Code-reading tokens | −50% | **−50.1%** [−61.6, −33.0] | −38.2% [−50.8, −21.8], not met | `bench/stats.py`, `bench/stats_pooled.py` (paired bootstrap) |
+| Task wall-clock | −30% | −17.4% [−31.5, −1.0] | +3.5% [−6.2, +14.8], no effect (moon did not replicate v7) | same |
+| Answer quality | no loss | recall 0.933 vs 0.975, n.s. | recall 0.899 vs 0.815, +0.083 [+0.028, +0.144], met | `bench/read_accuracy.py` |
+| Evidence | 3+ repos, 60+ tasks, edit tasks | 1 repo, 20 tasks | 3 repos (Rust, Python, TS), 60 tasks; no edit tasks yet | benchmark suite |
+| Install | one command, < 2 min | `install.sh` (macOS arm64, Linux x86_64) | — | installer test in CI |
+| Robustness | hooks never break Claude Code | 151k hook calls, 0 failures (soak) | — | `bench/soak.py` |
 
 ## Distribution channels
 
@@ -85,8 +85,12 @@ Make the first five minutes painless and the tool visible where Claude Code user
   - `search` (MCP) as the cheap default for follow-up lookups;
   - fix third-file misses on multi-file tasks (e.g. the `warm_search.rs` pattern).
 - **Per-repo IDF-aware term selection** so generic chunks stop recurring across unrelated tasks.
-- **Benchmark v2:** 60+ tasks over 3+ repositories and languages, plus SWE-bench-style edit
-  tasks; enough power to separate Laya from lexical-only and adaptive from fixed injection.
+- **Benchmark v2:** done for localisation tasks (v8: moon, httpx, hono; 60 tasks;
+  [docs/RESULTS.md](docs/RESULTS.md)).
+  - Pooled, the Laya model was 13% *slower* than lexical-only ranking, with a CI that excludes
+    zero, so the default needs re-deciding.
+  - The fixed ~3.4k-token injection exceeds what stock Claude reads on small repos.
+  - SWE-bench-style edit tasks are still open.
 - **Linux performance:** a smaller distilled re-ranker or a CUDA path, so Linux users get the
   model inside the time budget instead of lexical-only.
 

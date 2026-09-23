@@ -1,0 +1,12 @@
+## moon
+prompt injections: 80, max 8303 chars, p50 5828, over 9500: 0
+with 'Definitions and uses': 69/80 {'laya-adaptive': '35/40', 'laya-lex': '34/40'}
+narrowed whole-file Reads: 11; file read again later: 9; of which whole-file again: 0
+## httpx
+prompt injections: 80, max 7844 chars, p50 5816, over 9500: 0
+with 'Definitions and uses': 55/80 {'laya-adaptive': '28/40', 'laya-lex': '27/40'}
+narrowed whole-file Reads: 0; file read again later: 0; of which whole-file again: 0
+## hono
+prompt injections: 80, max 7395 chars, p50 5542, over 9500: 0
+with 'Definitions and uses': 56/80 {'laya-adaptive': '29/40', 'laya-lex': '27/40'}
+narrowed whole-file Reads: 2; file read again later: 2; of which whole-file again: 0

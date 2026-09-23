@@ -1,0 +1,266 @@
+{
+ "version": "v8",
+ "n_tasks": 60,
+ "repos": [
+  "moon",
+  "httpx",
+  "hono"
+ ],
+ "model": "sonnet",
+ "arm": "laya-adaptive",
+ "metrics": {
+  "reading_tokens": {
+   "pct": -38.2,
+   "lo": -50.8,
+   "hi": -21.8
+  },
+  "reading_plus_injected": {
+   "pct": 7.1,
+   "lo": -13.7,
+   "hi": 33.0
+  },
+  "total_input": {
+   "pct": -3.7,
+   "lo": -16.9,
+   "hi": 11.9
+  },
+  "wall_clock": {
+   "pct": 3.5,
+   "lo": -6.2,
+   "hi": 14.8
+  },
+  "turns": {
+   "pct": -20.9,
+   "lo": -27.7,
+   "hi": -13.7
+  },
+  "cost": {
+   "pct": -9.9,
+   "lo": -18.7,
+   "hi": -0.4
+  }
+ },
+ "per_repo": {
+  "moon": {
+   "reading_tokens": {
+    "pct": -37.1,
+    "lo": -55.1,
+    "hi": -9.7
+   },
+   "reading_plus_injected": {
+    "pct": -12.6,
+    "lo": -36.4,
+    "hi": 23.3
+   },
+   "total_input": {
+    "pct": -3.5,
+    "lo": -22.4,
+    "hi": 21.0
+   },
+   "wall_clock": {
+    "pct": 13.8,
+    "lo": -3.3,
+    "hi": 31.9
+   },
+   "turns": {
+    "pct": -10.7,
+    "lo": -23.2,
+    "hi": 2.5
+   },
+   "cost": {
+    "pct": -16.8,
+    "lo": -28.4,
+    "hi": -3.0
+   }
+  },
+  "httpx": {
+   "reading_tokens": {
+    "pct": -31.5,
+    "lo": -45.2,
+    "hi": -13.5
+   },
+   "reading_plus_injected": {
+    "pct": 69.5,
+    "lo": 35.3,
+    "hi": 121.3
+   },
+   "total_input": {
+    "pct": -3.0,
+    "lo": -19.3,
+    "hi": 13.8
+   },
+   "wall_clock": {
+    "pct": -2.5,
+    "lo": -13.0,
+    "hi": 11.3
+   },
+   "turns": {
+    "pct": -26.5,
+    "lo": -36.6,
+    "hi": -15.1
+   },
+   "cost": {
+    "pct": 3.8,
+    "lo": -5.0,
+    "hi": 13.2
+   }
+  },
+  "hono": {
+   "reading_tokens": {
+    "pct": -46.5,
+    "lo": -60.3,
+    "hi": -30.7
+   },
+   "reading_plus_injected": {
+    "pct": 22.2,
+    "lo": 0.3,
+    "hi": 48.9
+   },
+   "total_input": {
+    "pct": -5.2,
+    "lo": -30.3,
+    "hi": 33.1
+   },
+   "wall_clock": {
+    "pct": -5.0,
+    "lo": -23.2,
+    "hi": 21.3
+   },
+   "turns": {
+    "pct": -31.8,
+    "lo": -41.9,
+    "hi": -19.1
+   },
+   "cost": {
+    "pct": -5.2,
+    "lo": -21.7,
+    "hi": 17.3
+   }
+  }
+ },
+ "answer_recall": {
+  "baseline": 0.815,
+  "laya": 0.899,
+  "diff": 0.083,
+  "lo": 0.028,
+  "hi": 0.144
+ },
+ "answer_recall_both_turns": {
+  "baseline": 0.933,
+  "laya": 0.96,
+  "diff": 0.026,
+  "lo": -0.014,
+  "hi": 0.075
+ },
+ "laya_vs_lex": {
+  "note": "laya-adaptive vs laya-lex (same hooks, LAYA_BUDGET_MS=0: lexical-only ranking)",
+  "pooled": {
+   "reading_tokens": {
+    "pct": 7.9,
+    "lo": -3.1,
+    "hi": 19.8
+   },
+   "total_input": {
+    "pct": 14.0,
+    "lo": 1.1,
+    "hi": 29.1
+   },
+   "wall_clock": {
+    "pct": 13.4,
+    "lo": 1.8,
+    "hi": 27.0
+   },
+   "cost": {
+    "pct": 3.5,
+    "lo": -5.9,
+    "hi": 14.7
+   }
+  },
+  "per_repo": {
+   "moon": {
+    "reading_tokens": {
+     "pct": 19.1,
+     "lo": 4.3,
+     "hi": 35.2
+    },
+    "wall_clock": {
+     "pct": 31.8,
+     "lo": 8.4,
+     "hi": 60.5
+    }
+   },
+   "httpx": {
+    "reading_tokens": {
+     "pct": -1.7,
+     "lo": -20.2,
+     "hi": 19.3
+    },
+    "wall_clock": {
+     "pct": 16.0,
+     "lo": -0.2,
+     "hi": 36.0
+    }
+   },
+   "hono": {
+    "reading_tokens": {
+     "pct": -13.7,
+     "lo": -32.7,
+     "hi": 9.8
+    },
+    "wall_clock": {
+     "pct": -9.5,
+     "lo": -23.4,
+     "hi": 5.6
+    }
+   }
+  },
+  "answer_recall": {
+   "laya-lex": 0.876,
+   "laya-adaptive": 0.899,
+   "diff": 0.022,
+   "lo": -0.025,
+   "hi": 0.075
+  }
+ },
+ "lex_vs_baseline": {
+  "pooled": {
+   "reading_tokens": {
+    "pct": -42.7,
+    "lo": -55.5,
+    "hi": -27.6
+   },
+   "total_input": {
+    "pct": -15.6,
+    "lo": -31.2,
+    "hi": -0.1
+   },
+   "wall_clock": {
+    "pct": -8.8,
+    "lo": -18.9,
+    "hi": 2.5
+   },
+   "cost": {
+    "pct": -12.9,
+    "lo": -24.4,
+    "hi": -1.5
+   }
+  },
+  "answer_recall": {
+   "baseline": 0.815,
+   "laya-lex": 0.876,
+   "diff": 0.061,
+   "lo": 0.019,
+   "hi": 0.108
+  }
+ },
+ "read_precision": {
+  "baseline": 0.595,
+  "laya": 0.624,
+  "lex": 0.604
+ },
+ "first_gold_read_turn": {
+  "baseline": 5.91,
+  "laya": 3.35,
+  "lex": 3.35
+ }
+}

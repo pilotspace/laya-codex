@@ -4,6 +4,222 @@ All numbers are reproducible from this repo; raw per-run rows are in `bench/resu
 Hardware: Apple M4 Pro, 24 GB. Agent: Claude Code 2.1.280, model `sonnet`, isolated from user
 settings/plugins/MCP (`--setting-sources project --strict-mcp-config`), tools Read/Grep/Glob.
 
+## v8 — benchmark v2 (3 repos, 60 tasks)
+
+**Bottom line.** The v7 result did not hold up over three repositories:
+- Stock Claude Code reads **38% less code** with laya (CI excludes zero), takes **21% fewer
+  turns** and costs **10% less**.
+- Wall-clock did not move: **+3.5%** (n.s.).
+- Total input tokens did not move: −3.7% (n.s.).
+- Answer quality did not drop. Turn-1 recall went up (+0.083, significant); recall over both
+  prompts is +0.026 (n.s.).
+- Neither numeric goal is met, pooled or on any single repo.
+- The Laya model **did not beat lexical-only ranking**: `laya-adaptive` is 13% *slower* than
+  `laya-lex` (significant).
+- On moon, the v7 task set gave wall-clock −17.4% in v7 and +13.8% now, with the same tasks, the
+  same repo commit and the same injection mechanics. So a single 20-task run cannot pin the
+  wall-clock effect.
+
+### Design
+
+| repo | language | pinned commit | indexed files / chunks | tasks |
+|---|---|---|---|---|
+| [pilotspace/moon](https://github.com/pilotspace/moon) | Rust | `8bba3ced49ab` (2026-05-26) | 783 / 8,842 | the v7 set (`bench/tasks-v8/moon.jsonl` = `bench/tasks.jsonl`) |
+| [encode/httpx](https://github.com/encode/httpx) | Python | `b5addb64f016` (2026-02-23) | 92 / 982 | `bench/tasks-v8/httpx.jsonl` |
+| [honojs/hono](https://github.com/honojs/hono) | TypeScript | `6cadf7537385` (2026-09-22) | 436 / 2,569 | `bench/tasks-v8/hono.jsonl` |
+
+- **Tasks.** 20 per repo from git history with the v7 generator: `run_bench.py tasks --skip 40 --n 20`.
+  - Moon keeps the v7 set, which the generator reproduces exactly at `8bba3ced`. That is the
+    checkout v7 ran on.
+  - httpx and hono add `--code-only`. It drops reverts, `ruff`/`mypy` fixes and commits that only
+    touch test files; without it httpx produced "move test cases into test_url.py" tasks.
+  - Applied to moon, `--code-only` changes nothing.
+  - Gold = the source files the commit touched. For httpx and hono that includes test files, so
+    turn-1 recall (which asks for the implementation) is stricter there. Recall over both prompts
+    (the second prompt asks for tests) is the fairer quality measure.
+- **Arms.** All arms use the same `laya` 0.1.2 binary (`a38c8be`), the same Claude Code 2.1.280,
+  `--model sonnet`, 2 prompts per session and tools Read/Grep/Glob. Order is interleaved at random
+  per task.
+  - `baseline`: stock Claude Code.
+  - `laya-adaptive`: the v0.1.2 defaults.
+  - `laya-lex`: the same hooks and MCP server with `LAYA_BUDGET_MS=0`. This is lexical-only
+    ranking with identical rank-based sizing and rendering, so it isolates the Laya model.
+- **Scoring.** Every prompt is scored cold (`LAYA_MEMO=0`), and the daemon restarts at each run
+  start.
+- **Stats.** `bench/stats_pooled.py` gives the ratio-of-sums change and a paired bootstrap 95% CI
+  (10k resamples). The pooled figures resample tasks within each repo (stratified). A
+  "repo-balanced" figure, the mean of the per-repo changes, is in the raw stats files.
+- **Leakage.** None of the three repos is in the laya-code `TRAIN` list (`finetune/repos.py`), and
+  moon is `HELDOUT`.
+  - The training checkouts are not on the benchmark machine, so the root-commit overlap check was
+    not re-run.
+  - httpx and hono are popular public repos. Laya's base model and Sonnet may both have seen them
+    in pre-training. For Sonnet that applies to every arm equally.
+- **Raw data.** Rows are in `bench/results/claude-v8/<repo>/runs.jsonl`. Pins, binaries and spend
+  are in `bench/results/claude-v8/meta.json`, and the machine-readable headline is
+  `bench/results/headline-v8.json`.
+
+### Headline: laya-adaptive (v0.1.2 defaults) vs stock Claude Code
+
+Each cell is the change, the 95% CI, and the number of tasks where laya was lower.
+
+| metric | moon (Rust) | httpx (Python) | hono (TS) | **pooled, 60 tasks** |
+|---|---|---|---|---|
+| code-reading tokens | −37.1% [−55.1, −9.7] 12/20 | −31.5% [−45.2, −13.5] 15/20 | −46.5% [−60.3, −30.7] 18/20 | **−38.2% [−50.8, −21.8]** 45/60 |
+| reading + injected tokens | −12.6% [−36.4, +23.3] | +69.5% [+35.3, +121.3] | +22.2% [+0.3, +48.9] | +7.1% [−13.7, +33.0] |
+| total input tokens | −3.5% [−22.4, +21.0] | −3.0% [−19.3, +13.8] | −5.2% [−30.3, +33.1] | −3.7% [−16.9, +11.9] |
+| wall-clock | +13.8% [−3.3, +31.9] 8/20 | −2.5% [−13.0, +11.3] 13/20 | −5.0% [−23.2, +21.3] 12/20 | **+3.5% [−6.2, +14.8]** 33/60 |
+| turns | −10.7% [−23.2, +2.5] | −26.5% [−36.6, −15.1] | −31.8% [−41.9, −19.1] | **−20.9% [−27.7, −13.7]** 45/60 |
+| cost | −16.8% [−28.4, −3.0] | +3.8% [−5.0, +13.2] | −5.2% [−21.7, +17.3] | **−9.9% [−18.7, −0.4]** 32/60 |
+| answer recall, turn 1 | 0.950 vs 0.925 | 0.917 vs 0.717 | 0.829 vs 0.804 | 0.899 vs 0.815, **+0.083 [+0.028, +0.144]** |
+| answer recall, both prompts | 0.975 vs 0.950 | 0.917 vs 0.867 | 0.988 vs 0.983 | 0.960 vs 0.933, +0.026 [−0.014, +0.075] |
+
+Means per session (baseline / laya-adaptive / laya-lex):
+
+| repo | wall-clock (s) | turns | cost ($) |
+|---|---|---|---|
+| moon | 60.8 / 69.1 / 52.4 | 18.8 / 16.8 / 13.0 | 0.463 / 0.385 / 0.339 |
+| httpx | 42.4 / 41.4 / 35.7 | 12.7 / 9.3 / 8.4 | 0.171 / 0.177 / 0.162 |
+| hono | 43.9 / 41.7 / 46.1 | 11.2 / 7.6 / 8.6 | 0.186 / 0.176 / 0.212 |
+
+### Against the goals
+
+| goal | moon | httpx | hono | pooled | verdict |
+|---|---|---|---|---|---|
+| −50% code-reading tokens | −37% | −32% | −47% | −38% [−51, −22] | **not met.** A significant cut, but the CI only just reaches −50%. Counting the injected context, reading is +7% (n.s.). |
+| −30% task time | +14% (n.s.) | −3% (n.s.) | −5% (n.s.) | +3.5% [−6, +15] | **not met.** There is no measurable time effect. |
+| no answer-quality loss | +0.03 | +0.20 | +0.03 | +0.083 turn 1 (sig.), +0.026 both prompts (n.s.) | **met.** Quality did not drop on any repo, and turn-1 recall rose. |
+
+### Is it the Laya model? laya-adaptive vs laya-lex (same pipeline, lexical-only ranking)
+
+| metric | moon | httpx | hono | pooled |
+|---|---|---|---|---|
+| code-reading tokens | +19.1% [+4.3, +35.2] | −1.7% [−20.2, +19.3] | −13.7% [−32.7, +9.8] | +7.9% [−3.1, +19.8] |
+| total input tokens | +29.5% [+9.5, +55.5] | +15.6% [−2.3, +38.2] | −17.4% [−36.1, +2.2] | **+14.0% [+1.1, +29.1]** |
+| wall-clock | +31.8% [+8.4, +60.5] | +16.0% [−0.2, +36.0] | −9.5% [−23.4, +5.6] | **+13.4% [+1.8, +27.0]** |
+| turns | +28.8% [+12.5, +48.5] | +10.1% [−5.9, +29.7] | −11.6% [−23.0, +0.7] | **+12.0% [+2.9, +22.2]** |
+| cost | +13.5% [−2.1, +33.1] | +9.3% [−5.2, +28.0] | −16.9% [−29.9, −2.2] | +3.5% [−5.9, +14.7] |
+| recall, turn 1 | −0.008 | +0.100 | −0.025 | +0.022 [−0.025, +0.075] |
+
+Compared with stock Claude Code, `laya-lex` did better than `laya-adaptive` on time, turns and
+input:
+- wall-clock −8.8% [−18.9, +2.5];
+- turns −29.4% [−35.6, −22.8];
+- total input −15.6% [−31.2, −0.1];
+- cost −12.9% [−24.4, −1.5];
+- code reading −42.7% [−55.5, −27.6];
+- recall +0.061 on turn 1 and +0.004 over both prompts.
+
+The model's scoring alone costs about 1.1 s per prompt, roughly 4% of a session. It does not
+explain the whole +13%: the adaptive sessions also took more turns.
+
+The forensics (`bench/results/claude-v8/forensics-*.md`) show that the re-ranker injects no more
+gold files than BM25 does. The gold files it inlines:
+
+| repo | laya-adaptive | laya-lex |
+|---|---|---|
+| moon | 19 | 20 |
+| httpx | 28 | 28 |
+| hono | 26 | 28 |
+
+The Laya effect only favoured the model on hono, and flipped sign between repos. This matches the
+v1/v2 ablations, where the Laya-vs-lexical sign also flipped. Over 60 tasks, the evidence now
+points *against* paying for the model by default.
+
+### Read accuracy (`bench/read_accuracy.py`, pooled over 60 tasks)
+
+| arm | Read calls | read precision | gold code seen | wasted read tokens | first gold Read at turn |
+|---|---|---|---|---|---|
+| baseline | 4.02 | 0.595 | 0.817 | 2,005 | 5.91 |
+| laya-adaptive | 3.48 | 0.624 | 0.906 | 1,187 | 3.35 |
+| laya-lex | 3.48 | 0.604 | 0.907 | 1,127 | 3.35 |
+
+Per repo (`bench/results/claude-v8/read-accuracy.md`):
+- On moon, read precision rose from 0.37 to 0.56 and the first gold Read moved from turn 8.2 to 4.0.
+  Both repeat v7.
+- On httpx and hono, stock Claude is already precise (0.58 and 0.83) and finds gold by turn about 4.6.
+  Laya's gains there are fewer wasted reads and more gold seen, not better precision.
+
+### Why reading fell but time did not (forensics)
+
+1. **The injection is fixed-size, and small repos do not need it.** Every prompt injects about
+   3.4k tokens (p50 about 5.6k characters, none over the 9,500 cap, `mechanics.txt`).
+   - Stock Claude reads only 3.3k tokens per session on httpx and 4.5k on hono.
+   - So on those repos, reading plus injected tokens *rises* (+70%, +22%), and total input and
+     cost stay flat.
+   - The 38% code-reading cut is real, but on small repos laya mostly swaps Reads for injected
+     tokens.
+2. **Time goes to the tail, not to finding code.** In every arm, 87–90% of moon wall-clock comes
+   after the last new gold file is found. That time goes to verification greps, the second
+   prompt, and writing the answers.
+   - Laya moves the first gold Read earlier (turn 5.9 → 3.4), but that part is a small share of
+     the session.
+   - On moon, `laya-adaptive` sessions made *more* verification greps than baseline (6.2 vs 5.4
+     `e_grep_locate` calls per task). `laya-lex` made fewer (3.4).
+3. **The largest misses.**
+   - moon `14ca4f0c12`: +60 s vs baseline, 28 vs 29 turns (lex: 14).
+   - moon `624822d46e`: +56 s, 21 vs 17 turns.
+   - hono `d982f637eb`: +84 s, where *both* laya arms went long (17 and 19 turns vs 10).
+   - These are long verification tails after the gold file was already in context, not retrieval
+     misses.
+
+### v7 did not replicate on moon
+
+The v7 run and this run used the same 20 moon tasks, the same repo commit, the same index (783
+files, 8,842 chunks) and matching mechanics:
+- 80 injections, max 8,303 characters;
+- 69 of 80 with "Definitions and uses", vs 70 of 80 in v7.
+
+The ranking code is unchanged between v0.1.0 and v0.1.2. The results moved:
+
+| metric | v7 | v8 |
+|---|---|---|
+| code reading | −50.1% | −37.1% |
+| wall-clock | −17.4% [−31.5, −1.0] | +13.8% [−3.3, +31.9] |
+| baseline session wall-clock | 72.1 s | 60.8 s |
+
+The v7 wall-clock CI and this one overlap only near zero. Day-to-day variation in Sonnet's
+behaviour and API latency is at least as large as the effect v7 reported. Wall-clock claims need
+more than one 20-task run.
+
+### Run log, cost and caveats
+
+- **Pilot.**
+  - 18 sessions (2 tasks × 3 arms × 3 repos) cost $5.19 and took 16.6 min.
+  - That projected $52 and 2.8 h for the full run, well inside the $150 / 16 h gate.
+  - The pilot rows are part of the final 180 (same protocol).
+- **Full run.**
+  - 180 valid sessions cost $45.45 and 144.5 min of session wall-clock. There were 0 non-zero
+    exits and 0 timeouts.
+  - Total spend was about $51 including the discarded sessions below.
+- **Incident: disk full.** The machine's data volume was about 96% full. Moon's default guard
+  (`--disk-free-min-pct 5`) paused writes, and every laya query failed (`query_failed`) from moon
+  session 21 on.
+  - 15 moon laya-arm sessions had run with no injection. They are archived in
+    `moon/runs.dropped.jsonl` ($5.41) and were re-run once, all successfully.
+  - For the re-run, Moon was restarted through an `LAYA_MOON_BIN` wrapper that adds
+    `--disk-free-min-pct 1`, and its AOF was compacted from 4.1 GB to 63 MB. No later session
+    lost its injection.
+  - Side effect: on 8 moon tasks the laya arms ran about an hour after their baseline, so those
+    pairs were not interleaved in time.
+  - Sensitivity: on those 8 tasks both laya arms look worse than on the other 12. Adaptive/baseline
+    wall ratio is 1.28 vs 1.06, and lex/baseline is 1.00 vs 0.80.
+  - Excluding them does not change any verdict. The adaptive-vs-lex comparison is unaffected,
+    since both arms were re-run together.
+- **Scope of the benchmark.**
+  - Localisation and explanation tasks only; no edit tasks.
+  - One model (Sonnet).
+  - n = 20 per repo: per-repo CIs are wide, and only the pooled rows have useful power.
+- **Environment.** The nested `claude -p` sessions inherited the orchestrating session's
+  environment, including `CLAUDE_EFFORT=medium`. v7 ran the same way, and it is the same for
+  every arm.
+- **Task filter.** `--code-only` is a new filter applied to the new repos. Its rules are listed in
+  the Design section, and it does not change moon.
+
+---
+
+*Everything below is the single-repo (moon) history up to v7, kept as recorded.*
+
 ## 1. The question
 
 Does giving Claude Code pre-ranked code spans (tree-sitter chunks → Moon BM25 → Laya re-rank,
