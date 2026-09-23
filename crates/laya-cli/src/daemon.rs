@@ -243,7 +243,11 @@ impl Daemon {
                 }
                 let scorer = self.scorer.read().ok().and_then(|s| s.clone());
                 let retriever = Retriever::new(self.store.as_ref(), scorer, cfg);
-                match retriever.query(&id, &prompt) {
+                let query = match (&session, self.sessions.lock()) {
+                    (Some(s), Ok(mut sessions)) => sessions.effective_query(s, &prompt),
+                    _ => prompt.clone(),
+                };
+                match retriever.query(&id, &query) {
                     Ok(result) => {
                         if let (Some(s), Ok(mut sessions)) = (&session, self.sessions.lock()) {
                             sessions.record_query(s, &result);

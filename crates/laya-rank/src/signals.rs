@@ -23,9 +23,63 @@ const PATH_EXTENSIONS: &[&str] = &[
     "hpp", "cs", "rb", "php", "kt", "kts", "swift", "md", "toml", "json", "yaml", "yml",
 ];
 
+/// Words that carry no retrieval signal in a coding-agent prompt: English function words and
+/// the instruction/meta vocabulary agents and users wrap tasks in ("find the source code…",
+/// "be efficient", "comma-separated paths"). BM25 picks the *rarest* query terms, and prose like
+/// `comma` or `efficient` is rare in code, so without this list the wrapper outranks the task.
+/// Only BM25 terms are filtered; identifiers (`find_files`) and path mentions are kept.
+const PROMPT_STOPLIST: &[&str] = &[
+    // function words
+    "a", "about", "above", "after", "again", "all", "also", "am", "an", "and", "any", "are", "as", "at",
+    "be", "because", "been", "before", "being", "below", "between", "both", "but", "by", "can", "could",
+    "did", "do", "does", "doing", "done", "down", "during", "each", "either", "else", "etc", "ever",
+    "every", "few", "for", "from", "further", "had", "has", "have", "having", "he", "her", "here", "his",
+    "how", "however", "i", "if", "in", "into", "is", "it", "its", "itself", "just", "let", "lets", "me",
+    "might", "more", "most", "much", "must", "my", "no", "nor", "not", "now", "of", "off", "on", "once",
+    "one", "only", "or", "other", "our", "out", "over", "own", "please", "same", "shall", "she", "should",
+    "so", "some", "such", "than", "that", "the", "their", "them", "then", "there", "these", "they",
+    "this", "those", "through", "thus", "to", "too", "under", "until", "up", "upon", "us", "very", "via",
+    "was", "we", "were", "what", "when", "where", "whether", "which", "while", "who", "whom", "whose",
+    "why", "will", "with", "within", "without", "would", "yes", "yet", "you", "your", "yours",
+    // instruction / meta vocabulary of agent prompts. Words that are also common code-domain
+    // vocabulary (path, file, line, read, list, code, source, change, ...) are deliberately NOT
+    // here: "fast-path" or "read path" are task content, and common words rarely win the
+    // rarest-first BM25 term selection anyway.
+    "answer", "briefly", "codebase", "comma", "describe", "efficient", "efficiently", "exactly",
+    "explain", "find", "following", "give", "help", "identify", "implements", "look", "need", "needs",
+    "please", "project", "relevant", "repository", "separated", "show", "tell", "understand", "want",
+];
+
+fn is_stopword(term: &str) -> bool {
+    PROMPT_STOPLIST.contains(&term)
+}
+
+/// Distinct BM25 terms left after the stoplist: how much task content a prompt carries on its
+/// own (a follow-up like "now find the tests for it" carries little).
+pub fn content_terms(prompt: &str) -> usize {
+    let mut t = extract_signals(prompt).terms;
+    t.sort();
+    t.dedup();
+    t.len()
+}
+
+/// Words that refer back to earlier conversation ("the same change", "where is it called").
+const CONTINUATION_MARKERS: &[&str] = &[
+    "same", "this", "that", "these", "those", "it", "its", "them", "above", "previous", "earlier",
+    "also", "again", "now", "there",
+];
+
+/// Whether `prompt` reads as a follow-up that depends on earlier context: almost no task
+/// content, or little content plus a word pointing back ("now find the tests for the same change").
+pub fn is_follow_up(prompt: &str) -> bool {
+    let content = content_terms(prompt);
+    let refers_back = ident::words(prompt).any(|w| CONTINUATION_MARKERS.contains(&w.to_ascii_lowercase().as_str()));
+    content < 4 || (content < 10 && refers_back)
+}
+
 /// Extract [`PromptSignals`] from a raw user prompt.
 pub fn extract_signals(prompt: &str) -> PromptSignals {
-    let terms = ident::terms(prompt);
+    let terms: Vec<String> = ident::terms(prompt).into_iter().filter(|t| !is_stopword(t)).collect();
     let mut identifiers = Vec::new();
     let mut paths = Vec::new();
 
@@ -142,6 +196,56 @@ mod tests {
         assert!(!s.terms.is_empty());
         assert!(s.identifiers.is_empty());
         assert!(s.paths.is_empty());
+    }
+
+    #[test]
+    fn instruction_boilerplate_is_not_searched() {
+        let prompt = "In this repository, find the source code that implements or would need to change for the \
+            following change, and briefly explain how it works:\n\n\"fix(vector): address three post-review issues \
+            in mmap budget\"\n\nBe efficient: read only what you need. End your answer with one line exactly of \
+            the form\nFILES: <comma-separated repo-relative paths of the most relevant source files>";
+        let s = extract_signals(prompt);
+        for kept in ["vector", "mmap", "budget", "post", "review", "issues", "address"] {
+            assert!(s.terms.contains(&kept.to_string()), "{kept} missing from {:?}", s.terms);
+        }
+        for dropped in ["repository", "find", "explain", "efficient", "comma", "separated", "answer", "relevant", "briefly", "exactly"] {
+            assert!(!s.terms.contains(&dropped.to_string()), "{dropped} kept in {:?}", s.terms);
+        }
+    }
+
+    #[test]
+    fn other_phrasings_of_instructions_are_dropped_too() {
+        let s = extract_signals("Can you please show me where in the codebase we should look to understand how the WAL replay handles torn writes?");
+        assert_eq!(content_terms("Can you please show me where in the codebase we should look"), 0);
+        for kept in ["wal", "replay", "handles", "torn", "writes"] {
+            assert!(s.terms.contains(&kept.to_string()), "{kept} missing from {:?}", s.terms);
+        }
+    }
+
+    #[test]
+    fn code_domain_words_are_kept() {
+        let s = extract_signals("drop dead cross-shard fast-path metrics; fix the read path and file lines");
+        for kept in ["path", "fast", "read", "file", "lines"] {
+            assert!(s.terms.contains(&kept.to_string()), "{kept} missing from {:?}", s.terms);
+        }
+    }
+
+    #[test]
+    fn identifiers_and_paths_survive_the_stoplist() {
+        let s = extract_signals("why does find_files() in src/code.rs skip Source::File?");
+        assert!(s.identifiers.contains(&"find_files".to_string()));
+        assert!(s.paths.contains(&"src/code.rs".to_string()));
+        assert!(s.terms.contains(&"find_files".to_string()), "joined identifier term kept: {:?}", s.terms);
+    }
+
+    #[test]
+    fn follow_ups_are_recognised() {
+        assert!(is_follow_up("Now, for the same change, identify the tests that cover this code and the main call sites that invoke it."));
+        assert!(is_follow_up("where is it called?"));
+        assert!(is_follow_up("add tests"));
+        assert!(!is_follow_up("fix(shard): gate unused graph-merge params under graph feature"));
+        assert!(!is_follow_up("why does the wal replay skip torn segment headers after crash recovery"));
+        assert_eq!(content_terms("fix(shard): gate unused graph-merge params under graph feature"), 8);
     }
 
     #[test]

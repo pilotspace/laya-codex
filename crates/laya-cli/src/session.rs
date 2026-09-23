@@ -21,6 +21,8 @@ struct Session {
     sent: Vec<(String, u32, u32)>,
     /// Files read without offset/limit: entirely in the agent's context.
     full_reads: HashSet<String>,
+    /// Last self-contained prompt: what thin follow-ups in this session are about.
+    topic: Option<String>,
     touched: Option<Instant>,
 }
 
@@ -83,6 +85,20 @@ impl Sessions {
         }
         let overflow = s.sent.len().saturating_sub(MAX_SENT);
         s.sent.drain(..overflow);
+    }
+
+    /// Text to retrieve for `prompt`: the prompt itself if it is self-contained (or the first in
+    /// the session, which then becomes the topic); a thin follow-up ("now find the tests for
+    /// it") is extended with the session topic so retrieval stays on the task.
+    pub fn effective_query(&mut self, id: &str, prompt: &str) -> String {
+        let s = self.get(id);
+        match &s.topic {
+            Some(topic) if laya_rank::is_follow_up(prompt) => format!("{prompt}\n{topic}"),
+            _ => {
+                s.topic = Some(prompt.to_string());
+                prompt.to_string()
+            }
+        }
     }
 
     /// Everything already in the agent's context: sent spans plus whole files it read.
@@ -148,6 +164,22 @@ mod tests {
         let got = s.already("a");
         assert_eq!(got.len(), MAX_SENT);
         assert_eq!(got[0].1, 5);
+    }
+
+    #[test]
+    fn thin_follow_ups_are_queried_with_the_session_topic() {
+        let mut s = Sessions::default();
+        let task = "fix(vector): address three post-review issues in mmap budget accounting";
+        assert_eq!(s.effective_query("a", task), task);
+        let follow = "Now, for the same change, identify the tests that cover this code.";
+        let q = s.effective_query("a", follow);
+        assert!(q.starts_with(follow) && q.contains(task), "{q}");
+        // A new self-contained task replaces the topic.
+        let other = "gate unused graph merge params under graph feature in shard autovacuum";
+        assert_eq!(s.effective_query("a", other), other);
+        assert!(s.effective_query("a", follow).contains(other));
+        // Other sessions are unaffected.
+        assert_eq!(s.effective_query("b", follow), follow);
     }
 
     #[test]

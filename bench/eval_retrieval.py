@@ -15,7 +15,17 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from run_bench import SRC_EXT, git  # noqa: E402
+from run_bench import PROMPT, SRC_EXT, git  # noqa: E402
+
+# How the task reaches the retriever: bare (as in the dev set), wrapped in the Claude benchmark
+# prompt, or wrapped in a differently worded, chattier request (guards against tuning to one wrapper).
+TEMPLATES = {
+    "none": "{task}",
+    "bench": PROMPT,
+    "alt": ("Hey, can you help me understand this project? I'm working on the following and want to know "
+            "which parts of the code I should look at first, and why:\n{task}\n"
+            "Please list the key functions and give me a short summary for each one."),
+}
 
 LAYA = os.environ.get("LAYA_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya"))
 
@@ -62,7 +72,7 @@ def evaluate(args):
     text_share = []
     dump = open(args.dump, "w") if args.dump else None
     for t in tasks:
-        r, ms = query(args.repo, t["task"], args.budget_ms)
+        r, ms = query(args.repo, TEMPLATES[args.template].format(task=t["task"]), args.budget_ms)
         if r is None:
             continue
         if dump:
@@ -110,6 +120,7 @@ def main():
     e.add_argument("--limit", type=int, default=0)
     e.add_argument("--tag", default="")
     e.add_argument("--out", default=None)
+    e.add_argument("--template", choices=sorted(TEMPLATES), default="none")
     e.add_argument("--dump", default=None, help="write per-task results (task, gold, QueryResult) as JSONL")
     args = ap.parse_args()
     {"devset": devset, "score": evaluate}[args.cmd](args)
