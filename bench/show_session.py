@@ -62,7 +62,7 @@ for line in open(path):
             if c.get("type") == "tool_use":
                 i = c["input"]
                 arg = i.get("file_path") or i.get("pattern") or i.get("query") or json.dumps(i)
-                extra = f" offset={i['offset']} limit={i['limit']}" if "offset" in i or "limit" in i else ""
+                extra = f" offset={i.get('offset', 1)} limit={i.get('limit', '-')}" if "offset" in i or "limit" in i else ""
                 print(f"   Claude → {c['name']}({short(arg, 120)}){extra}")
     elif t == "result":
         print(f"\n<<< CLAUDE ANSWER (turns={e.get('num_turns')}, {e.get('duration_ms', 0) / 1000:.1f}s, ${e.get('total_cost_usd', 0):.3f}):")
