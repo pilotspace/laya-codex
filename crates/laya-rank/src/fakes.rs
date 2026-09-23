@@ -95,6 +95,25 @@ impl Store for FakeStore {
         ids.truncate(limit);
         Ok(ids)
     }
+    fn chunks_referencing(
+        &self,
+        _repo_id: &str,
+        idents: &[String],
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        // Contract: "ordered by how many of `idents` they reference (desc), then id."
+        let mut scored: Vec<(String, usize)> = self
+            .chunks
+            .iter()
+            .filter_map(|c| {
+                let count = c.refs.iter().filter(|r| idents.contains(r)).count();
+                (count > 0).then(|| (c.id(), count))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        scored.truncate(limit);
+        Ok(scored.into_iter().map(|(id, _)| id).collect())
+    }
     fn get_chunks(&self, _repo_id: &str, ids: &[String]) -> Result<Vec<Chunk>> {
         Ok(self
             .chunks
@@ -108,6 +127,57 @@ impl Store for FakeStore {
     }
     fn memo_put(&self, _key: &str, _value: &str, _ttl_secs: u64) -> Result<()> {
         Ok(())
+    }
+}
+
+/// Wraps a [`FakeStore`] but fails `chunks_referencing`, to exercise the one-hop expansion's
+/// fail-open path (§6 of the related-expansion brief) without disturbing candidate generation,
+/// which never calls `chunks_referencing`.
+pub struct FailingReferencingStore(pub FakeStore);
+
+impl Store for FailingReferencingStore {
+    fn ensure_index(&self, repo_id: &str) -> Result<()> {
+        self.0.ensure_index(repo_id)
+    }
+    fn put_file(&self, repo_id: &str, path: &str, file_hash: &str, chunks: &[Chunk]) -> Result<()> {
+        self.0.put_file(repo_id, path, file_hash, chunks)
+    }
+    fn delete_file(&self, repo_id: &str, path: &str) -> Result<()> {
+        self.0.delete_file(repo_id, path)
+    }
+    fn file_hash(&self, repo_id: &str, path: &str) -> Result<Option<String>> {
+        self.0.file_hash(repo_id, path)
+    }
+    fn list_files(&self, repo_id: &str) -> Result<Vec<String>> {
+        self.0.list_files(repo_id)
+    }
+    fn bm25(&self, repo_id: &str, terms: &[String], limit: usize) -> Result<Vec<(String, f32)>> {
+        self.0.bm25(repo_id, terms, limit)
+    }
+    fn chunks_defining(
+        &self,
+        repo_id: &str,
+        idents: &[String],
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        self.0.chunks_defining(repo_id, idents, limit)
+    }
+    fn chunks_referencing(
+        &self,
+        _repo_id: &str,
+        _idents: &[String],
+        _limit: usize,
+    ) -> Result<Vec<String>> {
+        Err(Error::StoreUnavailable("moon down".into()))
+    }
+    fn get_chunks(&self, repo_id: &str, ids: &[String]) -> Result<Vec<Chunk>> {
+        self.0.get_chunks(repo_id, ids)
+    }
+    fn memo_get(&self, key: &str) -> Result<Option<String>> {
+        self.0.memo_get(key)
+    }
+    fn memo_put(&self, key: &str, value: &str, ttl_secs: u64) -> Result<()> {
+        self.0.memo_put(key, value, ttl_secs)
     }
 }
 

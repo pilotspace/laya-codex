@@ -12,6 +12,7 @@ use laya_core::{Candidate, Chunk, QueryResult, RankMode, Result, Scorer, Store};
 
 use crate::config::RetrieverConfig;
 use crate::fusion::fuse_ranked_lists;
+use crate::related::expand_related;
 use crate::signals::extract_signals;
 use crate::span::{Scored, shape_spans};
 
@@ -108,13 +109,19 @@ impl<'a> Retriever<'a> {
         let n_candidates = candidates.len();
 
         let (scored, mode) = self.laya_gate(prompt, candidates);
+        // Seeds for one-hop expansion are the top 3 *scored chunks*, captured before shaping
+        // merges same-file spans together (a merge loses `defines`/`refs`).
+        let seeds: Vec<Chunk> = scored.iter().take(3).map(|s| s.chunk.clone()).collect();
         let spans = shape_spans(scored, self.cfg.top_n, self.cfg.max_total_lines);
+        let related = expand_related(self.store, repo_id, &seeds, &spans, self.cfg.max_related)
+            .unwrap_or_default();
 
         Ok(QueryResult {
             spans,
             mode,
             elapsed_ms: elapsed_ms(start),
             candidates: n_candidates,
+            related,
         })
     }
 
@@ -226,19 +233,43 @@ impl<'a> Retriever<'a> {
 }
 
 /// `(1-w)·(1 - rank/n) + w·p` per candidate, where `rank` is the lexical (fused) position.
-pub(crate) fn weighted_scores(lexical_ids: &[String], probs: &[f32], w: f32) -> HashMap<String, f32> {
+pub(crate) fn weighted_scores(
+    lexical_ids: &[String],
+    probs: &[f32],
+    w: f32,
+) -> HashMap<String, f32> {
     let n = lexical_ids.len().max(1) as f32;
     lexical_ids
         .iter()
         .enumerate()
-        .map(|(rank, id)| (id.clone(), (1.0 - w) * (1.0 - rank as f32 / n) + w * probs[rank]))
+        .map(|(rank, id)| {
+            (
+                id.clone(),
+                (1.0 - w) * (1.0 - rank as f32 / n) + w * probs[rank],
+            )
+        })
         .collect()
 }
 
 /// Words that signal the task is about prose/config files rather than code.
 const NON_CODE_INTENT: &[&str] = &[
-    "readme", "doc", "docs", "documentation", "guide", "markdown", "changelog", "config", "configuration", "toml",
-    "yaml", "yml", "json", "dockerfile", "makefile", "ci", "workflow",
+    "readme",
+    "doc",
+    "docs",
+    "documentation",
+    "guide",
+    "markdown",
+    "changelog",
+    "config",
+    "configuration",
+    "toml",
+    "yaml",
+    "yml",
+    "json",
+    "dockerfile",
+    "makefile",
+    "ci",
+    "workflow",
 ];
 
 /// Unless the prompt is about docs/config, line-window (`Lang::Text`) chunks halve their fused
@@ -250,7 +281,10 @@ pub(crate) fn demote_non_code(mut candidates: Vec<Candidate>, prompt: &str) -> V
     if NON_CODE_INTENT.iter().any(|w| words.contains(w)) {
         return candidates;
     }
-    for c in candidates.iter_mut().filter(|c| c.chunk.lang == laya_core::Lang::Text) {
+    for c in candidates
+        .iter_mut()
+        .filter(|c| c.chunk.lang == laya_core::Lang::Text)
+    {
         c.fused *= 0.5;
     }
     candidates.sort_by_key(|c| c.chunk.lang == laya_core::Lang::Text);
@@ -273,6 +307,7 @@ fn empty_result(start: Instant) -> QueryResult {
         mode: RankMode::Lexical,
         elapsed_ms: elapsed_ms(start),
         candidates: 0,
+        related: Vec::new(),
     }
 }
 
@@ -315,7 +350,8 @@ fn call_scorer_bounded(
 mod tests {
     use super::*;
     use crate::fakes::{
-        FailingScorer, FailingStore, FakeStore, ProbScorer, SleepyScorer, WrongLengthScorer,
+        FailingReferencingStore, FailingScorer, FailingStore, FakeStore, ProbScorer, SleepyScorer,
+        WrongLengthScorer,
     };
     use laya_core::Lang;
     use std::collections::HashMap as StdHashMap;
@@ -323,7 +359,12 @@ mod tests {
     fn cand(path: &str, lang: Lang, fused: f32) -> Candidate {
         let mut c = chunk(path, 1, 10, &[], "x");
         c.lang = lang;
-        Candidate { chunk_id: c.id(), chunk: c, bm25: fused, fused }
+        Candidate {
+            chunk_id: c.id(),
+            chunk: c,
+            bm25: fused,
+            fused,
+        }
     }
 
     #[test]
@@ -332,12 +373,18 @@ mod tests {
         let s = weighted_scores(&ids, &[0.1, 0.9], 0.5);
         assert!((s["a"] - (0.5 * 1.0 + 0.05)).abs() < 1e-6);
         assert!((s["b"] - (0.5 * 0.5 + 0.45)).abs() < 1e-6);
-        assert!(s["b"] > s["a"], "a confident Laya answer should overtake one lexical rank");
+        assert!(
+            s["b"] > s["a"],
+            "a confident Laya answer should overtake one lexical rank"
+        );
     }
 
     #[test]
     fn non_code_chunks_are_demoted_unless_prompt_is_about_docs() {
-        let cands = vec![cand("README.md", Lang::Text, 0.9), cand("src/a.rs", Lang::Rust, 0.5)];
+        let cands = vec![
+            cand("README.md", Lang::Text, 0.9),
+            cand("src/a.rs", Lang::Rust, 0.5),
+        ];
         let out = demote_non_code(cands.clone(), "fix the mmap budget review issues");
         assert_eq!(out[0].chunk.path, "src/a.rs");
         assert!((out[1].fused - 0.45).abs() < 1e-6);
@@ -346,6 +393,17 @@ mod tests {
     }
 
     fn chunk(path: &str, start: u32, end: u32, defines: &[&str], text: &str) -> Chunk {
+        chunk_with_refs(path, start, end, defines, &[], text)
+    }
+
+    fn chunk_with_refs(
+        path: &str,
+        start: u32,
+        end: u32,
+        defines: &[&str],
+        refs: &[&str],
+        text: &str,
+    ) -> Chunk {
         Chunk {
             path: path.to_string(),
             start_line: start,
@@ -354,6 +412,7 @@ mod tests {
             symbol: String::new(),
             kind: "function_item".to_string(),
             defines: defines.iter().map(|s| s.to_string()).collect(),
+            refs: refs.iter().map(|s| s.to_string()).collect(),
             text: text.to_string(),
         }
     }
@@ -442,6 +501,87 @@ mod tests {
         let store = FailingStore;
         let r = Retriever::new(&store, None, RetrieverConfig::default());
         assert!(r.query("repo", "anything at all").is_err());
+    }
+
+    #[test]
+    fn query_expands_related_from_top_scored_chunk_refs() {
+        // `jitter.rs` shares no bm25 terms with the prompt, so it can only surface via the
+        // ref-expansion path (not lexical search) — isolating what this test checks.
+        let retry = chunk_with_refs(
+            "src/store/retry.rs",
+            1,
+            20,
+            &["retry_with_backoff"],
+            &["compute_jitter"],
+            "fn retry_with_backoff() { compute_jitter(); }",
+        );
+        let jitter = chunk_with_refs(
+            "src/store/jitter.rs",
+            1,
+            10,
+            &["compute_jitter"],
+            &[],
+            "fn compute_jitter() -> u32 { 0 }",
+        );
+        let store = FakeStore::new(vec![retry, jitter]);
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        let out = r.query("repo", "fix retry_with_backoff flow").unwrap();
+        assert!(out.spans.iter().any(|s| s.path == "src/store/retry.rs"));
+        assert!(!out.spans.iter().any(|s| s.path == "src/store/jitter.rs"));
+        assert!(
+            out.related
+                .iter()
+                .any(|rel| rel.path == "src/store/jitter.rs"
+                    && rel.relation == "defines `compute_jitter` (used by #1)"),
+            "related: {:?}",
+            out.related
+        );
+    }
+
+    #[test]
+    fn max_related_zero_disables_expansion_in_query() {
+        let retry = chunk_with_refs(
+            "src/store/retry.rs",
+            1,
+            20,
+            &["retry_with_backoff"],
+            &["compute_jitter"],
+            "fn retry_with_backoff() { compute_jitter(); }",
+        );
+        let jitter = chunk_with_refs(
+            "src/store/jitter.rs",
+            1,
+            10,
+            &["compute_jitter"],
+            &[],
+            "fn compute_jitter() -> u32 { 0 }",
+        );
+        let store = FakeStore::new(vec![retry, jitter]);
+        let cfg = RetrieverConfig {
+            max_related: 0,
+            ..RetrieverConfig::default()
+        };
+        let r = Retriever::new(&store, None, cfg);
+        let out = r.query("repo", "fix retry_with_backoff flow").unwrap();
+        assert!(out.related.is_empty());
+    }
+
+    #[test]
+    fn expansion_store_error_does_not_fail_the_query() {
+        let retry = chunk_with_refs(
+            "src/store/retry.rs",
+            1,
+            20,
+            &["retry_with_backoff"],
+            &[],
+            "fn retry_with_backoff() {}",
+        );
+        let inner = FakeStore::new(vec![retry]);
+        let store = FailingReferencingStore(inner);
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        let out = r.query("repo", "fix retry_with_backoff flow").unwrap();
+        assert!(!out.spans.is_empty());
+        assert!(out.related.is_empty());
     }
 
     #[test]

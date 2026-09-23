@@ -99,6 +99,7 @@ mod tests {
             mode,
             elapsed_ms: 1,
             candidates,
+            related: Vec::new(),
         }
     }
 

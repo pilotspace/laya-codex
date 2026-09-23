@@ -20,6 +20,7 @@
 mod config;
 mod fusion;
 mod read_narrow;
+mod related;
 mod render;
 mod retriever;
 mod signals;
@@ -30,6 +31,6 @@ pub(crate) mod fakes;
 
 pub use config::RetrieverConfig;
 pub use read_narrow::{ReadPolicy, read_narrowing};
-pub use render::{render_compact, render_context};
+pub use render::{render_compact, render_compact_opts, render_context, render_context_opts};
 pub use retriever::Retriever;
 pub use signals::{PromptSignals, extract_signals};

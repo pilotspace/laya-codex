@@ -29,6 +29,9 @@ fn default_rrf_k() -> f32 {
 fn default_use_laya() -> bool {
     true
 }
+fn default_max_related() -> usize {
+    8
+}
 
 fn deserialize_millis<'de, D>(deserializer: D) -> std::result::Result<Duration, D::Error>
 where
@@ -74,6 +77,10 @@ pub struct RetrieverConfig {
     /// probability magnitudes instead of only their order.
     #[serde(default)]
     pub laya_weight: Option<f32>,
+    /// Max one-hop reference neighbours (`QueryResult.related`) attached after span shaping.
+    /// `0` disables expansion entirely (no extra `Store` calls).
+    #[serde(default = "default_max_related")]
+    pub max_related: usize,
 }
 
 impl Default for RetrieverConfig {
@@ -88,6 +95,7 @@ impl Default for RetrieverConfig {
             rrf_k: default_rrf_k(),
             use_laya: default_use_laya(),
             laya_weight: None,
+            max_related: default_max_related(),
         }
     }
 }
@@ -107,6 +115,8 @@ mod tests {
         assert_eq!(cfg.max_total_lines, 400);
         assert_eq!(cfg.rrf_k, 60.0);
         assert!(cfg.use_laya);
+        assert_eq!(cfg.laya_weight, None);
+        assert_eq!(cfg.max_related, 8);
     }
 
     #[test]

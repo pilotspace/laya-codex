@@ -176,6 +176,7 @@ mod tests {
             symbol: String::new(),
             kind: "function_item".to_string(),
             defines: vec![],
+            refs: vec![],
             text: text.to_string(),
         }
     }
