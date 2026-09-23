@@ -548,9 +548,11 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
         ..SizingPolicy::default()
     };
     let scope_p = env_num::<f32>("LAYA_SCOPE_P").unwrap_or(0.4);
+    // Off by default: zero-shot scope is near-uniform (macro-F1 <= 0.28) and even oracle scope
+    // barely changes what loads, so it would only cost a model call per prompt.
     let use_scope = std::env::var("LAYA_SCOPE")
-        .map(|v| v != "0")
-        .unwrap_or(true);
+        .map(|v| v == "1")
+        .unwrap_or(false);
     eprintln!("[laya] sizing {sizing:?} scope={use_scope} scope_p={scope_p}");
     let daemon = Daemon::with_sizing(Arc::clone(&store), base, sizing);
 

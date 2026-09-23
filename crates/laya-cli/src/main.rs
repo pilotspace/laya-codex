@@ -68,7 +68,7 @@ enum Cmd {
         /// Repository (any path inside it; the git root is used). Default: current directory.
         #[arg(long)]
         repo: Option<PathBuf>,
-        /// Hooks size the injected context adaptively (sets LAYA_ADAPTIVE=1 on the hook command).
+        /// Pin adaptive injection on the hook command (LAYA_ADAPTIVE=1; already the default).
         #[arg(long)]
         adaptive: bool,
         /// Show what would change; write nothing and do not index.
@@ -381,9 +381,10 @@ fn cmd_hook(cfg: &Config) {
         compact: std::env::var("LAYA_RENDER")
             .map(|v| v != "full")
             .unwrap_or(true),
+        // Default on: v7 adaptive arm, -50.1% code reading and -17.4% wall (significant).
         adaptive: std::env::var("LAYA_ADAPTIVE")
-            .map(|v| v == "1")
-            .unwrap_or(false),
+            .map(|v| v != "0")
+            .unwrap_or(true),
         related: std::env::var("LAYA_RELATED")
             .map(|v| v != "0")
             .unwrap_or(true),
