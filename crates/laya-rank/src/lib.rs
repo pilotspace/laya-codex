@@ -24,6 +24,7 @@ mod related;
 mod render;
 mod retriever;
 mod signals;
+mod sizing;
 mod span;
 
 #[cfg(test)]
@@ -34,3 +35,7 @@ pub use read_narrow::{ReadPolicy, read_narrowing};
 pub use render::{render_compact, render_compact_opts, render_context, render_context_opts};
 pub use retriever::Retriever;
 pub use signals::{PromptSignals, extract_signals};
+pub use sizing::{
+    Scope, SizedContext, SizingCaps, SizingPolicy, SpanKey, render_sized, render_sized_with_keys,
+    size_context, sized_keys,
+};

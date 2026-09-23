@@ -6,7 +6,7 @@ use laya_core::{QueryResult, RankedSpan, Related};
 /// dependency here; this matches the estimate the hooks use elsewhere in the project).
 const CHARS_PER_TOKEN: f32 = 3.5;
 
-fn estimate_tokens(s: &str) -> usize {
+pub(crate) fn estimate_tokens(s: &str) -> usize {
     (s.chars().count() as f32 / CHARS_PER_TOKEN).ceil() as usize
 }
 
@@ -49,10 +49,10 @@ pub fn render_context_opts(
     out
 }
 
-const COMPACT_HEADER: &str = "<!-- laya-codex: code located for this task by static analysis \
+pub(crate) const COMPACT_HEADER: &str = "<!-- laya-codex: code located for this task by static analysis \
 (tree-sitter chunks + BM25 + Laya relevance model). -->\n";
 
-const COMPACT_FOOTER: &str = "Use the code above directly. Search or Read further only for what is \
+pub(crate) const COMPACT_FOOTER: &str = "Use the code above directly. Search or Read further only for what is \
 still missing, and prefer Read with offset/limit around the listed lines.\n";
 
 /// Compact injection: a ranked file map (every span as `path:lines — symbol`, grouped per file)
@@ -74,28 +74,8 @@ pub fn render_compact_opts(
     include_related: bool,
 ) -> String {
     let mut out = String::from(COMPACT_HEADER);
-    out.push_str("\nRanked locations:\n");
-    let mut files: Vec<(&str, Vec<&RankedSpan>)> = Vec::new();
-    for s in &result.spans {
-        match files.iter_mut().find(|(p, _)| *p == s.path) {
-            Some((_, v)) => v.push(s),
-            None => files.push((&s.path, vec![s])),
-        }
-    }
-    for (i, (path, spans)) in files.iter().enumerate() {
-        let parts: Vec<String> = spans
-            .iter()
-            .map(|s| {
-                if s.symbol.is_empty() {
-                    format!("{}-{}", s.start_line, s.end_line)
-                } else {
-                    format!("{}-{} {}", s.start_line, s.end_line, s.symbol)
-                }
-            })
-            .collect();
-        out.push_str(&format!("{}. {} — {}\n", i + 1, path, parts.join("; ")));
-    }
-    out.push('\n');
+    let listed: Vec<&RankedSpan> = result.spans.iter().collect();
+    append_ranked_locations(&mut out, &listed);
     let mut used = estimate_tokens(&out) + estimate_tokens(COMPACT_FOOTER);
     for span in result.spans.iter().take(full_spans) {
         let block = render_span(span);
@@ -113,10 +93,37 @@ pub fn render_compact_opts(
     out
 }
 
+/// Append a "Ranked locations:" listing (every span as `path:lines — symbol`, grouped per file,
+/// files in first-seen order), shared by [`render_compact_opts`] and `sizing::render_sized`.
+pub(crate) fn append_ranked_locations(out: &mut String, spans: &[&RankedSpan]) {
+    out.push_str("\nRanked locations:\n");
+    let mut files: Vec<(&str, Vec<&RankedSpan>)> = Vec::new();
+    for s in spans {
+        match files.iter_mut().find(|(p, _)| *p == s.path) {
+            Some((_, v)) => v.push(s),
+            None => files.push((&s.path, vec![s])),
+        }
+    }
+    for (i, (path, group)) in files.iter().enumerate() {
+        let parts: Vec<String> = group
+            .iter()
+            .map(|s| {
+                if s.symbol.is_empty() {
+                    format!("{}-{}", s.start_line, s.end_line)
+                } else {
+                    format!("{}-{} {}", s.start_line, s.end_line, s.symbol)
+                }
+            })
+            .collect();
+        out.push_str(&format!("{}. {} — {}\n", i + 1, path, parts.join("; ")));
+    }
+    out.push('\n');
+}
+
 const RELATED_HEADER: &str = "\nRelated by references:\n";
 
 /// Append the "Related by references:" section (omitted entirely when `related` is empty).
-fn append_related(out: &mut String, related: &[Related]) {
+pub(crate) fn append_related(out: &mut String, related: &[Related]) {
     if related.is_empty() {
         return;
     }
@@ -142,7 +149,7 @@ fn render_related_line(r: &Related) -> String {
     }
 }
 
-fn render_span(span: &RankedSpan) -> String {
+pub(crate) fn render_span(span: &RankedSpan) -> String {
     let mut heading = format!("### {}:{}-{}", span.path, span.start_line, span.end_line);
     if !span.symbol.is_empty() {
         heading.push_str(" — ");
