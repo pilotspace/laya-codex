@@ -1,7 +1,8 @@
 #!/bin/sh
 # Tests install.sh against a fake release and a fake model repo on local disk (file:// URLs), so it
 # runs offline and in CI. Checks: a clean install, an idempotent re-run, a tampered binary that
-# must be rejected without touching the existing install, and an unsafe model manifest path.
+# must be rejected without touching the existing install, an unsafe model manifest path, a stalled
+# download, and --model-only (model without binaries).
 #
 #   sh scripts/test-install.sh
 set -eu
@@ -124,5 +125,16 @@ EOF
 else
     echo "skip - stalled download (no python3)"
 fi
+
+# 6. --model-only: fetches and verifies just the model; no release lookup, no binaries touched.
+rm -rf "$T/home2" "$T/bin2"
+grep -v escape "$model/MANIFEST.sha256" >"$T/manifest" && mv "$T/manifest" "$model/MANIFEST.sha256"
+LAYA_RELEASES_URL="file://$T/nonexistent" LAYA_MODEL_URL="file://$model" LAYA_HOME="$T/home2" \
+    sh "$here/install.sh" --dir "$T/bin2" --model-only >"$T/out6" 2>&1 && rc=0 || rc=$?
+[ "$rc" -eq 0 ] || { cat "$T/out6"; fail "--model-only exited non-zero"; }
+[ -f "$T/home2/models/laya-code/tokenizer/tokenizer.json" ] || fail "--model-only did not fetch the model"
+[ ! -e "$T/bin2" ] || fail "--model-only installed binaries"
+if grep -q "downloading laya-" "$T/out6"; then fail "--model-only downloaded a release asset"; fi
+pass "--model-only"
 
 echo "all installer tests passed"

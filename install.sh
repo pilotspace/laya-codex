@@ -4,6 +4,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- --version v0.1.0 --dir ~/bin --no-model
+#   curl -fsSL .../install.sh | sh -s -- --model-only    # just the re-ranker (e.g. after brew install)
 #
 # Every download is retried, time-limited and checked against a SHA-256 before anything is
 # installed. Binaries are swapped in with a rename, so an interrupted run leaves the previous
@@ -18,18 +19,22 @@ LAYA_HOME="${LAYA_HOME:-$HOME/.cache/laya-codex}"
 RELEASES_URL="${LAYA_RELEASES_URL:-https://github.com/$REPO/releases}"
 MODEL_URL="${LAYA_MODEL_URL:-https://huggingface.co/tindang/laya-code/resolve/main}"
 MODEL="${LAYA_MODEL:-auto}"
+MODEL_ONLY=0
 
 say() { printf 'laya-install: %s\n' "$*"; }
 die() { printf 'laya-install: error: %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat <<'EOF'
-Usage: install.sh [--version vX.Y.Z] [--dir DIR] [--no-model | --model]
+Usage: install.sh [--version vX.Y.Z] [--dir DIR] [--no-model | --model | --model-only]
 
   --version   release tag to install (default: the latest release)
   --dir       where laya and moon go (default: ~/.local/bin)
   --no-model  skip the ~850 MB re-ranker download (laya then ranks lexically)
   --model     download the re-ranker even on Linux (it runs on CPU there, which is slow)
+  --model-only
+              download and verify only the re-ranker into $LAYA_HOME/models/laya-code and leave
+              the binaries alone (for installs made another way, e.g. Homebrew)
 EOF
 }
 
@@ -39,6 +44,7 @@ while [ $# -gt 0 ]; do
         --dir) [ $# -ge 2 ] || die "--dir needs a value"; INSTALL_DIR="$2"; shift 2 ;;
         --no-model) MODEL=0; shift ;;
         --model) MODEL=1; shift ;;
+        --model-only) MODEL=1; MODEL_ONLY=1; shift ;;
         -h | --help) usage; exit 0 ;;
         *) usage >&2; die "unknown option: $1" ;;
     esac
@@ -74,6 +80,36 @@ fetch() {
         --connect-timeout 15 --speed-limit 10240 --speed-time "$STALL_SECONDS" \
         --max-time "${3:-900}" --output "$2" "$1"
 }
+
+# Download the laya-code re-ranker listed in the Hugging Face MANIFEST.sha256, verifying each file.
+get_model() {
+    dest="$LAYA_HOME/models/laya-code"
+    say "fetching the laya-code re-ranker manifest"
+    fetch "$MODEL_URL/MANIFEST.sha256" "$tmp/MANIFEST.sha256" 60 || die "could not fetch the model manifest"
+    mkdir -p "$dest"
+    # One "<sha256>  <path>" line per file; download only what is missing or stale.
+    while read -r want file; do
+        [ -n "$file" ] || continue
+        case "$file" in /* | *..*) die "unsafe path in model manifest: $file" ;; esac
+        if [ -f "$dest/$file" ] && [ "$(sha256 "$dest/$file")" = "$want" ]; then
+            continue
+        fi
+        say "downloading model file $file"
+        mkdir -p "$(dirname "$dest/$file")"
+        fetch "$MODEL_URL/$file" "$dest/$file.part" 3600 || die "download failed: model $file"
+        got="$(sha256 "$dest/$file.part")"
+        [ "$got" = "$want" ] || { rm -f "$dest/$file.part"; die "checksum mismatch for model $file"; }
+        mv -f "$dest/$file.part" "$dest/$file"
+    done <"$tmp/MANIFEST.sha256"
+    say "model ready in $dest"
+}
+
+if [ "$MODEL_ONLY" = 1 ]; then
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT INT TERM
+    get_model
+    exit 0
+fi
 
 os="$(uname -s)"
 arch="$(uname -m)"
@@ -139,25 +175,7 @@ cp "$tmp/$moon_pkg/SOURCE" "$share/moon-SOURCE" 2>/dev/null || true
 say "installed laya $VERSION and moon to $INSTALL_DIR"
 
 if [ "$MODEL" = 1 ]; then
-    dest="$LAYA_HOME/models/laya-code"
-    say "fetching the laya-code re-ranker manifest"
-    fetch "$MODEL_URL/MANIFEST.sha256" "$tmp/MANIFEST.sha256" 60 || die "could not fetch the model manifest"
-    mkdir -p "$dest"
-    # One "<sha256>  <path>" line per file; download only what is missing or stale.
-    while read -r want file; do
-        [ -n "$file" ] || continue
-        case "$file" in /* | *..*) die "unsafe path in model manifest: $file" ;; esac
-        if [ -f "$dest/$file" ] && [ "$(sha256 "$dest/$file")" = "$want" ]; then
-            continue
-        fi
-        say "downloading model file $file"
-        mkdir -p "$(dirname "$dest/$file")"
-        fetch "$MODEL_URL/$file" "$dest/$file.part" 3600 || die "download failed: model $file"
-        got="$(sha256 "$dest/$file.part")"
-        [ "$got" = "$want" ] || { rm -f "$dest/$file.part"; die "checksum mismatch for model $file"; }
-        mv -f "$dest/$file.part" "$dest/$file"
-    done <"$tmp/MANIFEST.sha256"
-    say "model ready in $dest"
+    get_model
 else
     say "skipped the model: laya ranks lexically (re-run with --model to add it)"
 fi
