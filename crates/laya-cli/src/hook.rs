@@ -26,11 +26,6 @@ pub struct HookCtx<'a> {
     pub root: PathBuf,
     pub budget_ms: u64,
     pub inject_tokens: usize,
-    /// Formerly the minimum Laya P for a ranked span to justify narrowing a Read. Unused since
-    /// the daemon plans Reads (`Request::ReadPlan`: any ranked span, else task terms, always with
-    /// an outline and a full-read escape hatch); kept so `LAYA_READ_P` configs still parse.
-    #[allow(dead_code)]
-    pub read_p: f32,
     /// Inject the compact format (ranked map + top spans) instead of every span's full code.
     pub compact: bool,
     /// Append the "Related by references" section (one-hop callers/callees of the top spans).
@@ -385,7 +380,6 @@ mod tests {
             root: root(),
             budget_ms: 500,
             inject_tokens: 4000,
-            read_p: 0.7,
             compact: false,
             related: true,
             adaptive: false,

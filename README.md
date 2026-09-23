@@ -91,7 +91,6 @@ Every hook fails open: if the daemon, Moon or the model is unavailable, Claude C
 | `LAYA_BUDGET_MS` | `1200` | Laya time budget per prompt (falls back to lexical) |
 | `LAYA_RENDER` | `compact` | `full` injects every span's code |
 | `LAYA_WEIGHT` / `LAYA_STATE_TOKENS` / `LAYA_K` / `LAYA_P_THRESHOLD` | `0.5` / `128` / `24` / `0` | ranking knobs (daemon start) |
-| `LAYA_READ_P` | `0.4` | min Laya P to narrow a full-file Read |
 | `LAYA_ADAPTIVE` | unset | `1` = size injected context by task scope, skip spans already sent (`laya init --adaptive`) |
 | `LAYA_MOON_PORT` / `LAYA_MOON_BIN` | `16379` / `moon` on `PATH` | Moon sidecar; a missing binary is reported with every path tried |
 
