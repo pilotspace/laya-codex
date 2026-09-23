@@ -1710,11 +1710,14 @@ mod tests {
         let r = reply(&c);
         assert!(r.contains("\"error\"") && r.contains("busy"), "{r}");
         drop(a);
-        // The freed slot is reused once the daemon sees `a` close.
+        // The freed slot is reused once the daemon sees `a` close. Until then a new connection is
+        // still over the cap: the daemon answers "busy" and closes it, and writing the ping can
+        // fail with EPIPE (Linux), which only means "not yet".
         let t0 = std::time::Instant::now();
         loop {
             let d = UnixStream::connect(&sock).unwrap();
-            if ping(&d).contains("pong") {
+            let mut w = &d;
+            if w.write_all(b"{\"op\":\"ping\"}\n").is_ok() && reply(&d).contains("pong") {
                 break;
             }
             assert!(t0.elapsed() < Duration::from_secs(5), "slot never freed");
