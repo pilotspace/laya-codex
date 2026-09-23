@@ -167,3 +167,39 @@ cargo-pgo on the index and query paths; no `target-cpu=native` for distributed b
 4. Benchmark harness (paired baseline/treatment, n ≥ 30), then tune K, thresholds and token budget
    against −50% tokens / −30% time with no drop in resolve rate. Release profile + PGO.
 5. (moon repo) `moon-embed` engine crate → `MoonEmbedStore`, removing the sidecar.
+
+## 6. v0.1.0 as built (what the evidence changed)
+
+Pipeline per prompt, as shipped. Evidence is in `docs/RESULTS.md` and
+`docs/research/injection-forensics.md`.
+
+```
+prompt ─► signals: stoplisted BM25 terms · identifiers · path mentions
+          (a follow-up with an explicit back-reference is replaced by the session topic plus its named code)
+       ─► candidates: Moon OR-BM25 (rarest terms) + chunks_defining + path matches, RRF → top 24,
+          prose / non-code demoted
+       ─► Laya: one noul question per candidate, 128-token state, calibrated P, 1.2 s budget,
+          lexical fallback when busy or over budget, model warmed up at load
+       ─► fusion: 0.5·(1 − lexical_rank/24) + 0.5·P ─► span shaping: top 10, ≤ 400 lines
+       ─► expansion: one-hop callees/callers + grep-style "Definitions and uses" (≈10 lines)
+       ─► render (≤ 9,500 chars): ranked map · full code of the top 3 distinct files · usages · related
+          · adaptive mode only: skip spans the session already has
+```
+
+Read hook: the first whole-file Read of an indexed file of 250+ lines gets the best region
+(the session ranking, else task-term match) plus an outline. A second whole-file Read passes
+through.
+
+Setup and operations: `laya init` / `laya doctor`; daemon autostart is rate-limited (one attempt
+per 10 s); every hook fails open.
+
+| Plan item | As built | Why |
+|---|---|---|
+| D1 Laya as final reranker, zero-shot | **Fine-tuned `laya-code`** (git-history weak labels, 8 repos), fused with the lexical rank rather than used alone | Zero-shot laya-base did not beat BM25 on code. Laya-only and w=0.7 lost to w=0.5 end to end (MRR 0.602 / 0.678 vs 0.724), because the lexical rank demotes prose |
+| Thresholds 0.5 / 0.7 on P | **None by default** (rank-based inlining); `LAYA_TAU_FULL/MAP` remain | P's scale shifts with prompt wording; on wrapped prompts every threshold lost gold coverage vs rank at equal code volume |
+| Scope classifier sizing context | **Wired and gated, no effect** (`LAYA_SCOPE=0` disables it) | Zero-shot macro-F1 ≤ 0.28; even oracle scope barely changes what loads |
+| Guarded Read rewrite at p ≥ threshold | **Daemon Read plan** (region + outline, escape hatch) | The p-gated rewrite fired 0/11 times; whole-file Reads were 49% of the remaining Read tokens |
+| Inject more context | **Small, capped injection** (~1.5–2.5k tokens, ≤ 9,500 chars) | Inlining more saves little and costs more; Claude Code replaces output over 10k chars with a file preview |
+| — | **Prompt stoplist + follow-up topic** | Instruction wrappers ("find the source code…, comma-separated paths") beat task words in rarest-first term selection (MRR 0.724 → 0.394) |
+| — | **Session delta** (adaptive) | Follow-ups re-sent code already in context |
+| D2 Moon embedded | Still a **sidecar** | v2 item (`crates/laya-store/MOON_NOTES.md`) |
