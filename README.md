@@ -47,7 +47,13 @@ helping from the next prompt. To check the setup, run `laya doctor --repo .`.
   that repository's `.claude/settings.local.json` and its MCP server into `.mcp.json`.
 - **Share with your team:** choose *project* scope when you run `/plugin install`. That records
   the plugin in `.claude/settings.json`.
+- **Homebrew:** installs the same prebuilt binaries. The model is a separate step:
+  ```sh
+  brew install pilotspace/tap/laya-codex
+  curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh -s -- --model-only
+  ```
 - **Installer options:**
+  - `--model-only` fetches and verifies only the model and leaves the binaries alone; use it after `brew install`;
   - `--version vX.Y.Z` installs a specific release;
   - `--dir DIR` installs somewhere other than `~/.local/bin`;
   - `--no-model` skips the ~850 MB model, and laya ranks by keywords alone;
@@ -153,7 +159,9 @@ your prompt ─► laya hook ─► local daemon ─► BM25 keyword search + sy
   the most relevant region plus an outline; reading the file again returns all of it.
 - **Follow-up search.** Claude also gets an MCP tool, `laya_search`, for follow-up lookups.
 
-Design and decisions: [docs/architecture.md](docs/architecture.md).
+What gets injected, when and why, with real hook input and output:
+[docs/how-it-works.md](docs/how-it-works.md). Design and decisions:
+[docs/architecture.md](docs/architecture.md).
 
 ## FAQ
 
