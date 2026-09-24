@@ -45,6 +45,14 @@ All notable changes to this project are documented here. The format follows
   with reworded instructions, and 49 either way with free-form prompts.
 
 ### Fixed
+- **A nearly full disk no longer disables laya-codex silently.** Moon pauses all writes when free
+  space falls below its floor (5% by default), and every prompt then failed without a trace:
+  - ranking sent a create-index command (a write) on every prompt. When Moon refuses it, laya-codex
+    now checks that the index exists (a read) and ranks from it, so indexed code keeps arriving;
+  - `laya-codex doctor` now tries a small write and reports FAIL, with the fix: free disk space, or
+    run Moon with a lower floor;
+  - the daemon logs failed requests to `daemon.log` (a repeated message at most once a minute),
+    and paused writes read as one short error instead of one line per command.
 - `laya-codex doctor` reported FAIL for hooks whose command sets environment variables to paths
   (`LAYA_CODEX_HOME=/… laya-codex hook`): it took the assignments for the program. It now reads
   the command the way the hook matcher does.

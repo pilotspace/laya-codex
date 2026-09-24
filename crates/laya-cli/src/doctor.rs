@@ -278,9 +278,42 @@ pub fn check_daemon(ping: Result<Response, String>, socket: &Path) -> Check {
     }
 }
 
-/// Indexed file count of the repo in Moon.
-pub fn check_index(files: Result<usize, String>, root: &Path) -> Check {
+/// Indexed file count of the repo in Moon, and whether Moon accepts writes (`writes`: a probe
+/// write's outcome). Moon's low-disk guard pauses every write: ranking of already indexed code
+/// keeps working, but edits are not re-indexed and new repositories cannot be indexed, and
+/// nothing else reports it.
+pub fn check_index(files: Result<usize, String>, writes: Result<(), String>, root: &Path) -> Check {
     let fix = Some(format!("laya-codex index {}", root.display()));
+    let indexed = match &files {
+        Ok(n) => format!("{n} files indexed for {}", root.display()),
+        Err(_) => format!("{} (index not read)", root.display()),
+    };
+    match writes {
+        Err(e) if laya_store::is_writes_paused(&e) => {
+            return Check::new(
+                "index",
+                Level::Fail,
+                format!(
+                    "Moon has paused writes because its disk is nearly full ({indexed}): edits are \
+                     not re-indexed and new repositories cannot be indexed"
+                ),
+                Some(
+                    "free disk space (Moon pauses writes below 5% free), or point \
+                     LAYA_CODEX_MOON_BIN at a wrapper that runs moon with --disk-free-min-pct 1"
+                        .into(),
+                ),
+            );
+        }
+        Err(e) if files.is_ok() => {
+            return Check::new(
+                "index",
+                Level::Warn,
+                format!("{indexed}, but a test write failed: {e}"),
+                None,
+            );
+        }
+        _ => {}
+    }
     match files {
         Ok(0) => Check::new(
             "index",
@@ -591,19 +624,26 @@ pub fn run(cfg: &Config, root: &Path, start: bool) -> Vec<Check> {
     let repo = root.to_path_buf();
     let sc = crate::config::store_config(cfg).map_err(|e| format!("{e:#}"));
     checks.push(bounded("index", Duration::from_secs(5), move || {
-        let files = match (sup, sc) {
+        let (files, writes) = match (sup, sc) {
             (Ok(sup), Ok(mut sc)) if sup.is_running() => {
                 sc.query_timeout = Duration::from_secs(3);
                 sc.max_retries = 0;
-                laya_store::MoonStore::new(sc)
-                    .and_then(|s| s.list_files(&laya_store::repo_id(&repo)))
-                    .map(|f| f.len())
-                    .map_err(|e| e.to_string())
+                match laya_store::MoonStore::new(sc) {
+                    Ok(s) => (
+                        s.list_files(&laya_store::repo_id(&repo))
+                            .map(|f| f.len())
+                            .map_err(|e| e.to_string()),
+                        // A tiny expiring write: Moon's low-disk guard rejects every write.
+                        s.memo_put("doctor:write-probe", "1", 60)
+                            .map_err(|e| e.to_string()),
+                    ),
+                    Err(e) => (Err(e.to_string()), Ok(())),
+                }
             }
-            (Err(e), _) | (_, Err(e)) => Err(e),
-            _ => Err("laya-codex's Moon is not running".to_string()),
+            (Err(e), _) | (_, Err(e)) => (Err(e), Ok(())),
+            _ => (Err("laya-codex's Moon is not running".to_string()), Ok(())),
         };
-        check_index(files, &repo)
+        check_index(files, writes, &repo)
     }));
 
     let r = root.to_path_buf();
@@ -867,16 +907,39 @@ mod tests {
     #[test]
     fn index_counts_files() {
         let root = Path::new("/r");
-        let c = check_index(Ok(12), root);
+        let c = check_index(Ok(12), Ok(()), root);
         assert_eq!(c.level, Level::Pass);
         assert!(c.detail.contains("12 files"));
-        let c = check_index(Ok(0), root);
+        let c = check_index(Ok(0), Ok(()), root);
         assert_eq!(c.level, Level::Warn);
         assert!(c.fix.as_deref().unwrap().contains("laya-codex index /r"));
         assert_eq!(
-            check_index(Err("moon down".into()), root).level,
+            check_index(Err("moon down".into()), Ok(()), root).level,
             Level::Warn
         );
+    }
+
+    #[test]
+    fn index_fails_when_moon_has_paused_writes() {
+        let paused = Err(
+            "store error: \"MOONERR\": diskfull: writes paused until free space recovers".into(),
+        );
+        let c = check_index(Ok(12), paused, Path::new("/r"));
+        assert_eq!(c.level, Level::Fail);
+        assert!(c.detail.contains("paused writes"), "{}", c.detail);
+        assert!(c.detail.contains("12 files"), "{}", c.detail);
+        let fix = c.fix.unwrap();
+        assert!(
+            fix.contains("free disk space") && fix.contains("--disk-free-min-pct"),
+            "{fix}"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_write_error_is_a_warning() {
+        let c = check_index(Ok(12), Err("timed out".into()), Path::new("/r"));
+        assert_eq!(c.level, Level::Warn);
+        assert!(c.detail.contains("timed out"), "{}", c.detail);
     }
 
     #[test]

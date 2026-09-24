@@ -21,5 +21,5 @@ pub use breaker::{BreakerState, CircuitBreaker};
 pub use config::StoreConfig;
 pub use keys::repo_id;
 pub use secure::{Password, create_private_dir, load_or_create_acl};
-pub use store::MoonStore;
+pub use store::{MoonStore, is_writes_paused};
 pub use supervisor::{MoonProbe, MoonSupervisor, SupervisorStatus, process_basename, refusal};

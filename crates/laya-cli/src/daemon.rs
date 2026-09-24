@@ -588,14 +588,58 @@ fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "non-string panic payload".into())
 }
 
+/// How long a repeated error message stays out of daemon.log.
+const ERROR_LOG_REPEAT: Duration = Duration::from_secs(60);
+
+/// Whether to log `message` now: a new message always, the same one again only after
+/// [`ERROR_LOG_REPEAT`] (a persistent fault, such as Moon pausing writes, fails every prompt).
+fn log_error_now(
+    last: &mut Option<(String, std::time::Instant)>,
+    message: &str,
+    now: std::time::Instant,
+) -> bool {
+    let quiet = last
+        .as_ref()
+        .is_some_and(|(m, t)| m == message && now.duration_since(*t) < ERROR_LOG_REPEAT);
+    if !quiet {
+        *last = Some((message.to_string(), now));
+    }
+    !quiet
+}
+
+/// The wire name of a request (`op` in the protocol).
+fn op_name(req: &Request) -> &'static str {
+    match req {
+        Request::Ping => "ping",
+        Request::Query { .. } => "query",
+        Request::NoteRead { .. } => "note_read",
+        Request::Session { .. } => "session",
+        Request::ReindexFile { .. } => "reindex_file",
+        Request::IndexRepo { .. } => "index_repo",
+        Request::ReadPlan { .. } => "read_plan",
+        Request::Shutdown => "shutdown",
+    }
+}
+
 /// Handle one request, turning a panic (a parser, store or model bug on a strange input) into
-/// an error reply so the connection, and the daemon, keep serving.
+/// an error reply so the connection, and the daemon, keep serving. Error replies are logged:
+/// hooks fail open, so daemon.log is the only place a failing prompt leaves a trace.
 fn handle_guarded(daemon: &Arc<Daemon>, req: Request) -> Response {
-    catch_unwind(AssertUnwindSafe(|| daemon.handle(req))).unwrap_or_else(|p| {
+    static LAST_ERROR: Mutex<Option<(String, std::time::Instant)>> = Mutex::new(None);
+    let op = op_name(&req);
+    let resp = catch_unwind(AssertUnwindSafe(|| daemon.handle(req))).unwrap_or_else(|p| {
         let message = format!("internal error: {}", panic_message(p.as_ref()));
         eprintln!("[laya-codex] request panicked: {message}");
         Response::Error { message }
-    })
+    });
+    if let Response::Error { message } = &resp {
+        let line = format!("{op} failed: {message}");
+        let mut last = LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner());
+        if log_error_now(&mut last, &line, std::time::Instant::now()) {
+            eprintln!("[laya-codex] {line}");
+        }
+    }
+    resp
 }
 
 fn env_num<T: std::str::FromStr>(key: &str) -> Option<T> {
@@ -939,6 +983,49 @@ mod tests {
     use crate::indexer::mem::MemStore;
     use laya_core::Lang;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn error_replies_are_logged_but_a_repeat_is_quiet_for_a_minute() {
+        let t0 = std::time::Instant::now();
+        let mut last = None;
+        assert!(
+            log_error_now(&mut last, "query: diskfull", t0),
+            "first one is logged"
+        );
+        assert!(!log_error_now(
+            &mut last,
+            "query: diskfull",
+            t0 + Duration::from_secs(5)
+        ));
+        assert!(
+            log_error_now(
+                &mut last,
+                "reindex_file: diskfull",
+                t0 + Duration::from_secs(6)
+            ),
+            "a different message is logged"
+        );
+        assert!(
+            log_error_now(
+                &mut last,
+                "reindex_file: diskfull",
+                t0 + Duration::from_secs(70)
+            ),
+            "the same message again after a minute"
+        );
+    }
+
+    #[test]
+    fn request_names_match_the_wire_ops() {
+        assert_eq!(op_name(&Request::Ping), "ping");
+        assert_eq!(
+            op_name(&Request::ReindexFile {
+                repo: "/r".into(),
+                path: "a".into()
+            }),
+            "reindex_file"
+        );
+    }
 
     struct CountingScorer(AtomicUsize);
     impl Scorer for CountingScorer {
