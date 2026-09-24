@@ -73,12 +73,17 @@ impl MemoScorer {
         h.update(chunk.id().as_bytes());
         format!("laya:{}", &h.finalize().to_hex()[..32])
     }
-}
 
-impl Scorer for MemoScorer {
-    fn score(&self, task: &str, chunks: &[&Chunk]) -> laya_core::Result<Vec<f32>> {
+    /// Cached probabilities, then the model for the rest (all of them, or with `deadline` as
+    /// many as fit, in input order). Only probabilities the model produced are cached.
+    fn run(
+        &self,
+        task: &str,
+        chunks: &[&Chunk],
+        deadline: Option<std::time::Instant>,
+    ) -> laya_core::Result<Vec<Option<f32>>> {
         let keys: Vec<String> = chunks.iter().map(|c| self.key(task, c)).collect();
-        let mut out = vec![f32::NAN; chunks.len()];
+        let mut out: Vec<Option<f32>> = vec![None; chunks.len()];
         let mut miss = Vec::new();
         for (i, k) in keys.iter().enumerate() {
             let cached = if self.read_cache {
@@ -87,7 +92,7 @@ impl Scorer for MemoScorer {
                 None
             };
             match cached.and_then(|v| v.parse::<f32>().ok()) {
-                Some(p) => out[i] = p,
+                Some(p) => out[i] = Some(p),
                 None => miss.push(i),
             }
         }
@@ -103,19 +108,49 @@ impl Scorer for MemoScorer {
             let _guard = BusyGuard(&self.busy);
             let todo: Vec<&Chunk> = miss.iter().map(|&i| chunks[i]).collect();
             let t0 = std::time::Instant::now();
-            let ps = self.inner.score(task, &todo)?;
+            let ps: Vec<Option<f32>> = match deadline {
+                Some(d) => self.inner.score_within(task, &todo, d)?,
+                None => self
+                    .inner
+                    .score(task, &todo)?
+                    .into_iter()
+                    .map(Some)
+                    .collect(),
+            };
             eprintln!(
-                "[laya-codex] scored {} chunks ({} cached) in {:?}",
+                "[laya-codex] scored {} of {} chunks ({} cached) in {:?}",
+                ps.iter().filter(|p| p.is_some()).count(),
                 todo.len(),
                 chunks.len() - todo.len(),
                 t0.elapsed()
             );
             for (&i, p) in miss.iter().zip(ps) {
                 out[i] = p;
-                let _ = self.store.memo_put(&keys[i], &format!("{p:.5}"), 86_400);
+                if let Some(p) = p {
+                    let _ = self.store.memo_put(&keys[i], &format!("{p:.5}"), 86_400);
+                }
             }
         }
         Ok(out)
+    }
+}
+
+impl Scorer for MemoScorer {
+    fn score(&self, task: &str, chunks: &[&Chunk]) -> laya_core::Result<Vec<f32>> {
+        Ok(self
+            .run(task, chunks, None)?
+            .into_iter()
+            .map(|p| p.unwrap_or(f32::NAN))
+            .collect())
+    }
+
+    fn score_within(
+        &self,
+        task: &str,
+        chunks: &[&Chunk],
+        deadline: std::time::Instant,
+    ) -> laya_core::Result<Vec<Option<f32>>> {
+        self.run(task, chunks, Some(deadline))
     }
 }
 
@@ -961,6 +996,40 @@ mod tests {
         assert!((p1[0] - p2[1]).abs() < 1e-4 && (p1[1] - p2[0]).abs() < 1e-4);
         m.score("other task", &[&a]).unwrap();
         assert_eq!(inner.0.load(Ordering::SeqCst), 3);
+    }
+
+    /// Scores only the first chunk it is given before its "deadline"; counts chunks asked for.
+    struct FirstOnlyScorer(AtomicUsize);
+    impl Scorer for FirstOnlyScorer {
+        fn score(&self, _task: &str, _chunks: &[&Chunk]) -> laya_core::Result<Vec<f32>> {
+            panic!("unbounded score call")
+        }
+        fn score_within(
+            &self,
+            _task: &str,
+            chunks: &[&Chunk],
+            _deadline: std::time::Instant,
+        ) -> laya_core::Result<Vec<Option<f32>>> {
+            self.0.fetch_add(chunks.len(), Ordering::SeqCst);
+            Ok((0..chunks.len())
+                .map(|i| (i == 0).then_some(chunks[0].start_line as f32 / 100.0))
+                .collect())
+        }
+    }
+
+    #[test]
+    fn memo_scorer_passes_the_deadline_through_and_caches_only_what_was_scored() {
+        let inner = Arc::new(FirstOnlyScorer(AtomicUsize::new(0)));
+        let store: Arc<dyn Store> = Arc::new(MemoStore::default());
+        let m = MemoScorer::new(inner.clone(), store, "laya-code");
+        let (a, b) = (chunk(10), chunk(20));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let first = m.score_within("task", &[&a, &b], deadline).unwrap();
+        assert_eq!(first, vec![Some(0.1), None]);
+        let again = m.score_within("task", &[&a, &b], deadline).unwrap();
+        assert_eq!(again[0], Some(0.1), "a comes from the cache");
+        assert_eq!(again[1], Some(0.2), "b is scored this time");
+        assert_eq!(inner.0.load(Ordering::SeqCst), 3, "a, b, then only b");
     }
 
     #[test]

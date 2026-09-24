@@ -141,13 +141,13 @@ in renamed variables).
 - "The model did not beat lexical-only ranking" should read as "this run could not show it
   does", not "the model makes no difference".
 
-**Fixes in progress** (open PRs at the time of writing):
+**Fixed since:**
 - #10: the model's question no longer carries the prompt's instructions;
 - #11: the model scores candidates best-first inside the budget instead of all or nothing. Under
   load it ranked 59 of 60 of these prompts instead of 0–2.
 
 The next model-vs-keywords run should record the ranking mode of every prompt. The trace log
-(`laya-codex trace`, #8) does this.
+proposed in #8 (`laya-codex trace`, not merged yet) would do this.
 
 The forensics (`bench/results/claude-v8/forensics-*.md`) show that the re-ranker injects no more
 gold files than BM25 does. The gold files it inlines:

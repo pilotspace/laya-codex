@@ -46,7 +46,15 @@ This is the hook input Claude Code sends for a prompt (captured):
 laya-codex uses the git root that contains `cwd` as the repository. It skips the prompt if the prompt
 starts with `/` or `#`, is under 3 characters, or has fewer than 2 content terms. Otherwise it
 asks the daemon to rank the prompt. The daemon has a time budget (`LAYA_CODEX_BUDGET_MS`, default
-1,200 ms) and falls back to the lexical ranking when the budget runs out.
+1,200 ms).
+- **Within the budget:** the model scores candidates best-first in batches of 8. It starts a
+  batch only if the measured speed says it will finish within 85% of the budget.
+- **Out of time:** candidates it didn't reach keep their keyword order below the scored ones.
+- **Lexical fallback:** the lexical ranking is used alone only when nothing was scored in time.
+
+Scoring cost grows with *candidates × (question + chunk) tokens*: about 5,500 tokens/s on an
+Apple-silicon GPU. So all 24 candidates take about 0.6–1.4 s, depending on the prompt's length
+(`crates/laya-model/examples/bench.rs`).
 
 ## 2. How the code is ranked
 
@@ -283,7 +291,7 @@ code. Inlining more saved little and cost more.
 | `LAYA_CODEX_RELATED` | on | `0` drops "Related by references" |
 | `LAYA_CODEX_RENDER` | compact | `full` inlines every span (bigger, and not what the benchmark measured) |
 | `LAYA_CODEX_NO_MODEL` | unset | `1` gives lexical-only ranking with no model load |
-| `LAYA_CODEX_BUDGET_MS` | 1200 | Laya's time budget per prompt. Past it, the lexical ranking is used |
+| `LAYA_CODEX_BUDGET_MS` | 1200 | Laya's time budget per prompt. The model scores as many candidates as fit; the lexical ranking is used only if none do |
 | `LAYA_CODEX_WEIGHT` | 0.5 | Laya's weight in the fusion; `rrf` switches to rank fusion |
 
 ## 8. Troubleshooting with `laya-codex doctor`

@@ -6,6 +6,47 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Laya model no longer silently drops out under load.**
+
+  *The problem:*
+  - Scoring 24 candidates takes about 0.6–1.4 s on an Apple-silicon GPU, depending on the
+    prompt's length (it grows with candidates × tokens). The default budget is 1,200 ms.
+  - A slow run meant no model ranking at all.
+  - A timed-out run also kept the model busy, so the next prompt went straight to keyword
+    ranking.
+
+  *The fix:*
+  - The model now scores candidates best-first in batches of 8.
+  - It starts a batch only if its measured speed says the batch will finish within 85% of the
+    budget.
+  - The candidates it doesn't reach keep their keyword order below the scored ones.
+  - The speed estimate ignores the first run after loading (Metal compiles kernels then), and
+    it heals after a skipped batch.
+
+  *Measured on the 60 benchmark v2 tasks, back-to-back queries at the default budget:*
+  - **Quiet machine:** same results as before. The model ran on 60 of 60 queries and scored all
+    24 candidates in 118 of 123 runs.
+  - **Busy GPU:** the model ran on 59 of 60 queries instead of 2 (bench wording) and 0
+    (free-form), scoring the top 8. Median query time fell from 1.18–1.21 s to 0.80–0.84 s.
+    The correct file reached the two inlined files in 47 tasks instead of 49 with the bench
+    wording, and 45 instead of 43 with free-form prompts.
+
+### Changed
+
+- **Ranking searches the task, not the instructions around it.** Keyword search and the
+  Laya model now see only the task part of a prompt:
+  - a quoted passage of 3 or more content words, when there is one;
+  - otherwise the prompt without sentences about the answer's format ("Be efficient…",
+    "End your answer with … of the form FILES: …").
+
+  Identifiers and file paths still come from the whole prompt. Without this, wrapper words
+  such as *source*, *change*, *files* and *paths* could push `CHANGELOG.md` or docs above the
+  code. Replaying the 60 benchmark v2 tasks (model on every query), the correct file reached
+  the two inlined files in 48 tasks instead of 42 with the benchmark wording, 49 instead of 46
+  with reworded instructions, and 49 either way with free-form prompts.
+
 ### Documentation
 - Benchmark v2 results (v8: moon, httpx, hono; 60 tasks) replace the single-repository numbers
   in the README, charts, how-it-works and use cases. Claude reads 38% less code, takes 21% fewer
