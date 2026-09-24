@@ -296,16 +296,15 @@ impl Store for MoonStore {
                 .arg(&prefix)
                 .arg(&["SCHEMA", "terms", "TEXT"])
                 .query(c);
-            match r {
-                Err(e)
-                    if e.to_string()
-                        .to_ascii_lowercase()
-                        .contains("already exists") =>
-                {
-                    Ok(())
+            index_ready(r, || {
+                match redis::cmd("FT.INFO").arg(&idx).query::<redis::Value>(c) {
+                    Ok(_) => Ok(true),
+                    Err(e) if e.to_string().to_ascii_lowercase().contains("unknown index") => {
+                        Ok(false)
+                    }
+                    Err(e) => Err(e),
                 }
-                other => other,
-            }
+            })
         })
     }
 
@@ -597,9 +596,92 @@ impl Store for MoonStore {
     }
 }
 
+/// Whether `FT.CREATE`'s outcome leaves the index usable. "Already exists" is fine. When Moon
+/// has paused writes (low-disk guard: `MOONERR diskfull`), the create is rejected before Moon
+/// looks for the index, so `exists` (a read, `FT.INFO`) decides: an existing index can still
+/// serve queries. Otherwise the error stands.
+fn index_ready(
+    create: RedisResult<()>,
+    exists: impl FnOnce() -> RedisResult<bool>,
+) -> RedisResult<()> {
+    match create {
+        Err(e)
+            if e.to_string()
+                .to_ascii_lowercase()
+                .contains("already exists") =>
+        {
+            Ok(())
+        }
+        Err(e) if is_writes_paused(&e.to_string()) => match exists() {
+            Ok(true) => Ok(()),
+            _ => Err(e),
+        },
+        other => other,
+    }
+}
+
+/// Moon's reply when its low-disk guard has paused writes.
+pub fn is_writes_paused(message: &str) -> bool {
+    message.to_ascii_lowercase().contains("diskfull")
+}
+
+/// A non-transient Moon reply as a store error. Paused writes read as one short message: a
+/// pipelined write otherwise repeats Moon's reply once per command.
+pub(crate) fn store_error(e: &redis::RedisError) -> Error {
+    let message = e.to_string();
+    if is_writes_paused(&message) {
+        return Error::Store(
+            "Moon has paused writes because its disk is nearly full (MOONERR diskfull); free \
+             disk space, or see `laya-codex doctor`"
+                .into(),
+        );
+    }
+    Error::Store(message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn diskfull() -> redis::RedisError {
+        redis::make_extension_error(
+            "MOONERR".into(),
+            Some("diskfull: writes paused until free space recovers".into()),
+        )
+    }
+
+    #[test]
+    fn paused_writes_read_as_one_short_error() {
+        let e = store_error(&diskfull());
+        assert_eq!(
+            e.to_string(),
+            "store error: Moon has paused writes because its disk is nearly full (MOONERR \
+             diskfull); free disk space, or see `laya-codex doctor`"
+        );
+        let other = redis::make_extension_error("ERR".into(), Some("syntax error".into()));
+        assert!(store_error(&other).to_string().contains("syntax error"));
+    }
+
+    #[test]
+    fn an_existing_index_is_ready_while_moon_pauses_writes() {
+        assert!(index_ready(Err(diskfull()), || Ok(true)).is_ok());
+    }
+
+    #[test]
+    fn a_missing_index_still_reports_the_paused_writes() {
+        let e = index_ready(Err(diskfull()), || Ok(false)).unwrap_err();
+        assert!(e.to_string().contains("diskfull"), "{e}");
+    }
+
+    #[test]
+    fn index_creation_outcomes_other_than_paused_writes_are_unchanged() {
+        let never = || -> RedisResult<bool> { panic!("no existence check needed") };
+        assert!(index_ready(Ok(()), never).is_ok());
+        let exists = redis::make_extension_error("ERR".into(), Some("Index already exists".into()));
+        assert!(index_ready(Err(exists), never).is_ok());
+        let other = redis::make_extension_error("ERR".into(), Some("syntax error".into()));
+        assert!(index_ready(Err(other), never).is_err());
+    }
 
     #[test]
     fn index_terms_cover_path_symbol_and_text_with_tf() {

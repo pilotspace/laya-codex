@@ -213,8 +213,9 @@ impl Executor {
                     attempt += 1;
                 }
                 Err(e) => {
+                    // A reply from Moon (even "writes paused") means it is reachable.
                     self.breaker.on_success();
-                    return Err(Error::Store(e.to_string()));
+                    return Err(crate::store::store_error(&e));
                 }
             }
         }
