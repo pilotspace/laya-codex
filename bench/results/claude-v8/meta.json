@@ -1,0 +1,29 @@
+{
+ "version": "v8 (benchmark v2)",
+ "date": "2026-09-23",
+ "laya": {"version": "0.1.2", "commit": "a38c8be", "binary_sha1": "110df2f249df2118cc2522fc6990e5a14e21a8b5",
+          "build": "cargo build --release --locked -p laya-cli"},
+ "moon_sidecar": {"binary_sha1": "53735c0842bf5fea417985d8b708ea6178381bf9",
+                  "source": "release moon from the laya installer",
+                  "extra_flag": "--disk-free-min-pct 1 (via LAYA_MOON_BIN wrapper; the data volume was ~96% full and Moon's default 5% floor paused writes, failing every query)"},
+ "agent": {"claude_code": "2.1.280", "model": "sonnet", "turns_per_session": 2, "max_budget_usd_per_prompt": 2.0,
+           "timeout_s": 900, "tools": "Read,Grep,Glob", "flags": "--setting-sources project --strict-mcp-config"},
+ "arms": {"baseline": "stock Claude Code",
+          "laya-adaptive": "laya v0.1.2 defaults (bench/config/laya-settings.laya-adaptive.json)",
+          "laya-lex": "same hooks + MCP with LAYA_BUDGET_MS=0: lexical-only ranking, no Laya model"},
+ "scoring": "LAYA_MEMO=0 (every prompt scored cold); daemon restarted at each run start; arms interleaved per task in random order (seed 7)",
+ "repos": {
+  "moon": {"url": "https://github.com/pilotspace/moon", "commit": "8bba3ced49abc43e656a62cbf142b3cb99a48d62", "language": "Rust",
+           "indexed_files": 783, "chunks": 8842, "tasks": "bench/tasks-v8/moon.jsonl (= v7 bench/tasks.jsonl; reproduced by `tasks --skip 40 --n 20` at this commit, which is the checkout v7 ran on)"},
+  "httpx": {"url": "https://github.com/encode/httpx", "commit": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254", "language": "Python",
+            "indexed_files": 92, "chunks": 982, "tasks": "bench/tasks-v8/httpx.jsonl (`tasks --skip 40 --n 20 --code-only`)"},
+  "hono": {"url": "https://github.com/honojs/hono", "commit": "6cadf7537385c6e3df9cbd6d05c9b84c82ae0361", "language": "TypeScript",
+           "indexed_files": 436, "chunks": 2569, "tasks": "bench/tasks-v8/hono.jsonl (`tasks --skip 40 --n 20 --code-only`)"}
+ },
+ "leakage": "none of moon/httpx/hono is in finetune/repos.py TRAIN (codex, velos, PraisonAI, pi-mono, ai-guard, python-dependency-injector, dispatch, ai-proxy); moon is HELDOUT. The train checkouts are not on this machine, so the root-commit overlap check could not be re-run; the laya-base pre-training corpus and Sonnet's pre-training may include httpx/hono (public, popular).",
+ "sessions": {"valid": 180, "failed_nonzero_exit": 0, "timeouts": 0,
+              "dropped_and_rerun": 15, "dropped_reason": "moon laya-arm sessions whose every prompt injection failed (Moon disk-full guard); archived in moon/runs.dropped.jsonl and re-run once, all succeeded"},
+ "spend": {"valid_sessions_usd": 45.45, "dropped_sessions_usd": 5.41, "total_usd_approx": 51.0,
+           "valid_sessions_wall_min": 144.5, "dropped_sessions_wall_min": 16.4,
+           "pilot": "18 sessions (2 tasks x 3 arms x 3 repos), $5.19, 16.6 min; projected full run $52 / 2.8 h (gate: $150 / 16 h); pilot rows are part of the final 180"}
+}

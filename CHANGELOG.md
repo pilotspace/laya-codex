@@ -47,6 +47,23 @@ All notable changes to this project are documented here. The format follows
   the two inlined files in 48 tasks instead of 42 with the benchmark wording, 49 instead of 46
   with reworded instructions, and 49 either way with free-form prompts.
 
+### Documentation
+- Benchmark v2 results (v8: moon, httpx, hono; 60 tasks) replace the single-repository numbers
+  in the README, charts, how-it-works and use cases. Claude reads 38% less code, takes 21% fewer
+  turns, costs 10% less and names the right files more often on the first question; task time does
+  not change (+3.5%, not significant). The earlier −50% reading / −17% time result on moon did not
+  replicate.
+- The README states what the model-vs-keywords comparison showed (no end-to-end gain yet, sessions
+  13% longer) and why the Laya model stays on by default. A caveat in `docs/RESULTS.md` adds that
+  the model probably fell back to keyword ranking on part of that run's prompts, which it didn't
+  record, so the comparison is inconclusive.
+
+### Benchmark tooling
+- `bench/stats_pooled.py` and `bench/headline.py` for multi-repository runs; `read_accuracy.py`
+  pools several run directories; task sets in `bench/tasks-v8/`.
+- `scripts/charts.py` draws increases and non-significant changes honestly (grey, left of zero),
+  and the journey chart handles tasks that never reached a correct file.
+
 ## [0.2.0] — 2026-09-23
 
 One name everywhere. The tool is **laya-codex**; "Laya" now only means the upstream
