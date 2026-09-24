@@ -747,11 +747,52 @@ mod tests {
         let d = line("src/shard/recovery.rs", 11)
             .unwrap_or_else(|| panic!("definition line missing: {:?}", out.related));
         assert_eq!(d.symbol, "pub fn recover_shard_v3(dir: &Path) -> Lsn {");
-        assert_eq!(d.relation, "definition of `recover_shard_v3`");
+        assert_eq!(
+            d.relation, "definition of `recover_shard_v3` (all indexed uses shown)",
+            "one definition and one use, both listed: the list is complete"
+        );
         let u = line("src/shard/mod.rs", 202)
             .unwrap_or_else(|| panic!("use line missing: {:?}", out.related));
         assert_eq!(u.symbol, "let lsn = recover_shard_v3(&dir)?;");
         assert_eq!(u.relation, "use of `recover_shard_v3`");
+    }
+
+    #[test]
+    fn usage_list_claims_completeness_only_when_every_use_is_listed() {
+        let def = chunk_with_refs(
+            "src/wal.rs",
+            1,
+            3,
+            &["replay_wal"],
+            &[],
+            "pub fn replay_wal() {\n    todo!()\n}\n",
+        );
+        let callers: Vec<Chunk> = (0..5)
+            .map(|i| {
+                chunk_with_refs(
+                    &format!("src/c{i}.rs"),
+                    1,
+                    3,
+                    &[],
+                    &["replay_wal"],
+                    "fn caller() {\n    replay_wal();\n}\n",
+                )
+            })
+            .collect();
+        let mut chunks = vec![def];
+        chunks.extend(callers);
+        let store = FakeStore::new(chunks);
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        let out = r.query("repo", "fix replay_wal ordering").unwrap();
+        let d = out
+            .related
+            .iter()
+            .find(|x| x.relation.starts_with("definition of `replay_wal`"))
+            .unwrap_or_else(|| panic!("definition line missing: {:?}", out.related));
+        assert_eq!(
+            d.relation, "definition of `replay_wal`",
+            "five uses cannot all be listed, so no completeness claim"
+        );
     }
 
     #[test]

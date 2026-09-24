@@ -26,6 +26,8 @@ use std::collections::{HashMap, HashSet};
 
 use laya_core::{Chunk, RankedSpan, Related, Result, Store};
 
+use crate::render::COMPLETE_USES;
+
 /// How many chunks `chunks_referencing` may return per `defines` ident.
 const CALLER_LIMIT: usize = 4;
 /// `chunks_defining` limit used for the ambiguity probe: a hit count over `AMBIGUOUS_ABOVE`
@@ -279,6 +281,8 @@ pub(crate) fn usage_list(
             .map(|d| (d, "definition of"))
             .chain(uses.iter().map(|u| (u, "use of")));
         let mut listed = 0;
+        let mut shown = 0; // defs and uses with a line in `out`, new or already there
+        let mut def_lines: Vec<usize> = Vec::new();
         for (cid, kind) in tagged {
             if listed >= USAGE_PER_IDENT || out.len() >= USAGE_LINES {
                 break;
@@ -289,11 +293,15 @@ pub(crate) fn usage_list(
             let Some((line, text)) = first_line_with(chunk, id) else {
                 continue;
             };
+            shown += 1;
             if out
                 .iter()
                 .any(|r| r.path == chunk.path && r.start_line == line)
             {
                 continue;
+            }
+            if kind == "definition of" {
+                def_lines.push(out.len());
             }
             out.push(Related {
                 path: chunk.path.clone(),
@@ -303,6 +311,14 @@ pub(crate) fn usage_list(
                 relation: format!("{kind} `{id}`"),
             });
             listed += 1;
+        }
+        // Complete only if the store returned every referencing chunk (fewer than the lookup
+        // limit) and each definition and use got a line. The claim saves the agent the grep for
+        // call sites; it is never made for a partial list.
+        if uses.len() < USAGE_REF_LIMIT && shown == defs.len() + uses.len() {
+            for i in def_lines {
+                out[i].relation.push_str(COMPLETE_USES);
+            }
         }
     }
     Ok(out)

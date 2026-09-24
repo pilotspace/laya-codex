@@ -182,7 +182,9 @@ prompt ─► signals: stoplisted BM25 terms · identifiers · path mentions
           lexical fallback when busy or over budget, model warmed up at load
        ─► fusion: 0.5·(1 − lexical_rank/24) + 0.5·P ─► span shaping: top 10, ≤ 400 lines
        ─► expansion: one-hop callees/callers + grep-style "Definitions and uses" (≈10 lines)
-       ─► render (≤ 9,500 chars): ranked map · full code of the top 3 distinct files · usages · related
+       ─► render (≤ 9,500 chars): ranked map · full code of the top 2 distinct files, only if the file
+          still matches its index hash, under a "checked against disk" line · usages (with
+          "all indexed uses shown" when complete) · related
           · adaptive mode only: skip spans the session already has
 ```
 

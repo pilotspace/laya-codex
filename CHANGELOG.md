@@ -6,8 +6,37 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Fixed
+### Added
+- **Trust line:** when code is inlined, the injection says it is the exact current content of
+  those line ranges and asks Claude not to Read or grep to re-check it. The claim is backed by a
+  check: before rendering, the daemon compares each file it is about to inline with its index
+  hash, and a file edited since indexing is listed as a location instead of inlined.
+- **"All indexed uses shown":** a prompt identifier's definition line carries this label when
+  every indexed use is listed or visible in the inlined code, so Claude can skip the grep for call
+  sites. It is only claimed for a complete list and is dropped if the 9,500-character cap cuts a
+  line.
 
+### Changed
+- **At most 2 inlined code blocks** by default, down from 3; 1 for single-function tasks.
+  - Why: in benchmark v2 Claude re-checked code it had been given (about 0.5 Reads of an inlined
+    block and 1 grep for an already-given symbol per session), and every prompt carried about
+    5.8k characters.
+  - The third block was the largest (~2.5k characters) and the least often a correct file (22%).
+  - Replaying the v2 injections, this cuts them by 25% and loses an inlined correct file on 3 of
+    60 tasks; that file stays in the location list.
+- **Ranking searches the task, not the instructions around it.** Keyword search and the
+  Laya model now see only the task part of a prompt:
+  - a quoted passage of 3 or more content words, when there is one;
+  - otherwise the prompt without sentences about the answer's format ("Be efficient…",
+    "End your answer with … of the form FILES: …").
+
+  Identifiers and file paths still come from the whole prompt. Without this, wrapper words
+  such as *source*, *change*, *files* and *paths* could push `CHANGELOG.md` or docs above the
+  code. Replaying the 60 benchmark v2 tasks (model on every query), the correct file reached
+  the two inlined files in 48 tasks instead of 42 with the benchmark wording, 49 instead of 46
+  with reworded instructions, and 49 either way with free-form prompts.
+
+### Fixed
 - **The Laya model no longer silently drops out under load.**
 
   *The problem:*
@@ -32,20 +61,11 @@ All notable changes to this project are documented here. The format follows
     (free-form), scoring the top 8. Median query time fell from 1.18–1.21 s to 0.80–0.84 s.
     The correct file reached the two inlined files in 47 tasks instead of 49 with the bench
     wording, and 45 instead of 43 with free-form prompts.
-
-### Changed
-
-- **Ranking searches the task, not the instructions around it.** Keyword search and the
-  Laya model now see only the task part of a prompt:
-  - a quoted passage of 3 or more content words, when there is one;
-  - otherwise the prompt without sentences about the answer's format ("Be efficient…",
-    "End your answer with … of the form FILES: …").
-
-  Identifiers and file paths still come from the whole prompt. Without this, wrapper words
-  such as *source*, *change*, *files* and *paths* could push `CHANGELOG.md` or docs above the
-  code. Replaying the 60 benchmark v2 tasks (model on every query), the correct file reached
-  the two inlined files in 48 tasks instead of 42 with the benchmark wording, 49 instead of 46
-  with reworded instructions, and 49 either way with free-form prompts.
+- Adaptive injection could inline code from a file edited outside Claude since the last index
+  (for example after `git checkout`); such files are now shown as locations only.
+- An inlined block merged from two chunks 1–3 lines apart left out the lines between them while
+  its heading claimed the whole range, so line numbers inside the block were off. Inlined code is
+  now taken from the file's own lines for the stated range.
 
 ### Documentation
 - Benchmark v2 results (v8: moon, httpx, hono; 60 tasks) replace the single-repository numbers
@@ -63,6 +83,7 @@ All notable changes to this project are documented here. The format follows
   pools several run directories; task sets in `bench/tasks-v8/`.
 - `scripts/charts.py` draws increases and non-significant changes honestly (grey, left of zero),
   and the journey chart handles tasks that never reached a correct file.
+
 
 ## [0.2.0] — 2026-09-23
 

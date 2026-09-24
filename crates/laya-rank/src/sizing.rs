@@ -14,8 +14,8 @@ use laya_core::{QueryResult, RankMode, RankedSpan, Related};
 use serde::{Deserialize, Serialize};
 
 use crate::render::{
-    COMPACT_FOOTER, COMPACT_HEADER, append_ranked_locations, append_related, estimate_tokens,
-    render_span,
+    COMPACT_FOOTER, COMPACT_HEADER, TRUST_LINE, append_ranked_locations, append_related,
+    estimate_tokens, render_span,
 };
 
 /// How much of the codebase a prompt's task spans, used to pick [`SizingCaps`]. `serde` uses
@@ -43,15 +43,19 @@ pub struct SizingCaps {
     pub related: usize,
 }
 
-/// "Today's behaviour" caps, used when [`Scope`] is unknown (`None`).
+/// Caps used when [`Scope`] is unknown (`None`) or a module. At most two spans get full code:
+/// in benchmark v2 (60 tasks) the third inlined block was the largest (~2.5k chars) and the least
+/// often a correct file (22%, vs 52% and 33% for the first two). Dropping it cut the injection by
+/// a quarter and lost an inlined correct file on 3 of 60 tasks; the span stays in the location
+/// listing, so the agent can still Read it.
 const DEFAULT_CAPS: SizingCaps = SizingCaps {
     map_spans: 10,
-    full_spans: 3,
+    full_spans: 2,
     related: 8,
 };
 
 impl Scope {
-    /// Sizing caps for `scope`, or [`DEFAULT_CAPS`] ("today's behaviour") when `scope` is `None`.
+    /// Sizing caps for `scope`, or [`DEFAULT_CAPS`] when `scope` is `None`.
     pub fn caps(scope: Option<Scope>) -> SizingCaps {
         match scope {
             None => DEFAULT_CAPS,
@@ -68,7 +72,7 @@ impl Scope {
             Some(Scope::Module) => DEFAULT_CAPS,
             Some(Scope::Cross) => SizingCaps {
                 map_spans: 12,
-                full_spans: 3,
+                full_spans: 2,
                 related: 10,
             },
         }
@@ -146,6 +150,10 @@ pub struct SizedContext {
     pub map: Vec<RankedSpan>,
     pub related: Vec<Related>,
     pub already: Vec<RankedSpan>,
+    /// Set by a caller that checked, for this prompt, that every file in `full` still matches the
+    /// index (so each inlined block is the file's current content). Only then does the render
+    /// say so ([`crate::render::TRUST_LINE`]). [`size_context`] never sets it.
+    pub verified_current: bool,
 }
 
 fn overlaps(
@@ -234,6 +242,7 @@ pub fn size_context(
         map,
         related,
         already: already_spans,
+        verified_current: false,
     }
 }
 
@@ -356,25 +365,32 @@ pub fn render_sized_with_keys(ctx: &SizedContext, budget_tokens: usize) -> (Stri
     let listed: Vec<&RankedSpan> = ctx.full.iter().chain(ctx.map.iter()).collect();
     append_ranked_locations(&mut out, &listed);
 
-    let mut used = estimate_tokens(&out) + estimate_tokens(COMPACT_FOOTER);
+    // The trust claim precedes the code, so reserve its room up front and add it only if at
+    // least one block is actually inlined.
+    let trust = if ctx.verified_current { TRUST_LINE } else { "" };
+    let mut used = estimate_tokens(&out) + estimate_tokens(COMPACT_FOOTER) + estimate_tokens(trust);
+    let mut code = String::new();
     let mut rendered_keys = Vec::new();
     let mut inlined: Vec<&RankedSpan> = ctx.already.iter().collect();
     for span in &ctx.full {
         let block = render_span(span);
         let t = estimate_tokens(&block);
         // Reserve room for the footer and the "Already provided" line after the code blocks.
-        if used + t > budget_tokens
-            || !crate::render::fits(&out, &block, COMPACT_FOOTER.len() + 400)
-        {
+        let reserve = code.len() + trust.len() + COMPACT_FOOTER.len() + 400;
+        if used + t > budget_tokens || !crate::render::fits(&out, &block, reserve) {
             // Degrade to a map entry: it's already in the "Ranked locations:" listing above, so
             // simply not inlining its code block is exactly that degradation — no truncated code.
             continue;
         }
-        out.push_str(&block);
+        code.push_str(&block);
         used += t;
         rendered_keys.push(SpanKey::of(span));
         inlined.push(span);
     }
+    if !code.is_empty() {
+        out.push_str(trust);
+    }
+    out.push_str(&code);
     out.push_str(COMPACT_FOOTER);
 
     if !ctx.already.is_empty() {
@@ -486,7 +502,7 @@ mod tests {
                 .iter()
                 .map(|s| (s.path.as_str(), s.start_line))
                 .collect();
-            assert_eq!(full, vec![("a.rs", 1), ("b.rs", 1), ("c.rs", 1)]);
+            assert_eq!(full, vec![("a.rs", 1), ("b.rs", 1)]);
             assert!(
                 ctx.map
                     .iter()
@@ -568,6 +584,44 @@ mod tests {
         assert!(keys.len() < 3, "not every 4k-char block fits");
     }
 
+    #[test]
+    fn trust_line_is_claimed_only_for_verified_inlined_code() {
+        let spans = vec![span("a.rs", 1, 20, "fn a", Some(0.9), 1.0)];
+        let mut ctx = size_context(
+            &result(RankMode::Laya, spans, vec![]),
+            None,
+            &SizingPolicy::default(),
+            &[],
+        );
+        assert!(
+            !ctx.verified_current,
+            "size_context never claims a disk check"
+        );
+        let unverified = render_sized(&ctx, 10_000);
+        assert!(
+            !unverified.contains(crate::render::TRUST_LINE),
+            "{unverified}"
+        );
+
+        ctx.verified_current = true;
+        let verified = render_sized(&ctx, 10_000);
+        assert!(verified.contains(crate::render::TRUST_LINE), "{verified}");
+        assert!(
+            verified.find(crate::render::TRUST_LINE) < verified.find("### a.rs"),
+            "the claim precedes the code it covers"
+        );
+
+        let map_only = SizedContext {
+            map: std::mem::take(&mut ctx.full),
+            ..ctx
+        };
+        let out = render_sized(&map_only, 10_000);
+        assert!(
+            !out.contains(crate::render::TRUST_LINE),
+            "no code, no claim: {out}"
+        );
+    }
+
     // ---- Scope::caps ----
 
     #[test]
@@ -592,7 +646,7 @@ mod tests {
             Scope::caps(Some(Scope::Module)),
             SizingCaps {
                 map_spans: 10,
-                full_spans: 3,
+                full_spans: 2,
                 related: 8
             }
         );
@@ -600,7 +654,7 @@ mod tests {
             Scope::caps(Some(Scope::Cross)),
             SizingCaps {
                 map_spans: 12,
-                full_spans: 3,
+                full_spans: 2,
                 related: 10
             }
         );
@@ -608,10 +662,20 @@ mod tests {
             Scope::caps(None),
             SizingCaps {
                 map_spans: 10,
-                full_spans: 3,
+                full_spans: 2,
                 related: 8
             }
         );
+    }
+
+    #[test]
+    fn no_scope_inlines_at_most_two_blocks() {
+        // Benchmark v2: the third inlined block was the largest (~2.5k chars) and the least
+        // often a correct file (22%); dropping it cut the injection by 25% and lost the
+        // inlined correct file on 3 of 60 tasks, which still list it as a location.
+        for scope in [None, Some(Scope::Module), Some(Scope::Cross)] {
+            assert!(Scope::caps(scope).full_spans <= 2, "{scope:?}");
+        }
     }
 
     #[test]
@@ -915,6 +979,7 @@ mod tests {
             map: vec![span("b.rs", 1, 5, "fn b", Some(0.3), 0.3)],
             related: vec![related("src/x.rs", 10, 40, "calls `bar` (#1)")],
             already: vec![],
+            verified_current: false,
         };
         let out = render_sized(&ctx, 10_000);
         assert!(out.starts_with("<!-- laya-codex:"));
@@ -938,6 +1003,7 @@ mod tests {
                 span("a.rs", 1, 5, "", None, 0.0),
                 span("b.rs", 10, 20, "", None, 0.0),
             ],
+            verified_current: false,
         };
         let out = render_sized(&ctx, 10_000);
         assert!(out.contains("Already provided earlier in this session: a.rs:1-5, b.rs:10-20"));
@@ -953,6 +1019,7 @@ mod tests {
             map: vec![],
             related: vec![],
             already: vec![],
+            verified_current: false,
         };
         let keys = sized_keys(&ctx);
         assert_eq!(keys, vec![key(&ctx.full[0]), key(&ctx.full[1])]);
@@ -969,6 +1036,7 @@ mod tests {
             map: vec![],
             related: vec![],
             already: vec![],
+            verified_current: false,
         };
         let mut ctx = ctx;
         ctx.full[1].text = big;
@@ -994,6 +1062,7 @@ mod tests {
             map: vec![],
             related: vec![],
             already: vec![],
+            verified_current: false,
         };
         assert_eq!(
             render_sized(&ctx, 10_000),
