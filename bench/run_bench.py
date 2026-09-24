@@ -427,29 +427,32 @@ def report(args):
         vals = [by[a][t][k] or 0 for t in common]
         return sum(vals) / max(1, len(vals))
 
+    # Compare with stock Claude Code; a run of builds only (no baseline arm) compares with the first arm.
+    ref = arms[0]
+
     def median_ratio(a, k):
-        rs = sorted((by[a][t][k] or 0) / by["baseline"][t][k] for t in common if by["baseline"][t][k])
+        rs = sorted((by[a][t][k] or 0) / by[ref][t][k] for t in common if by[ref][t][k])
         return rs[len(rs) // 2] if rs else float("nan")
 
-    summary = {"n_tasks_paired": len(common), "arms": {}}
+    summary = {"n_tasks_paired": len(common), "reference": ref, "arms": {}}
     lines = ["| metric | " + " | ".join(arms) + " |", "|---" * (len(arms) + 1) + "|"]
     for k in keys:
         lines.append("| %s | %s |" % (k, " | ".join("%.3f" % mean(a, k) if k in ("recall", "precision", "hit_any", "cost_usd", "recall_all_turns")
                                                     else "%.1f" % mean(a, k) for a in arms)))
     for a in arms:
         summary["arms"][a] = {k: mean(a, k) for k in keys}
-        if a != "baseline":
+        if a != ref:
             read_cost = lambda arm, t: (by[arm][t]["reading_tokens"] or 0) + (by[arm][t]["injected_tokens"] or 0)
-            tot_b = sum(read_cost("baseline", t) for t in common)
+            tot_b = sum(read_cost(ref, t) for t in common)
             tot_a = sum(read_cost(a, t) for t in common)
             summary["arms"][a]["reading_cost_change_pct"] = round(100 * (tot_a - tot_b) / max(1, tot_b), 1)
-            wb = sum(by["baseline"][t]["wall_s"] for t in common)
+            wb = sum(by[ref][t]["wall_s"] for t in common)
             wa = sum(by[a][t]["wall_s"] for t in common)
             summary["arms"][a]["wall_change_pct"] = round(100 * (wa - wb) / max(1e-9, wb), 1)
             summary["arms"][a]["median_wall_ratio"] = round(median_ratio(a, "wall_s"), 3)
             summary["arms"][a]["median_total_input_ratio"] = round(median_ratio(a, "total_input_tokens"), 3)
-            lines.append("| **%s vs baseline** | reading+injected %+.1f%% · wall %+.1f%% · median wall ratio %.2f · median total-input ratio %.2f |" % (
-                a, summary["arms"][a]["reading_cost_change_pct"], summary["arms"][a]["wall_change_pct"],
+            lines.append("| **%s vs %s** | reading+injected %+.1f%% · wall %+.1f%% · median wall ratio %.2f · median total-input ratio %.2f |" % (
+                a, ref, summary["arms"][a]["reading_cost_change_pct"], summary["arms"][a]["wall_change_pct"],
                 summary["arms"][a]["median_wall_ratio"], summary["arms"][a]["median_total_input_ratio"]))
     md = "\n".join(lines)
     print(md)

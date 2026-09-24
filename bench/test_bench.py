@@ -281,6 +281,22 @@ class WarmUp(unittest.TestCase):
         rows = [{"rank_modes": ["laya", "lexical"]}, {"rank_modes": ["laya", None]}, {}]
         self.assertEqual(self.rb.rank_mode_counts(rows), {"laya": 2, "lexical": 1, "unknown": 1})
 
+    def test_report_compares_with_the_first_arm_when_there_is_no_baseline(self):
+        out = tempfile.mkdtemp()
+        rows = [row("branch", "t1", wall_s=20.0), row("mcp", "t1", wall_s=15.0)]
+        with open(os.path.join(out, "runs.jsonl"), "w") as f:
+            f.write("\n".join(json.dumps(r) for r in rows) + "\n")
+        import argparse
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.rb.report(argparse.Namespace(out=out))
+        s = json.load(open(os.path.join(out, "summary.json")))
+        self.assertEqual(s["reference"], "branch")
+        self.assertEqual(s["arms"]["mcp"]["wall_change_pct"], -25.0)
+        self.assertNotIn("wall_change_pct", s["arms"]["branch"])
+        self.assertIn("mcp vs branch", open(os.path.join(out, "summary.md")).read())
+
 
 if __name__ == "__main__":
     unittest.main()
