@@ -164,8 +164,10 @@ your prompt ─► laya-codex hook ─► local daemon ─► BM25 keyword searc
 - **Ranking.** Keyword search picks the 24 best candidates, and laya-codex re-ranks them with the
   [Laya](https://huggingface.co/convaiinnovations/laya) model:
   [laya-code](https://huggingface.co/tindang/laya-code), a code-tuned Laya fine-tune running on the
-  Metal GPU, scores how relevant each one is to your task, and the two rankings are blended. If
-  the model is busy or absent, laya-codex falls back to keyword ranking alone.
+  Metal GPU, scores how relevant each one is to your task, and the two rankings are blended. The
+  model scores the candidates best-first and stops inside its time budget, so a slow or busy
+  machine re-ranks fewer of them rather than none; the rest keep their keyword order below. Only
+  if the model is absent, or scores nothing in time, does keyword ranking stand alone.
 - **Adding code without repeating it.** laya-codex remembers what the session has already seen, so a
   follow-up prompt doesn't get the same code twice. The first whole-file Read of a large file returns
   the most relevant region plus an outline; reading the file again returns all of it.
@@ -327,7 +329,7 @@ Flags:
 | `LAYA_CODEX_HOME` | `~/.cache/laya-codex` | socket, logs, Moon data and password (`moon.acl`), models (mode 0700) |
 | `LAYA_CODEX_MODEL_DIR` | `laya-code`, else `laya-base` | model directory |
 | `LAYA_CODEX_NO_MODEL` | unset | `1` = lexical-only ranking |
-| `LAYA_CODEX_BUDGET_MS` | `1200` | Laya time budget per prompt (falls back to lexical) |
+| `LAYA_CODEX_BUDGET_MS` | `1200` | Laya time budget per prompt: the model scores as many candidates as fit (lexical only if none) |
 | `LAYA_CODEX_RENDER` | `compact` | `full` injects every span's code |
 | `LAYA_CODEX_WEIGHT` / `LAYA_CODEX_STATE_TOKENS` / `LAYA_CODEX_K` / `LAYA_CODEX_P_THRESHOLD` | `0.5` / `128` / `24` / `0` | ranking knobs (daemon start) |
 | `LAYA_CODEX_ADAPTIVE` | on | `0` = fixed compact injection; default skips code already sent or read in the session |
