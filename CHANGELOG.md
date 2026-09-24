@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Ranking searches the task, not the instructions around it.** Keyword search and the
+  Laya model now see only the task part of a prompt:
+  - a quoted passage of 3 or more content words, when there is one;
+  - otherwise the prompt without sentences about the answer's format ("Be efficient…",
+    "End your answer with … of the form FILES: …").
+
+  Identifiers and file paths still come from the whole prompt. Without this, wrapper words
+  such as *source*, *change*, *files* and *paths* could push `CHANGELOG.md` or docs above the
+  code. Replaying the 60 benchmark v2 tasks (model on every query), the correct file reached
+  the two inlined files in 48 tasks instead of 42 with the benchmark wording, 49 instead of 46
+  with reworded instructions, and 49 either way with free-form prompts.
+
 ## [0.2.0] — 2026-09-23
 
 One name everywhere. The tool is **laya-codex**; "Laya" now only means the upstream
