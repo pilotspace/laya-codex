@@ -211,4 +211,18 @@ pub trait Store: Send + Sync {
 /// Relevance scorer contract (Laya). Returns P(relevant) per chunk, same order as input.
 pub trait Scorer: Send + Sync {
     fn score(&self, task: &str, chunks: &[&Chunk]) -> Result<Vec<f32>>;
+
+    /// Score chunks in input order (callers pass the most promising first) and stop before
+    /// `deadline`: `None` = not reached in time. Default: all or nothing through [`score`].
+    ///
+    /// [`score`]: Scorer::score
+    fn score_within(
+        &self,
+        task: &str,
+        chunks: &[&Chunk],
+        deadline: std::time::Instant,
+    ) -> Result<Vec<Option<f32>>> {
+        let _ = deadline;
+        Ok(self.score(task, chunks)?.into_iter().map(Some).collect())
+    }
 }

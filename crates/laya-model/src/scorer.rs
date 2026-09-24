@@ -71,4 +71,24 @@ impl Scorer for LayaScorer {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(self.model.noul_ids(&question, &state_ids, deadline)?)
     }
+
+    fn score_within(
+        &self,
+        task: &str,
+        chunks: &[&Chunk],
+        deadline: Instant,
+    ) -> laya_core::Result<Vec<Option<f32>>> {
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let question = self.question(task);
+        let seqs = self.model.sequences();
+        let state_ids = chunks
+            .iter()
+            .map(|c| seqs.encode_state(&Self::render_state(c), Some(self.max_state_tokens)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self
+            .model
+            .noul_ids_within(&question, &state_ids, deadline)?)
+    }
 }

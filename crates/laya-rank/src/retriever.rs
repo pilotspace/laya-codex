@@ -13,7 +13,7 @@ use laya_core::{Candidate, Chunk, QueryResult, RankMode, Result, Scorer, Store};
 use crate::config::RetrieverConfig;
 use crate::fusion::fuse_ranked_lists;
 use crate::related::expand_related;
-use crate::signals::extract_signals;
+use crate::signals::{extract_signals, task_focus};
 use crate::span::{Scored, shape_spans};
 
 /// Turns a prompt into ranked, shaped code spans over a `Store` (candidate generation) and an
@@ -47,7 +47,11 @@ impl<'a> Retriever<'a> {
     /// failure" rule: callers decide the fail-open policy (e.g. an empty hook response).
     pub fn query(&self, repo_id: &str, prompt: &str) -> Result<QueryResult> {
         let start = Instant::now();
-        let signals = extract_signals(prompt);
+        // BM25 terms and the Laya scorer see the task, not the instructions wrapped around it;
+        // identifiers and path mentions still come from the whole prompt.
+        let focus = task_focus(prompt);
+        let mut signals = extract_signals(prompt);
+        signals.terms = extract_signals(&focus).terms;
 
         if signals.terms.is_empty() && signals.identifiers.is_empty() && signals.paths.is_empty() {
             return Ok(empty_result(start));
@@ -105,10 +109,10 @@ impl<'a> Retriever<'a> {
         if candidates.is_empty() {
             return Ok(empty_result(start));
         }
-        let candidates = demote_non_code(candidates, prompt);
+        let candidates = demote_non_code(candidates, &focus);
         let n_candidates = candidates.len();
 
-        let (scored, mode) = self.laya_gate(prompt, candidates);
+        let (scored, mode) = self.laya_gate(&focus, candidates);
         // Seeds for one-hop expansion are the top 3 *scored chunks*, captured before shaping
         // merges same-file spans together (a merge loses `defines`/`refs`).
         let seeds: Vec<Chunk> = scored.iter().take(3).map(|s| s.chunk.clone()).collect();
@@ -165,10 +169,11 @@ impl<'a> Retriever<'a> {
     }
 
     /// Laya decision gate: budget-bounded rerank of `candidates` (already in lexical/RRF order).
-    /// Never blocks past `cfg.laya_budget`; any timeout, error, disabled scorer, or malformed
-    /// response degrades to the lexical order with `RankMode::Lexical`.
+    /// Never blocks past `cfg.laya_budget`. The scorer works through the candidates in order
+    /// and stops inside the budget, so a slow machine re-ranks fewer of them rather than none;
+    /// only when nothing was scored (timeout, error, disabled scorer, malformed response) does
+    /// the lexical order stand with `RankMode::Lexical`.
     fn laya_gate(&self, prompt: &str, candidates: Vec<Candidate>) -> (Vec<Scored>, RankMode) {
-        let lexical_ids: Vec<String> = candidates.iter().map(|c| c.chunk_id.clone()).collect();
         let to_lexical = |cands: Vec<Candidate>| -> Vec<Scored> {
             cands
                 .into_iter()
@@ -191,20 +196,27 @@ impl<'a> Retriever<'a> {
             owned_chunks,
             self.cfg.laya_budget,
         ) {
-            Some(p) if p.len() == candidates.len() => p,
+            Some(p) if p.len() == candidates.len() && p.iter().any(Option::is_some) => p,
             _ => return (to_lexical(candidates), RankMode::Lexical),
         };
 
-        let mut laya_order: Vec<usize> = (0..candidates.len()).collect();
+        // The model re-ranks the candidates it scored in time; the ones the budget did not reach
+        // (the lexical tail: candidates are scored most promising first) stay below them in
+        // lexical order.
+        let (reached, unreached): (Vec<(Candidate, Option<f32>)>, Vec<_>) = candidates
+            .into_iter()
+            .zip(probs)
+            .partition(|(_, p)| p.is_some());
+        let lexical_ids: Vec<String> = reached.iter().map(|(c, _)| c.chunk_id.clone()).collect();
+        let probs: Vec<f32> = reached.iter().map(|(_, p)| p.unwrap_or(0.0)).collect();
+
+        let mut laya_order: Vec<usize> = (0..reached.len()).collect();
         laya_order.sort_by(|&a, &b| {
             probs[b]
                 .partial_cmp(&probs[a])
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let laya_ids: Vec<String> = laya_order
-            .iter()
-            .map(|&i| candidates[i].chunk_id.clone())
-            .collect();
+        let laya_ids: Vec<String> = laya_order.iter().map(|&i| lexical_ids[i].clone()).collect();
 
         let final_scores: HashMap<String, f32> = match self.cfg.laya_weight {
             None => fuse_ranked_lists(&[&lexical_ids, &laya_ids], self.cfg.rrf_k)
@@ -213,12 +225,11 @@ impl<'a> Retriever<'a> {
             Some(w) => weighted_scores(&lexical_ids, &probs, w),
         };
 
-        let mut scored: Vec<Scored> = candidates
+        let mut scored: Vec<Scored> = reached
             .into_iter()
-            .enumerate()
-            .map(|(i, c)| Scored {
+            .map(|(c, p)| Scored {
                 score: final_scores.get(&c.chunk_id).copied().unwrap_or(0.0),
-                p_relevant: Some(probs[i]),
+                p_relevant: p,
                 chunk: c.chunk,
             })
             .collect();
@@ -227,6 +238,11 @@ impl<'a> Retriever<'a> {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        scored.extend(unreached.into_iter().map(|(c, _)| Scored {
+            chunk: c.chunk,
+            score: 0.0,
+            p_relevant: None,
+        }));
 
         let passing = scored
             .iter()
@@ -327,10 +343,13 @@ fn elapsed_ms(start: Instant) -> u64 {
     start.elapsed().as_millis() as u64
 }
 
-/// Run `scorer.score(task, chunks)` on a detached worker thread, bounded by `budget`. Returns
-/// `None` on timeout, a channel error, or the scorer itself returning `Err`. A late result (the
-/// thread finishes after `budget` elapses) is simply dropped — the send on a disconnected
-/// receiver fails silently and the thread exits.
+/// Share of the Laya budget the scorer may spend before it must stop scoring.
+const SCORER_SHARE_OF_BUDGET: f32 = 0.85;
+
+/// Run `scorer.score_within(task, chunks, deadline)` on a detached worker thread, bounded by
+/// `budget`. Returns `None` on timeout, a channel error, or the scorer itself returning `Err`.
+/// A late result (the thread finishes after `budget` elapses) is simply dropped — the send on a
+/// disconnected receiver fails silently and the thread exits.
 ///
 /// `scorer` is an owned `Arc`, so the detached thread (which must be free to keep running after
 /// `budget` elapses and this function has returned — that's the whole point of "abandon, don't
@@ -342,12 +361,15 @@ fn call_scorer_bounded(
     task: String,
     chunks: Vec<Chunk>,
     budget: Duration,
-) -> Option<Vec<f32>> {
-    let (tx, rx) = mpsc::channel::<Result<Vec<f32>>>();
+) -> Option<Vec<Option<f32>>> {
+    let (tx, rx) = mpsc::channel::<Result<Vec<Option<f32>>>>();
+    // The scorer stops itself inside the budget, leaving room to hand the result back; the
+    // `recv_timeout` below stays the hard stop for scorers that cannot.
+    let deadline = Instant::now() + budget.mul_f32(SCORER_SHARE_OF_BUDGET);
 
     thread::spawn(move || {
         let refs: Vec<&Chunk> = chunks.iter().collect();
-        let result = scorer.score(&task, &refs);
+        let result = scorer.score_within(&task, &refs, deadline);
         let _ = tx.send(result);
     });
 
@@ -367,6 +389,150 @@ mod tests {
     };
     use laya_core::Lang;
     use std::collections::HashMap as StdHashMap;
+    use std::sync::Mutex;
+
+    const WRAPPED: &str = "In this repository, find the source code that implements or would need \
+        to change for the following change, and briefly explain how it works:\n\n\"Enforce the \
+        mmap budget when sealing vector segments\"\n\nBe efficient: read only what you need. End \
+        your answer with one line exactly of the form\nFILES: <comma-separated repo-relative \
+        paths of the most relevant source files>";
+
+    fn wrapper_trap_chunks() -> Vec<Chunk> {
+        vec![
+            chunk(
+                "src/release_notes.rs",
+                1,
+                3,
+                &[],
+                "// change log: source code files, relative paths, form\nfn notes() {}\n",
+            ),
+            chunk(
+                "src/vector/mmap_budget.rs",
+                1,
+                3,
+                &["enforce_budget"],
+                "fn enforce_budget() {\n    // mmap budget checked when sealing segments\n}\n",
+            ),
+        ]
+    }
+
+    #[test]
+    fn wrapper_words_do_not_outrank_the_quoted_task() {
+        let store = FakeStore::new(wrapper_trap_chunks());
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        let out = r.query("repo", WRAPPED).unwrap();
+        assert_eq!(out.spans[0].path, "src/vector/mmap_budget.rs");
+    }
+
+    /// Answers `score_within` with fixed probabilities (`None` = the budget ran out before that
+    /// chunk) and records the deadline it was given. A plain `score` call is a bug: the
+    /// retriever must ask for a bounded score.
+    struct PartialScorer {
+        probs: Vec<Option<f32>>,
+        deadline: Mutex<Option<Instant>>,
+    }
+
+    impl PartialScorer {
+        fn new(probs: Vec<Option<f32>>) -> Self {
+            Self {
+                probs,
+                deadline: Mutex::new(None),
+            }
+        }
+    }
+
+    impl Scorer for PartialScorer {
+        fn score(&self, _task: &str, _chunks: &[&Chunk]) -> Result<Vec<f32>> {
+            panic!("unbounded score call")
+        }
+        fn score_within(
+            &self,
+            _task: &str,
+            chunks: &[&Chunk],
+            deadline: Instant,
+        ) -> Result<Vec<Option<f32>>> {
+            *self.deadline.lock().unwrap() = Some(deadline);
+            Ok((0..chunks.len())
+                .map(|i| self.probs.get(i).copied().flatten())
+                .collect())
+        }
+    }
+
+    /// Three chunks whose lexical order for "alpha beta gamma" is a, b, c.
+    fn abc_chunks() -> Vec<Chunk> {
+        vec![
+            chunk("src/a.rs", 1, 3, &[], "fn a() { alpha beta gamma }\n"),
+            chunk("src/b.rs", 1, 3, &[], "fn b() { alpha beta }\n"),
+            chunk("src/c.rs", 1, 3, &[], "fn c() { alpha }\n"),
+        ]
+    }
+
+    fn weighted_cfg() -> RetrieverConfig {
+        RetrieverConfig {
+            laya_weight: Some(0.5),
+            ..RetrieverConfig::default()
+        }
+    }
+
+    #[test]
+    fn candidates_the_budget_did_not_reach_keep_lexical_order_below_the_scored_ones() {
+        let store = FakeStore::new(abc_chunks());
+        let scorer = Arc::new(PartialScorer::new(vec![Some(0.1), Some(0.9), None]));
+        let r = Retriever::new(&store, Some(scorer), weighted_cfg());
+        let out = r.query("repo", "alpha beta gamma").unwrap();
+        assert_eq!(out.mode, RankMode::Laya, "a partial model run still ranks");
+        let paths: Vec<&str> = out.spans.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(paths, ["src/b.rs", "src/a.rs", "src/c.rs"]);
+        assert_eq!(out.spans[2].p_relevant, None, "c was not scored");
+    }
+
+    #[test]
+    fn nothing_scored_in_time_is_lexical() {
+        let store = FakeStore::new(abc_chunks());
+        let scorer = Arc::new(PartialScorer::new(vec![None, None, None]));
+        let r = Retriever::new(&store, Some(scorer), weighted_cfg());
+        let out = r.query("repo", "alpha beta gamma").unwrap();
+        assert_eq!(out.mode, RankMode::Lexical);
+        let paths: Vec<&str> = out.spans.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(paths, ["src/a.rs", "src/b.rs", "src/c.rs"]);
+    }
+
+    #[test]
+    fn the_scorer_is_told_to_stop_inside_the_budget() {
+        let store = FakeStore::new(abc_chunks());
+        let scorer = Arc::new(PartialScorer::new(vec![Some(0.5); 3]));
+        let budget = Duration::from_millis(1000);
+        let cfg = RetrieverConfig {
+            laya_budget: budget,
+            ..weighted_cfg()
+        };
+        let r = Retriever::new(&store, Some(scorer.clone()), cfg);
+        let before = Instant::now();
+        r.query("repo", "alpha beta gamma").unwrap();
+        let deadline = scorer.deadline.lock().unwrap().expect("bounded call");
+        assert!(deadline > before && deadline < before + budget);
+    }
+
+    struct TaskRecorder(Mutex<Vec<String>>);
+
+    impl Scorer for TaskRecorder {
+        fn score(&self, task: &str, chunks: &[&Chunk]) -> Result<Vec<f32>> {
+            self.0.lock().unwrap().push(task.to_string());
+            Ok(vec![0.5; chunks.len()])
+        }
+    }
+
+    #[test]
+    fn the_laya_scorer_sees_the_task_not_the_wrapper() {
+        let store = FakeStore::new(wrapper_trap_chunks());
+        let rec = Arc::new(TaskRecorder(Mutex::new(Vec::new())));
+        let r = Retriever::new(&store, Some(rec.clone()), RetrieverConfig::default());
+        r.query("repo", WRAPPED).unwrap();
+        assert_eq!(
+            rec.0.lock().unwrap().as_slice(),
+            ["Enforce the mmap budget when sealing vector segments"]
+        );
+    }
 
     fn cand(path: &str, lang: Lang, fused: f32) -> Candidate {
         let mut c = chunk(path, 1, 10, &[], "x");
@@ -581,11 +747,52 @@ mod tests {
         let d = line("src/shard/recovery.rs", 11)
             .unwrap_or_else(|| panic!("definition line missing: {:?}", out.related));
         assert_eq!(d.symbol, "pub fn recover_shard_v3(dir: &Path) -> Lsn {");
-        assert_eq!(d.relation, "definition of `recover_shard_v3`");
+        assert_eq!(
+            d.relation, "definition of `recover_shard_v3` (all indexed uses shown)",
+            "one definition and one use, both listed: the list is complete"
+        );
         let u = line("src/shard/mod.rs", 202)
             .unwrap_or_else(|| panic!("use line missing: {:?}", out.related));
         assert_eq!(u.symbol, "let lsn = recover_shard_v3(&dir)?;");
         assert_eq!(u.relation, "use of `recover_shard_v3`");
+    }
+
+    #[test]
+    fn usage_list_claims_completeness_only_when_every_use_is_listed() {
+        let def = chunk_with_refs(
+            "src/wal.rs",
+            1,
+            3,
+            &["replay_wal"],
+            &[],
+            "pub fn replay_wal() {\n    todo!()\n}\n",
+        );
+        let callers: Vec<Chunk> = (0..5)
+            .map(|i| {
+                chunk_with_refs(
+                    &format!("src/c{i}.rs"),
+                    1,
+                    3,
+                    &[],
+                    &["replay_wal"],
+                    "fn caller() {\n    replay_wal();\n}\n",
+                )
+            })
+            .collect();
+        let mut chunks = vec![def];
+        chunks.extend(callers);
+        let store = FakeStore::new(chunks);
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        let out = r.query("repo", "fix replay_wal ordering").unwrap();
+        let d = out
+            .related
+            .iter()
+            .find(|x| x.relation.starts_with("definition of `replay_wal`"))
+            .unwrap_or_else(|| panic!("definition line missing: {:?}", out.related));
+        assert_eq!(
+            d.relation, "definition of `replay_wal`",
+            "five uses cannot all be listed, so no completeness claim"
+        );
     }
 
     #[test]

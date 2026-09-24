@@ -37,9 +37,9 @@ Definitions and uses:
 - crates/laya-cli/src/init.rs:472: check_target(root, &root_canon, path)?; — use of `check_target`
 ```
 
-Claude goes straight to `check_target`. In the benchmark, a correct file was in context before
-the first turn in 15 of 20 tasks. Stock Claude Code's first correct Read came at turn 6.5
-(median).
+Claude goes straight to `check_target`. In the benchmark (60 tasks, three repositories), a
+correct file was in context before the first turn in 46 of 60 tasks. Stock Claude Code first had
+a correct file at turn 5.5 (median).
 
 ## 2. Keep going in the same session: tests and call sites
 

@@ -1,0 +1,20 @@
+{"id": "1e11096473", "task": "Fixed `iter_text` adding an empty string", "gold": ["httpx/_decoders.py", "httpx/_models.py", "tests/test_decoders.py"]}
+{"id": "90538a3b46", "task": "Ensure that ASGI 'raw_path' does not include query component of URL.", "gold": ["httpx/_transports/asgi.py", "tests/test_asgi.py"]}
+{"id": "b471f01d66", "task": "Allow URLs where username or password contains unescaped '@'.", "gold": ["httpx/_urlparse.py", "tests/models/test_url.py"]}
+{"id": "1d73150c1f", "task": "Cleanup response.json() method", "gold": ["httpx/_models.py", "httpx/_utils.py", "tests/test_utils.py"]}
+{"id": "ad06741d1e", "task": "Lazily import 'netrc' module", "gold": ["httpx/_auth.py"]}
+{"id": "9751f76186", "task": "Drop unneccessary `binascii` import", "gold": ["httpx/_multipart.py"]}
+{"id": "7c9db49f0c", "task": "Add support for Python 3.12", "gold": ["httpx/_config.py"]}
+{"id": "59df8190a4", "task": "Raise ValueError on `Response.encoding` being set after `Response.text` has been accessed", "gold": ["httpx/_models.py", "tests/models/test_responses.py"]}
+{"id": "88e8431437", "task": "Add cookies to the retried request when performing digest authentication.", "gold": ["httpx/_auth.py", "tests/test_auth.py"]}
+{"id": "9415af643f", "task": "Make `raise_for_status` chainable", "gold": ["httpx/_models.py", "tests/client/test_async_client.py", "tests/client/test_client.py"]}
+{"id": "18d7721c38", "task": "Use Mozilla documentation instead of `httpstatuses.com` for HTTP error reference", "gold": ["httpx/_models.py", "tests/models/test_responses.py"]}
+{"id": "920333ea98", "task": "Always encode forward slashes as `%2F` in query parameters", "gold": ["httpx/_urlparse.py", "tests/models/test_url.py"]}
+{"id": "733595037a", "task": "Add `socket_options` argument to `httpx.HTTPTransport` class", "gold": ["httpx/_transports/default.py"]}
+{"id": "a682f6f1c7", "task": "Fix exception suppression in asgi transport", "gold": ["httpx/_transports/asgi.py", "tests/test_asgi.py"]}
+{"id": "abb994c0c2", "task": "Ensure all WSGITransport environs have a SERVER_PROTOCOL", "gold": ["httpx/_transports/wsgi.py", "tests/test_wsgi.py"]}
+{"id": "ee432c0d30", "task": "Fix for gen-delims escaping behaviour in path/query/fragment", "gold": ["httpx/_urlparse.py"]}
+{"id": "472597fb6b", "task": "More robust check for upload files in binary mode", "gold": ["httpx/_multipart.py"]}
+{"id": "26dc39213a", "task": "Additional context in InvalidURL exceptions", "gold": ["httpx/_urlparse.py"]}
+{"id": "9ae170a936", "task": "Fix optional percent encoding behaviour.", "gold": ["httpx/_urlparse.py"]}
+{"id": "15d09a3bbc", "task": "fix: NO_PROXY should support IPv4, IPv6 and localhost", "gold": ["httpx/_utils.py", "tests/test_utils.py"]}

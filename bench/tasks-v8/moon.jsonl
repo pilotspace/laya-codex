@@ -1,0 +1,20 @@
+{"id": "756db483ef", "task": "fix(vector): P5 \u2014 address three post-review issues in mmap budget", "gold": ["src/vector/persistence/mmap_budget.rs", "src/vector/persistence/warm_search.rs", "src/vector/store.rs"]}
+{"id": "00e09dcce1", "task": "fix(shard): gate unused graph-merge params under graph feature", "gold": ["src/shard/autovacuum.rs", "src/shard/spsc_handler.rs"]}
+{"id": "0242c67559", "task": "feat(shard): GREEN \u2014 MA4 weighted compaction scheduling", "gold": ["src/shard/autovacuum.rs"]}
+{"id": "64395e3189", "task": "feat(mvcc): MA2 \u2014 killed-snapshot enforcement at TXN.COMMIT", "gold": ["src/server/conn/handler_monoio/txn.rs", "src/server/conn/handler_sharded/txn.rs", "src/vector/mvcc/manager.rs", "tests/kill_snapshot.rs"]}
+{"id": "624822d46e", "task": "feat(mvcc): MA2 \u2014 old_snapshot_threshold kill in TransactionManager", "gold": ["src/vector/mvcc/manager.rs"]}
+{"id": "ee1a737428", "task": "feat(reclamation): wire RECL_* metrics into P6 / P1 / MA12 hot paths", "gold": ["src/shard/disk_monitor.rs", "src/shard/persistence_tick.rs"]}
+{"id": "cc1ac709d7", "task": "fix(persistence): P6 redo_lsn correctness + gate wal.stats() to 1s cadence", "gold": ["src/shard/event_loop.rs", "src/shard/persistence_tick.rs"]}
+{"id": "192d1c0cc7", "task": "feat(shard): wire P6 ceiling trigger in both event loop arms", "gold": ["src/shard/event_loop.rs"]}
+{"id": "46a1e8b7bb", "task": "feat(shard): maybe_force_checkpoint_on_wal_overflow for P6 ceiling trigger", "gold": ["src/shard/persistence_tick.rs"]}
+{"id": "a117f37f39", "task": "feat(config): add --wal-max-checkpoint-lag-ms flag (P6)", "gold": ["src/config.rs"]}
+{"id": "910ac2b93e", "task": "feat(admin): P6 WAL aggressive recycle metrics for INFO emitter", "gold": ["src/admin/metrics_setup.rs"]}
+{"id": "d757a7aa25", "task": "feat(persistence): recycle_aggressive() + WalStats for P6 WAL ceiling trigger", "gold": ["src/persistence/wal_v3/mod.rs", "src/persistence/wal_v3/segment.rs"]}
+{"id": "2deb06c2a3", "task": "feat(command): GREEN \u2014 implement INFO # Reclamation section (P10)", "gold": ["src/command/info_reclamation.rs", "src/command/mod.rs"]}
+{"id": "14ca4f0c12", "task": "fix(persistence,tests): tokio AOF replay data loss + deflake txn_kv_wiring", "gold": ["src/main.rs", "tests/txn_kv_wiring.rs"]}
+{"id": "6217efadf6", "task": "feat(cdc): per-shard subscriber registry + tick fan-out (C3b-1)", "gold": ["src/cdc/fanout.rs", "src/cdc/mod.rs"]}
+{"id": "b271e212e6", "task": "feat(persistence): WAL v3 tail-reader for CDC + replication (C1)", "gold": ["src/persistence/wal_v3/mod.rs", "src/persistence/wal_v3/tail.rs"]}
+{"id": "a4964139c8", "task": "feat(persistence): wire recover_shard_v3 to honor target_lsn (P3b)", "gold": ["src/persistence/recovery.rs"]}
+{"id": "048a8835a3", "task": "feat(persistence): stop-at-LSN replay + time->LSN resolver (P3a)", "gold": ["src/persistence/wal_v3/mod.rs", "src/persistence/wal_v3/replay.rs"]}
+{"id": "25ece4b9a1", "task": "feat(persistence): embed last_lsn + created_at in snapshot header (P2)", "gold": ["src/persistence/snapshot.rs"]}
+{"id": "ac3aa92a68", "task": "fix(persistence): resume WAL LSN across restart (P0 v0.2 PITR/CDC prereq)", "gold": ["src/persistence/wal_v3/segment.rs"]}

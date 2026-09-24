@@ -1,21 +1,22 @@
 # laya-codex roadmap
 
-laya-codex hands Claude Code the code a task needs before Claude goes looking for it. v0.1.0
-shows the idea works: **−50% code-reading tokens** and **−17% wall-clock** against stock
-Claude Code on 20 held-out tasks ([docs/RESULTS.md](docs/RESULTS.md)). The rest of the road is
-about three things: reaching the time goal, proving the effect beyond one repository, and making
-laya-codex something people can install in one line and forget about.
+laya-codex hands Claude Code the code a task needs before Claude goes looking for it. Across
+three repositories and 60 tasks (benchmark v2), Claude reads **38% less code** and takes **21%
+fewer turns**, and its first answers name the right files more often; task time does not change yet
+([docs/RESULTS.md](docs/RESULTS.md)). The rest of the road is about three things: turning the
+Laya model's better ranking into an end-to-end gain, reaching the time goal, and keeping laya-codex
+something people can install in one line and forget about.
 
 ## Goals and how they are measured
 
-| goal | target | v0.1.0 | measured by |
-|---|---|---|---|
-| Code-reading tokens | −50% | **−50.1%** [−61.6, −33.0] | `bench/stats.py`, paired bootstrap |
-| Task wall-clock | −30% | −17.4% [−31.5, −1.0] | same |
-| Answer quality | no loss | recall 0.933 vs 0.975, n.s. | `bench/read_accuracy.py` |
-| Evidence | 3+ repos, 60+ tasks, edit tasks | 1 repo, 20 tasks | benchmark suite |
-| Install | one command, < 2 min | `install.sh` (macOS arm64, Linux x86_64) | installer test in CI |
-| Robustness | hooks never break Claude Code | 151k hook calls, 0 failures (soak) | `bench/soak.py` |
+| goal | target | v0.1.0 (v7: moon, 20 tasks) | v0.1.2 (v8: 3 repos, 60 tasks, pooled) | measured by |
+|---|---|---|---|---|
+| Code-reading tokens | −50% | **−50.1%** [−61.6, −33.0] | −38.2% [−50.8, −21.8], not met | `bench/stats.py`, `bench/stats_pooled.py` (paired bootstrap) |
+| Task wall-clock | −30% | −17.4% [−31.5, −1.0] | +3.5% [−6.2, +14.8], no effect (moon did not replicate v7) | same |
+| Answer quality | no loss | recall 0.933 vs 0.975, n.s. | recall 0.899 vs 0.815, +0.083 [+0.028, +0.144], met | `bench/read_accuracy.py` |
+| Evidence | 3+ repos, 60+ tasks, edit tasks | 1 repo, 20 tasks | 3 repos (Rust, Python, TS), 60 tasks; no edit tasks yet | benchmark suite |
+| Install | one command, < 2 min | `install.sh` (macOS arm64, Linux x86_64) | — | installer test in CI |
+| Robustness | hooks never break Claude Code | 151k hook calls, 0 failures (soak) | — | `bench/soak.py` |
 
 ## Distribution channels
 
@@ -79,14 +80,26 @@ Make the first five minutes painless and the tool visible where Claude Code user
 
 ## v0.3 — reach the time goal and widen the evidence
 
-- **Close the time gap (−17% → −30%).** Time is now spent in the final answer and verification
-  turns (forensics §6). Candidates:
+- **Close the time gap (no measurable change today → −30%).** Time is spent in the final answer and
+  verification turns, after the right code is already in context (forensics §6, v8). Candidates:
   - richer usage lists for the identifiers the answer names;
   - `search` (MCP) as the cheap default for follow-up lookups;
   - fix third-file misses on multi-file tasks (e.g. the `warm_search.rs` pattern).
 - **Per-repo IDF-aware term selection** so generic chunks stop recurring across unrelated tasks.
-- **Benchmark v2:** 60+ tasks over 3+ repositories and languages, plus SWE-bench-style edit
-  tasks; enough power to separate Laya from lexical-only and adaptive from fixed injection.
+- **Benchmark v2:** done for localisation tasks (v8: moon, httpx, hono; 60 tasks;
+  [docs/RESULTS.md](docs/RESULTS.md)).
+  - Pooled, sessions with the Laya model were 13% longer than with lexical-only ranking [+2, +27].
+    The model's scoring is ~4% of that; the rest is extra turns, and the sign flips by repository
+    (hono −10%). Dropping the 3 worst tasks leaves +7% [−4, +18], not significant.
+  - **Decision (2026-09-23): the model stays on by default.** Choosing which code blocks replace
+    Claude's own searching and reading is what laya-codex is for, and the model ranks those blocks
+    far better offline (MRR 0.702 vs 0.480). The work item is to make that show up end to end:
+    fewer verification turns after an injection, a tighter score budget, and a re-run that
+    separates model from keywords with more tasks. `LAYA_CODEX_NO_MODEL=1` stays the opt-out.
+  - **Moon's append-only log grew to 4.1 GB** during the run and Moon paused writes on a nearly
+    full disk. laya-codex should compact it automatically.
+  - The fixed ~3.4k-token injection exceeds what stock Claude reads on small repos.
+  - SWE-bench-style edit tasks are still open.
 - **Linux performance:** a smaller distilled re-ranker or a CUDA path, so Linux users get the
   model inside the time budget instead of lexical-only.
 

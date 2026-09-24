@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
@@ -78,6 +79,11 @@ pub struct LayaModel {
     run_lock: Mutex<()>,
     /// Sliding-window bands keyed by padded sequence length.
     bands: Mutex<HashMap<usize, Tensor>>,
+    /// Measured speed (smoothed nanoseconds per padded token, `0` = not measured yet), used to
+    /// predict whether the next micro-batch fits before a deadline.
+    ns_per_token: AtomicU64,
+    /// Set after the first run, whose time includes one-time device setup.
+    warmed: AtomicBool,
 }
 
 impl std::fmt::Debug for LayaModel {
@@ -148,6 +154,8 @@ impl LayaModel {
             opts,
             run_lock: Mutex::new(()),
             bands: Mutex::new(HashMap::new()),
+            ns_per_token: AtomicU64::new(0),
+            warmed: AtomicBool::new(false),
         })
     }
 
@@ -201,6 +209,49 @@ impl LayaModel {
             .into_iter()
             .map(|d| d.probs[1])
             .collect())
+    }
+
+    /// [`noul_ids`](Self::noul_ids) that scores states in input order (most promising first)
+    /// and stops before `deadline`: a micro-batch runs only if it is predicted to finish in
+    /// time at the measured speed. `None` = not reached. Never overruns the deadline by more
+    /// than one mispredicted micro-batch, so the model is free again soon after it.
+    pub fn noul_ids_within(
+        &self,
+        question: &str,
+        state_ids: &[Vec<u32>],
+        deadline: Instant,
+    ) -> Result<Vec<Option<f32>>> {
+        let q = Question::noul(question);
+        let seqs = state_ids
+            .iter()
+            .map(|ids| self.sequences.build_checked(ids, &q))
+            .collect::<Result<Vec<_>>>()?;
+        let refs: Vec<(&BuiltSequence, QType)> = seqs.iter().map(|s| (s, QType::Noul)).collect();
+        let mut out: Vec<Option<Decision>> = vec![None; refs.len()];
+        let _guard = self
+            .run_lock
+            .lock()
+            .map_err(|_| ModelError::Device("model lock poisoned".into()))?;
+        for batch in plan_batches_in_order(&refs, self.opts.max_batch_tokens, IN_ORDER_ROWS) {
+            let tokens = batch.len * batch.rows.len();
+            let speed = self.ns_per_token.load(Ordering::Relaxed);
+            let now = Instant::now();
+            if !batch_fits(now, deadline, tokens, speed) {
+                if now < deadline {
+                    // Skipped on prediction alone: lower the estimate so an outlier heals.
+                    self.ns_per_token
+                        .store(decayed_estimate(speed), Ordering::Relaxed);
+                }
+                break;
+            }
+            self.run_batch(&refs, &batch, &mut out)?;
+        }
+        tracing::debug!(
+            scored = out.iter().filter(|d| d.is_some()).count(),
+            total = refs.len(),
+            "laya scored within deadline"
+        );
+        Ok(out.into_iter().map(|d| d.map(|d| d.probs[1])).collect())
     }
 
     /// Calibrated distribution over `criteria` for a `choice` question, per state.
@@ -261,18 +312,7 @@ impl LayaModel {
                 );
                 return Err(ModelError::Deadline);
             }
-            let logits = self.forward_batch(seqs, &batch)?;
-            for (row, &i) in batch.rows.iter().enumerate() {
-                let (seq, qtype) = seqs[i];
-                let k = seq.markers.len();
-                let z = &logits[row * batch.kmax..row * batch.kmax + k];
-                let temperature = self.agent.temperature_for(qtype, k);
-                out[i] = Some(Decision {
-                    logits: z.to_vec(),
-                    probs: softmax_scaled(z, temperature),
-                    temperature,
-                });
-            }
+            self.run_batch(seqs, &batch, &mut out)?;
         }
         tracing::debug!(
             rows = seqs.len(),
@@ -283,6 +323,38 @@ impl LayaModel {
             .into_iter()
             .map(|d| d.expect("every row is scored by exactly one micro-batch"))
             .collect())
+    }
+
+    /// Run one micro-batch, store its decisions in `out` and update the speed estimate.
+    /// Callers hold `run_lock`.
+    fn run_batch(
+        &self,
+        seqs: &[(&BuiltSequence, QType)],
+        batch: &MicroBatch,
+        out: &mut [Option<Decision>],
+    ) -> Result<()> {
+        let started = Instant::now();
+        let logits = self.forward_batch(seqs, batch)?;
+        for (row, &i) in batch.rows.iter().enumerate() {
+            let (seq, qtype) = seqs[i];
+            let k = seq.markers.len();
+            let z = &logits[row * batch.kmax..row * batch.kmax + k];
+            let temperature = self.agent.temperature_for(qtype, k);
+            out[i] = Some(Decision {
+                logits: z.to_vec(),
+                probs: softmax_scaled(z, temperature),
+                temperature,
+            });
+        }
+        let tokens = (batch.len * batch.rows.len()).max(1) as u64;
+        let measured = started.elapsed().as_nanos() as u64 / tokens;
+        let first_run = !self.warmed.swap(true, Ordering::Relaxed);
+        let old = self.ns_per_token.load(Ordering::Relaxed);
+        self.ns_per_token.store(
+            updated_estimate(old, measured, first_run),
+            Ordering::Relaxed,
+        );
+        Ok(())
     }
 
     /// One padded micro-batch through encoder + head; returns `(rows * kmax)` logits, masked
@@ -397,6 +469,76 @@ struct MicroBatch {
 
 /// Length-bucketed batching: sort rows by length, then greedily fill micro-batches so that
 /// `max_len * rows <= max_tokens` and `rows <= max_rows` (port of `predict_items`).
+/// Rows per in-order micro-batch: small enough that a deadline can stop between batches, and
+/// throughput on Metal is flat from 8 to 24 rows (`examples/bench.rs`).
+const IN_ORDER_ROWS: usize = 8;
+
+/// Micro-batches in input order (the caller's most promising rows first), at most `max_rows`
+/// rows and `max_tokens` padded tokens each. Unlike [`plan_batches`], rows are not sorted by
+/// length: a deadline that stops between batches must drop the least promising rows.
+fn plan_batches_in_order(
+    seqs: &[(&BuiltSequence, QType)],
+    max_tokens: usize,
+    max_rows: usize,
+) -> Vec<MicroBatch> {
+    let mut batches = Vec::new();
+    let mut i = 0;
+    while i < seqs.len() {
+        let mut j = i;
+        let mut len = 0;
+        while j < seqs.len() && j - i < max_rows.max(1) {
+            let l = seqs[j].0.ids.len().max(len);
+            if l * (j - i + 1) > max_tokens && j > i {
+                break;
+            }
+            len = l;
+            j += 1;
+        }
+        let kmax = seqs[i..j]
+            .iter()
+            .map(|s| s.0.markers.len())
+            .max()
+            .unwrap_or(0)
+            .max(1);
+        batches.push(MicroBatch {
+            rows: (i..j).collect(),
+            len: len.max(1),
+            kmax,
+        });
+        i = j;
+    }
+    batches
+}
+
+/// Whether a micro-batch of `tokens` padded tokens is predicted to finish by `deadline` at
+/// the measured speed. Unknown speed (`0`) → try it.
+fn batch_fits(now: Instant, deadline: Instant, tokens: usize, ns_per_token: u64) -> bool {
+    if now >= deadline {
+        return false;
+    }
+    let predicted = Duration::from_nanos(ns_per_token.saturating_mul(tokens as u64));
+    now + predicted <= deadline
+}
+
+/// Speed estimate after a new measurement: 3/4 old + 1/4 new (the first one is taken as is).
+/// The first run of a loaded model is ignored: it includes one-time setup (Metal compiles its
+/// kernels, ~10 s), which would make every later batch look too slow to start.
+fn updated_estimate(old: u64, measured: u64, first_run: bool) -> u64 {
+    if first_run {
+        old
+    } else if old == 0 {
+        measured
+    } else {
+        (old * 3 + measured) / 4
+    }
+}
+
+/// Estimate after a batch was skipped on prediction alone: lowered by a quarter, so an outlier
+/// cannot keep the model from ever running (and so being measured) again.
+fn decayed_estimate(old: u64) -> u64 {
+    old - old / 4
+}
+
 fn plan_batches(
     seqs: &[(&BuiltSequence, QType)],
     max_tokens: usize,
@@ -471,6 +613,67 @@ mod tests {
         assert_eq!(b[1].rows, vec![4, 0]); // 490, 500 -> 2 * 500 <= 1000
         assert_eq!(b[1].len, 500);
         assert_eq!(b.len(), 2);
+    }
+
+    #[test]
+    fn in_order_batches_keep_the_callers_order() {
+        let s = [
+            seq(500, 2),
+            seq(10, 2),
+            seq(300, 3),
+            seq(12, 2),
+            seq(490, 2),
+        ];
+        let items: Vec<(&BuiltSequence, QType)> = s.iter().map(|x| (x, QType::Noul)).collect();
+        let rows = |b: Vec<MicroBatch>| b.into_iter().map(|x| x.rows).collect::<Vec<_>>();
+        // Row cap: most promising first, never re-sorted by length.
+        assert_eq!(
+            rows(plan_batches_in_order(&items, 10_000, 2)),
+            vec![vec![0, 1], vec![2, 3], vec![4]]
+        );
+        // Token cap: 3 rows padded to 500 would be 1,500 > 1,000.
+        let b = plan_batches_in_order(&items, 1000, 8);
+        assert_eq!(b[0].rows, vec![0, 1]);
+        assert_eq!(b[0].len, 500);
+        assert_eq!(b[1].rows, vec![2, 3]);
+        assert_eq!(b[1].kmax, 3);
+        assert_eq!(b[2].rows, vec![4]);
+    }
+
+    #[test]
+    fn a_batch_runs_only_if_its_predicted_time_fits_before_the_deadline() {
+        let now = Instant::now();
+        let deadline = now + std::time::Duration::from_millis(100);
+        assert!(batch_fits(now, deadline, 1000, 0), "unknown speed: try it");
+        assert!(batch_fits(now, deadline, 1000, 50_000), "50 ms fits");
+        assert!(!batch_fits(now, deadline, 1000, 200_000), "200 ms does not");
+        assert!(!batch_fits(deadline, deadline, 1, 1), "deadline reached");
+    }
+
+    #[test]
+    fn speed_estimate_smooths_new_measurements() {
+        assert_eq!(updated_estimate(0, 400, false), 400, "first measurement");
+        assert_eq!(updated_estimate(400, 800, false), 500, "3/4 old + 1/4 new");
+    }
+
+    #[test]
+    fn the_first_run_of_a_loaded_model_does_not_set_the_speed() {
+        // The first run on a device compiles kernels (~10 s on Metal): not the model's speed.
+        assert_eq!(updated_estimate(0, 3_000_000, true), 0);
+    }
+
+    #[test]
+    fn a_skipped_batch_lowers_the_estimate_so_it_cannot_lock_the_model_out() {
+        let now = Instant::now();
+        let deadline = now + std::time::Duration::from_millis(1000);
+        let mut ns = 3_000_000; // an outlier: 8 rows x 320 tokens predicted at ~7.7 s
+        let mut skips = 0;
+        while !batch_fits(now, deadline, 2560, ns) {
+            ns = decayed_estimate(ns);
+            skips += 1;
+            assert!(skips < 50, "the estimate never recovers");
+        }
+        assert!(skips > 0);
     }
 
     #[test]
