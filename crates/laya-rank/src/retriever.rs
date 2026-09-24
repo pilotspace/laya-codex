@@ -13,7 +13,7 @@ use laya_core::{Candidate, Chunk, QueryResult, RankMode, Result, Scorer, Store};
 use crate::config::RetrieverConfig;
 use crate::fusion::fuse_ranked_lists;
 use crate::related::expand_related;
-use crate::signals::extract_signals;
+use crate::signals::{extract_signals, task_focus};
 use crate::span::{Scored, shape_spans};
 
 /// Turns a prompt into ranked, shaped code spans over a `Store` (candidate generation) and an
@@ -47,7 +47,11 @@ impl<'a> Retriever<'a> {
     /// failure" rule: callers decide the fail-open policy (e.g. an empty hook response).
     pub fn query(&self, repo_id: &str, prompt: &str) -> Result<QueryResult> {
         let start = Instant::now();
-        let signals = extract_signals(prompt);
+        // BM25 terms and the Laya scorer see the task, not the instructions wrapped around it;
+        // identifiers and path mentions still come from the whole prompt.
+        let focus = task_focus(prompt);
+        let mut signals = extract_signals(prompt);
+        signals.terms = extract_signals(&focus).terms;
 
         if signals.terms.is_empty() && signals.identifiers.is_empty() && signals.paths.is_empty() {
             return Ok(empty_result(start));
@@ -105,10 +109,10 @@ impl<'a> Retriever<'a> {
         if candidates.is_empty() {
             return Ok(empty_result(start));
         }
-        let candidates = demote_non_code(candidates, prompt);
+        let candidates = demote_non_code(candidates, &focus);
         let n_candidates = candidates.len();
 
-        let (scored, mode) = self.laya_gate(prompt, candidates);
+        let (scored, mode) = self.laya_gate(&focus, candidates);
         // Seeds for one-hop expansion are the top 3 *scored chunks*, captured before shaping
         // merges same-file spans together (a merge loses `defines`/`refs`).
         let seeds: Vec<Chunk> = scored.iter().take(3).map(|s| s.chunk.clone()).collect();
@@ -367,6 +371,61 @@ mod tests {
     };
     use laya_core::Lang;
     use std::collections::HashMap as StdHashMap;
+    use std::sync::Mutex;
+
+    const WRAPPED: &str = "In this repository, find the source code that implements or would need \
+        to change for the following change, and briefly explain how it works:\n\n\"Enforce the \
+        mmap budget when sealing vector segments\"\n\nBe efficient: read only what you need. End \
+        your answer with one line exactly of the form\nFILES: <comma-separated repo-relative \
+        paths of the most relevant source files>";
+
+    fn wrapper_trap_chunks() -> Vec<Chunk> {
+        vec![
+            chunk(
+                "src/release_notes.rs",
+                1,
+                3,
+                &[],
+                "// change log: source code files, relative paths, form\nfn notes() {}\n",
+            ),
+            chunk(
+                "src/vector/mmap_budget.rs",
+                1,
+                3,
+                &["enforce_budget"],
+                "fn enforce_budget() {\n    // mmap budget checked when sealing segments\n}\n",
+            ),
+        ]
+    }
+
+    #[test]
+    fn wrapper_words_do_not_outrank_the_quoted_task() {
+        let store = FakeStore::new(wrapper_trap_chunks());
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        let out = r.query("repo", WRAPPED).unwrap();
+        assert_eq!(out.spans[0].path, "src/vector/mmap_budget.rs");
+    }
+
+    struct TaskRecorder(Mutex<Vec<String>>);
+
+    impl Scorer for TaskRecorder {
+        fn score(&self, task: &str, chunks: &[&Chunk]) -> Result<Vec<f32>> {
+            self.0.lock().unwrap().push(task.to_string());
+            Ok(vec![0.5; chunks.len()])
+        }
+    }
+
+    #[test]
+    fn the_laya_scorer_sees_the_task_not_the_wrapper() {
+        let store = FakeStore::new(wrapper_trap_chunks());
+        let rec = Arc::new(TaskRecorder(Mutex::new(Vec::new())));
+        let r = Retriever::new(&store, Some(rec.clone()), RetrieverConfig::default());
+        r.query("repo", WRAPPED).unwrap();
+        assert_eq!(
+            rec.0.lock().unwrap().as_slice(),
+            ["Enforce the mmap budget when sealing vector segments"]
+        );
+    }
 
     fn cand(path: &str, lang: Lang, fused: f32) -> Candidate {
         let mut c = chunk(path, 1, 10, &[], "x");
