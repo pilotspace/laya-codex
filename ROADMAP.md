@@ -90,7 +90,8 @@ Make the first five minutes painless and the tool visible where Claude Code user
   - **Finding (2026-09-24):** wall-clock follows output tokens (≈ 10.8 s per 1,000, R² 0.92 over
     v8's 180 sessions), not reading. laya-codex cut turns 21% but each turn wrote more, so time
     didn't move. Reaching −30% needs about 30% fewer output tokens per session; retrieval alone is
-    unlikely to get there. The goal stands until the owner decides otherwise.
+    unlikely to get there. **Decision (2026-09-24): the −30% wall-clock goal stays**, with output
+    tokens reported next to it.
 - **Per-repo IDF-aware term selection** so generic chunks stop recurring across unrelated tasks.
 - **Benchmark v2:** done for localisation tasks (v8: moon, httpx, hono; 60 tasks;
   [docs/RESULTS.md](docs/RESULTS.md)).

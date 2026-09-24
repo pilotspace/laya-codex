@@ -30,7 +30,8 @@ Over the 180 v8 sessions, wall-clock is explained by output tokens:
 **Implication for the −30% time goal:** it needs about 30% fewer output tokens per session.
 Retrieval changes alone are unlikely to get there on these tasks. The benchmark now reports
 output tokens with a CI next to wall-clock (`bench/stats_pooled.py`), and rows keep per-prompt
-output tokens, so the next run can show where the output goes.
+output tokens, so the next run can show where the output goes. The goal itself is unchanged
+(decision 2026-09-24).
 
 ### The follow-up prompt: lists instead of more code
 
