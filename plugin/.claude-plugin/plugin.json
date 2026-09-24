@@ -1,7 +1,7 @@
 {
   "name": "laya-codex",
   "displayName": "laya-codex",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Ranked code retrieval for Claude Code: tree-sitter chunks and BM25, re-ranked with the Laya model, put the code a task needs in front of Claude before it goes looking. Needs the laya-codex binary (install.sh or Homebrew).",
   "author": {
     "name": "PilotSpace",

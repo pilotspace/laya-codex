@@ -329,7 +329,14 @@ contains your prompts and code, so review it before attaching it to an
 
 ## Roadmap
 
-- **v0.2.0, current:** one name everywhere: the CLI is `laya-codex` (was `laya`), env vars are
+- **v0.3.0, current:**
+  - ranking uses the task, not the instructions around it;
+  - the model ranks within its time budget even under load;
+  - trust labels on inlined code, and at most two inlined files;
+  - `laya-codex trace` for debugging;
+  - a nearly full disk no longer disables laya-codex silently;
+  - see the [CHANGELOG](CHANGELOG.md).
+- **v0.2.0:** one name everywhere: the CLI is `laya-codex` (was `laya`), env vars are
   `LAYA_CODEX_*`; a Homebrew formula; the plugin, crash isolation and daemon limits from 0.1.x.
 - **Next:**
   - turning the model's better ranking into an end-to-end gain (benchmark v2 shows none yet);
