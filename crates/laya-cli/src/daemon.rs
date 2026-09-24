@@ -482,7 +482,14 @@ impl Daemon {
                     .filter(|s| adaptive && self.sessions().has_topic(s))
                     .filter(|_| laya_rank::is_follow_up(&prompt) && !names_code(&prompt))
                     .map(|_| laya_rank::follow_up_intent(&prompt));
-                if let Some(intent) = follow_up {
+                // A search without a session (the MCP `search` tool) is Claude asking directly:
+                // when it asks for tests or callers, answer with the same lists a follow-up gets.
+                let asked = follow_up.or_else(|| {
+                    session
+                        .is_none()
+                        .then(|| laya_rank::follow_up_intent(&prompt))
+                });
+                if let Some(intent) = asked {
                     if intent.callers {
                         cfg.usage_lines = cfg.usage_lines.max(FOLLOW_UP_USAGE_LINES);
                         cfg.usage_per_ident = cfg.usage_per_ident.max(FOLLOW_UP_USAGE_PER_IDENT);
@@ -1482,6 +1489,41 @@ mod tests {
             "{:?}",
             result.related
         );
+    }
+
+    fn search(d: &Arc<Daemon>, repo: &str, prompt: &str) -> QueryResult {
+        match d.handle(Request::Query {
+            repo: repo.into(),
+            session: None,
+            prompt: prompt.into(),
+            budget_ms: Some(0),
+            top_n: None,
+            render: None,
+        }) {
+            Response::Query { result, .. } => result,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn has_test_pointers(result: &QueryResult) -> bool {
+        result
+            .related
+            .iter()
+            .any(|r| r.relation.starts_with("test using"))
+    }
+
+    #[test]
+    fn a_search_asking_for_tests_lists_the_tests_that_use_the_code() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        let r = search(&d, &repo, "which tests cover replaying the wal segment");
+        assert!(has_test_pointers(&r), "{:?}", r.related);
+    }
+
+    #[test]
+    fn a_plain_search_lists_no_test_pointers() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        let r = search(&d, &repo, "where is the wal segment replayed");
+        assert!(!has_test_pointers(&r), "{:?}", r.related);
     }
 
     #[test]
