@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use crate::hook::DaemonApi;
 use crate::protocol::{Request, Response};
+use crate::trace::{self, Recording, Tracer};
 
 const DEFAULT_PROTOCOL: &str = "2025-06-18";
 
@@ -108,20 +109,34 @@ pub fn serve(
     root: PathBuf,
     inject_tokens: usize,
     budget_ms: u64,
+    tracer: Option<&Tracer>,
 ) -> anyhow::Result<()> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
+    let recording = Recording::new(api);
+    let api: &dyn DaemonApi = if tracer.is_some() { &recording } else { api };
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        let reply = match serde_json::from_str::<Value>(&line) {
-            Ok(msg) => handle_message(&msg, api, &root, inject_tokens, budget_ms),
+        let t0 = std::time::Instant::now();
+        let msg = serde_json::from_str::<Value>(&line);
+        let reply = match &msg {
+            Ok(msg) => handle_message(msg, api, &root, inject_tokens, budget_ms),
             Err(e) => Some(
                 json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}}),
             ),
         };
+        if let Some(t) = tracer {
+            let request = msg.unwrap_or_else(|_| json!({"unparsed": line}));
+            t.record(&trace::mcp_entry(
+                &request,
+                reply.as_ref(),
+                t0.elapsed().as_millis() as u64,
+                recording.take(),
+            ));
+        }
         if let Some(r) = reply {
             writeln!(out, "{r}").map_err(crate::sys::stdout_err)?;
             out.flush().map_err(crate::sys::stdout_err)?;

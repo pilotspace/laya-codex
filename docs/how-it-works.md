@@ -344,3 +344,13 @@ has fewer than 2 content words; whether the repository is indexed (`laya-codex d
 adaptive mode has already sent everything relevant. Set `LAYA_CODEX_HOOK_LOG=/tmp/laya-hook.jsonl` to
 log every hook decision, such as `inject`, `skip_prompt`, `already_in_context`, `narrow_read`
 or `escape_hatch`.
+
+For the full exchange, use the trace. `laya-codex trace on` records, per hook call or MCP
+message, the JSON Claude Code sent, the JSON laya-codex returned, and every daemon call made in
+between (the query with its ranked spans, `p` scores, scope and rendered text; read plans; note
+and re-index calls), each with its time. `laya-codex trace show` summarises the entries,
+`--full` adds the exact request and response, `--session <id prefix>` filters, `--json` prints
+the raw lines and `--follow` watches live. The file is
+`$LAYA_CODEX_HOME/trace/trace.jsonl` (mode 0600 in a 0700 directory); it rotates to
+`trace.1.jsonl` at 64 MiB. Errors while tracing are ignored, so a hook's output never changes.
+`LAYA_CODEX_TRACE=0` disables it for one environment, and `=<path>` writes elsewhere.

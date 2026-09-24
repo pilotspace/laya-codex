@@ -15,6 +15,14 @@ All notable changes to this project are documented here. The format follows
   every indexed use is listed or visible in the inlined code, so Claude can skip the grep for call
   sites. It is only claimed for a complete list and is dropped if the 9,500-character cap cuts a
   line.
+- **`laya-codex trace`** records what Claude Code and laya-codex exchange, for debugging: per hook
+  call, the JSON Claude Code sent and the JSON laya-codex returned; per MCP message, the message and
+  the reply; and for both, every daemon call behind it (request, response with ranked spans and
+  `p` scores, time). `trace on` / `trace off` (a marker file, so it also reaches plugin hooks) or
+  `LAYA_CODEX_TRACE=1|<path>|0`; `trace show [--session S] [--last N] [--full] [--json]
+  [--follow]`, `trace status`, `trace clear`. Off by default because a trace contains prompts and
+  code; the file is private (0600 in a 0700 directory) and rotates at 64 MiB. Writing a trace
+  never changes a hook's output: its errors are ignored.
 
 ### Changed
 - **At most 2 inlined code blocks** by default, down from 3; 1 for single-function tasks.

@@ -309,9 +309,21 @@ also remove laya-codex's entries from that repository's `.claude/settings.local.
 <summary><b>Something isn't working</b></summary>
 
 Run `laya-codex doctor --repo .`. It checks the binary, the search server and its password, the
-model, the daemon, the index and the hooks, and prints a fix for anything that fails. If that
-doesn't help, [open an issue](https://github.com/pilotspace/laya-codex/issues) and include its
-output.
+model, the daemon, the index and the hooks, and prints a fix for anything that fails.
+
+To see exactly what Claude Code and laya-codex exchanged, turn on the trace:
+
+```sh
+laya-codex trace on                  # record every hook call and MCP message (off by default)
+laya-codex trace show                # what was asked, what the daemon ranked, what went back
+laya-codex trace show --full --last 1   # the exact JSON in and out, including the injected code
+laya-codex trace show --follow       # watch live while you use Claude Code
+laya-codex trace off && laya-codex trace clear
+```
+
+The trace stays on your machine, in `~/.cache/laya-codex/trace/` (readable only by you), but it
+contains your prompts and code, so review it before attaching it to an
+[issue](https://github.com/pilotspace/laya-codex/issues).
 
 </details>
 
@@ -339,6 +351,7 @@ laya-codex doctor --repo /path/to/repo    # check everything; prints a fix for e
 laya-codex index /path/to/repo            # incremental; re-run any time
 laya-codex query "where is WAL replay implemented" --repo /path/to/repo
 laya-codex status | laya-codex stop
+laya-codex trace on|off|status|show|clear # record Claude Code <-> laya-codex exchanges for debugging
 ```
 
 `laya-codex init` merges laya-codex's hooks and MCP server into the repository's settings:
@@ -371,6 +384,7 @@ Flags:
 | `LAYA_CODEX_MOON_START_SECS` | `30` | how long a freshly started Moon may take to answer |
 | `LAYA_CODEX_MOON_PORT` / `LAYA_CODEX_MOON_BIN` | `16379` / `moon` beside the real `laya-codex` binary, else in `../libexec` (Homebrew), else on `PATH` | Moon sidecar; a missing binary is reported with every path tried |
 | `LAYA_CODEX_BIN` | unset | the `laya-codex` binary the Claude Code plugin should use |
+| `LAYA_CODEX_TRACE` | unset (`laya-codex trace on` decides) | `1` = record hook and MCP exchanges in `$LAYA_CODEX_HOME/trace/trace.jsonl`, a path = record there, `0` = never |
 
 </details>
 

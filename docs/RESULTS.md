@@ -147,7 +147,7 @@ in renamed variables).
   load it ranked 59 of 60 of these prompts instead of 0–2.
 
 The next model-vs-keywords run should record the ranking mode of every prompt. The trace log
-proposed in #8 (`laya-codex trace`, not merged yet) would do this.
+(`laya-codex trace`, #8) records it.
 
 The forensics (`bench/results/claude-v8/forensics-*.md`) show that the re-ranker injects no more
 gold files than BM25 does. The gold files it inlines:
