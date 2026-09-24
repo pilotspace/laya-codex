@@ -169,10 +169,11 @@ impl<'a> Retriever<'a> {
     }
 
     /// Laya decision gate: budget-bounded rerank of `candidates` (already in lexical/RRF order).
-    /// Never blocks past `cfg.laya_budget`; any timeout, error, disabled scorer, or malformed
-    /// response degrades to the lexical order with `RankMode::Lexical`.
+    /// Never blocks past `cfg.laya_budget`. The scorer works through the candidates in order
+    /// and stops inside the budget, so a slow machine re-ranks fewer of them rather than none;
+    /// only when nothing was scored (timeout, error, disabled scorer, malformed response) does
+    /// the lexical order stand with `RankMode::Lexical`.
     fn laya_gate(&self, prompt: &str, candidates: Vec<Candidate>) -> (Vec<Scored>, RankMode) {
-        let lexical_ids: Vec<String> = candidates.iter().map(|c| c.chunk_id.clone()).collect();
         let to_lexical = |cands: Vec<Candidate>| -> Vec<Scored> {
             cands
                 .into_iter()
@@ -195,20 +196,27 @@ impl<'a> Retriever<'a> {
             owned_chunks,
             self.cfg.laya_budget,
         ) {
-            Some(p) if p.len() == candidates.len() => p,
+            Some(p) if p.len() == candidates.len() && p.iter().any(Option::is_some) => p,
             _ => return (to_lexical(candidates), RankMode::Lexical),
         };
 
-        let mut laya_order: Vec<usize> = (0..candidates.len()).collect();
+        // The model re-ranks the candidates it scored in time; the ones the budget did not reach
+        // (the lexical tail: candidates are scored most promising first) stay below them in
+        // lexical order.
+        let (reached, unreached): (Vec<(Candidate, Option<f32>)>, Vec<_>) = candidates
+            .into_iter()
+            .zip(probs)
+            .partition(|(_, p)| p.is_some());
+        let lexical_ids: Vec<String> = reached.iter().map(|(c, _)| c.chunk_id.clone()).collect();
+        let probs: Vec<f32> = reached.iter().map(|(_, p)| p.unwrap_or(0.0)).collect();
+
+        let mut laya_order: Vec<usize> = (0..reached.len()).collect();
         laya_order.sort_by(|&a, &b| {
             probs[b]
                 .partial_cmp(&probs[a])
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let laya_ids: Vec<String> = laya_order
-            .iter()
-            .map(|&i| candidates[i].chunk_id.clone())
-            .collect();
+        let laya_ids: Vec<String> = laya_order.iter().map(|&i| lexical_ids[i].clone()).collect();
 
         let final_scores: HashMap<String, f32> = match self.cfg.laya_weight {
             None => fuse_ranked_lists(&[&lexical_ids, &laya_ids], self.cfg.rrf_k)
@@ -217,12 +225,11 @@ impl<'a> Retriever<'a> {
             Some(w) => weighted_scores(&lexical_ids, &probs, w),
         };
 
-        let mut scored: Vec<Scored> = candidates
+        let mut scored: Vec<Scored> = reached
             .into_iter()
-            .enumerate()
-            .map(|(i, c)| Scored {
+            .map(|(c, p)| Scored {
                 score: final_scores.get(&c.chunk_id).copied().unwrap_or(0.0),
-                p_relevant: Some(probs[i]),
+                p_relevant: p,
                 chunk: c.chunk,
             })
             .collect();
@@ -231,6 +238,11 @@ impl<'a> Retriever<'a> {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        scored.extend(unreached.into_iter().map(|(c, _)| Scored {
+            chunk: c.chunk,
+            score: 0.0,
+            p_relevant: None,
+        }));
 
         let passing = scored
             .iter()
@@ -331,10 +343,13 @@ fn elapsed_ms(start: Instant) -> u64 {
     start.elapsed().as_millis() as u64
 }
 
-/// Run `scorer.score(task, chunks)` on a detached worker thread, bounded by `budget`. Returns
-/// `None` on timeout, a channel error, or the scorer itself returning `Err`. A late result (the
-/// thread finishes after `budget` elapses) is simply dropped — the send on a disconnected
-/// receiver fails silently and the thread exits.
+/// Share of the Laya budget the scorer may spend before it must stop scoring.
+const SCORER_SHARE_OF_BUDGET: f32 = 0.85;
+
+/// Run `scorer.score_within(task, chunks, deadline)` on a detached worker thread, bounded by
+/// `budget`. Returns `None` on timeout, a channel error, or the scorer itself returning `Err`.
+/// A late result (the thread finishes after `budget` elapses) is simply dropped — the send on a
+/// disconnected receiver fails silently and the thread exits.
 ///
 /// `scorer` is an owned `Arc`, so the detached thread (which must be free to keep running after
 /// `budget` elapses and this function has returned — that's the whole point of "abandon, don't
@@ -346,12 +361,15 @@ fn call_scorer_bounded(
     task: String,
     chunks: Vec<Chunk>,
     budget: Duration,
-) -> Option<Vec<f32>> {
-    let (tx, rx) = mpsc::channel::<Result<Vec<f32>>>();
+) -> Option<Vec<Option<f32>>> {
+    let (tx, rx) = mpsc::channel::<Result<Vec<Option<f32>>>>();
+    // The scorer stops itself inside the budget, leaving room to hand the result back; the
+    // `recv_timeout` below stays the hard stop for scorers that cannot.
+    let deadline = Instant::now() + budget.mul_f32(SCORER_SHARE_OF_BUDGET);
 
     thread::spawn(move || {
         let refs: Vec<&Chunk> = chunks.iter().collect();
-        let result = scorer.score(&task, &refs);
+        let result = scorer.score_within(&task, &refs, deadline);
         let _ = tx.send(result);
     });
 
@@ -404,6 +422,95 @@ mod tests {
         let r = Retriever::new(&store, None, RetrieverConfig::default());
         let out = r.query("repo", WRAPPED).unwrap();
         assert_eq!(out.spans[0].path, "src/vector/mmap_budget.rs");
+    }
+
+    /// Answers `score_within` with fixed probabilities (`None` = the budget ran out before that
+    /// chunk) and records the deadline it was given. A plain `score` call is a bug: the
+    /// retriever must ask for a bounded score.
+    struct PartialScorer {
+        probs: Vec<Option<f32>>,
+        deadline: Mutex<Option<Instant>>,
+    }
+
+    impl PartialScorer {
+        fn new(probs: Vec<Option<f32>>) -> Self {
+            Self {
+                probs,
+                deadline: Mutex::new(None),
+            }
+        }
+    }
+
+    impl Scorer for PartialScorer {
+        fn score(&self, _task: &str, _chunks: &[&Chunk]) -> Result<Vec<f32>> {
+            panic!("unbounded score call")
+        }
+        fn score_within(
+            &self,
+            _task: &str,
+            chunks: &[&Chunk],
+            deadline: Instant,
+        ) -> Result<Vec<Option<f32>>> {
+            *self.deadline.lock().unwrap() = Some(deadline);
+            Ok((0..chunks.len())
+                .map(|i| self.probs.get(i).copied().flatten())
+                .collect())
+        }
+    }
+
+    /// Three chunks whose lexical order for "alpha beta gamma" is a, b, c.
+    fn abc_chunks() -> Vec<Chunk> {
+        vec![
+            chunk("src/a.rs", 1, 3, &[], "fn a() { alpha beta gamma }\n"),
+            chunk("src/b.rs", 1, 3, &[], "fn b() { alpha beta }\n"),
+            chunk("src/c.rs", 1, 3, &[], "fn c() { alpha }\n"),
+        ]
+    }
+
+    fn weighted_cfg() -> RetrieverConfig {
+        RetrieverConfig {
+            laya_weight: Some(0.5),
+            ..RetrieverConfig::default()
+        }
+    }
+
+    #[test]
+    fn candidates_the_budget_did_not_reach_keep_lexical_order_below_the_scored_ones() {
+        let store = FakeStore::new(abc_chunks());
+        let scorer = Arc::new(PartialScorer::new(vec![Some(0.1), Some(0.9), None]));
+        let r = Retriever::new(&store, Some(scorer), weighted_cfg());
+        let out = r.query("repo", "alpha beta gamma").unwrap();
+        assert_eq!(out.mode, RankMode::Laya, "a partial model run still ranks");
+        let paths: Vec<&str> = out.spans.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(paths, ["src/b.rs", "src/a.rs", "src/c.rs"]);
+        assert_eq!(out.spans[2].p_relevant, None, "c was not scored");
+    }
+
+    #[test]
+    fn nothing_scored_in_time_is_lexical() {
+        let store = FakeStore::new(abc_chunks());
+        let scorer = Arc::new(PartialScorer::new(vec![None, None, None]));
+        let r = Retriever::new(&store, Some(scorer), weighted_cfg());
+        let out = r.query("repo", "alpha beta gamma").unwrap();
+        assert_eq!(out.mode, RankMode::Lexical);
+        let paths: Vec<&str> = out.spans.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(paths, ["src/a.rs", "src/b.rs", "src/c.rs"]);
+    }
+
+    #[test]
+    fn the_scorer_is_told_to_stop_inside_the_budget() {
+        let store = FakeStore::new(abc_chunks());
+        let scorer = Arc::new(PartialScorer::new(vec![Some(0.5); 3]));
+        let budget = Duration::from_millis(1000);
+        let cfg = RetrieverConfig {
+            laya_budget: budget,
+            ..weighted_cfg()
+        };
+        let r = Retriever::new(&store, Some(scorer.clone()), cfg);
+        let before = Instant::now();
+        r.query("repo", "alpha beta gamma").unwrap();
+        let deadline = scorer.deadline.lock().unwrap().expect("bounded call");
+        assert!(deadline > before && deadline < before + budget);
     }
 
     struct TaskRecorder(Mutex<Vec<String>>);
