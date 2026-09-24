@@ -112,7 +112,7 @@ impl<'a> Retriever<'a> {
         let candidates = demote_non_code(candidates, &focus);
         let n_candidates = candidates.len();
 
-        let (scored, mode) = self.laya_gate(&focus, candidates);
+        let (scored, mode, n_scored, n_offered) = self.laya_gate(&focus, candidates);
         // Seeds for one-hop expansion are the top 3 *scored chunks*, captured before shaping
         // merges same-file spans together (a merge loses `defines`/`refs`).
         let seeds: Vec<Chunk> = scored.iter().take(3).map(|s| s.chunk.clone()).collect();
@@ -137,6 +137,8 @@ impl<'a> Retriever<'a> {
             mode,
             elapsed_ms: elapsed_ms(start),
             candidates: n_candidates,
+            scored: n_scored,
+            offered: n_offered,
             related,
         })
     }
@@ -172,8 +174,14 @@ impl<'a> Retriever<'a> {
     /// Never blocks past `cfg.laya_budget`. The scorer works through the candidates in order
     /// and stops inside the budget, so a slow machine re-ranks fewer of them rather than none;
     /// only when nothing was scored (timeout, error, disabled scorer, malformed response) does
-    /// the lexical order stand with `RankMode::Lexical`.
-    fn laya_gate(&self, prompt: &str, candidates: Vec<Candidate>) -> (Vec<Scored>, RankMode) {
+    /// the lexical order stand with `RankMode::Lexical`. Only the first `cfg.score_top`
+    /// candidates go to the model. Also returns how many candidates the model scored and how many it
+    /// was given.
+    fn laya_gate(
+        &self,
+        prompt: &str,
+        candidates: Vec<Candidate>,
+    ) -> (Vec<Scored>, RankMode, usize, usize) {
         let to_lexical = |cands: Vec<Candidate>| -> Vec<Scored> {
             cands
                 .into_iter()
@@ -186,19 +194,28 @@ impl<'a> Retriever<'a> {
         };
 
         let Some(scorer) = self.scorer.clone().filter(|_| self.cfg.use_laya) else {
-            return (to_lexical(candidates), RankMode::Lexical);
+            return (to_lexical(candidates), RankMode::Lexical, 0, 0);
         };
 
-        let owned_chunks: Vec<Chunk> = candidates.iter().map(|c| c.chunk.clone()).collect();
-        let probs = match call_scorer_bounded(
+        let to_score = match self.cfg.score_top {
+            0 => candidates.len(),
+            n => n.min(candidates.len()),
+        };
+        let owned_chunks: Vec<Chunk> = candidates[..to_score]
+            .iter()
+            .map(|c| c.chunk.clone())
+            .collect();
+        let mut probs = match call_scorer_bounded(
             scorer,
             prompt.to_string(),
             owned_chunks,
             self.cfg.laya_budget,
         ) {
-            Some(p) if p.len() == candidates.len() && p.iter().any(Option::is_some) => p,
-            _ => return (to_lexical(candidates), RankMode::Lexical),
+            Some(p) if p.len() == to_score && p.iter().any(Option::is_some) => p,
+            _ => return (to_lexical(candidates), RankMode::Lexical, 0, to_score),
         };
+        probs.resize(candidates.len(), None);
+        let n_scored = probs.iter().filter(|p| p.is_some()).count();
 
         // The model re-ranks the candidates it scored in time; the ones the budget did not reach
         // (the lexical tail: candidates are scored most promising first) stay below them in
@@ -256,7 +273,7 @@ impl<'a> Retriever<'a> {
             scored.retain(|s| s.p_relevant.unwrap_or(0.0) >= self.cfg.p_threshold);
         }
 
-        (scored, RankMode::Laya)
+        (scored, RankMode::Laya, n_scored, to_score)
     }
 }
 
@@ -335,6 +352,8 @@ fn empty_result(start: Instant) -> QueryResult {
         mode: RankMode::Lexical,
         elapsed_ms: elapsed_ms(start),
         candidates: 0,
+        scored: 0,
+        offered: 0,
         related: Vec::new(),
     }
 }
@@ -430,6 +449,7 @@ mod tests {
     struct PartialScorer {
         probs: Vec<Option<f32>>,
         deadline: Mutex<Option<Instant>>,
+        seen: Mutex<usize>,
     }
 
     impl PartialScorer {
@@ -437,6 +457,7 @@ mod tests {
             Self {
                 probs,
                 deadline: Mutex::new(None),
+                seen: Mutex::new(0),
             }
         }
     }
@@ -452,6 +473,7 @@ mod tests {
             deadline: Instant,
         ) -> Result<Vec<Option<f32>>> {
             *self.deadline.lock().unwrap() = Some(deadline);
+            *self.seen.lock().unwrap() = chunks.len();
             Ok((0..chunks.len())
                 .map(|i| self.probs.get(i).copied().flatten())
                 .collect())
@@ -511,6 +533,83 @@ mod tests {
         r.query("repo", "alpha beta gamma").unwrap();
         let deadline = scorer.deadline.lock().unwrap().expect("bounded call");
         assert!(deadline > before && deadline < before + budget);
+    }
+
+    #[test]
+    fn the_result_reports_how_many_candidates_the_model_scored() {
+        let store = FakeStore::new(abc_chunks());
+        let partial = Retriever::new(
+            &store,
+            Some(Arc::new(PartialScorer::new(vec![
+                Some(0.1),
+                Some(0.9),
+                None,
+            ]))),
+            weighted_cfg(),
+        );
+        let out = partial.query("repo", "alpha beta gamma").unwrap();
+        assert_eq!(
+            (out.scored, out.offered, out.candidates),
+            (2, 3, 3),
+            "a partial run"
+        );
+
+        let none = Retriever::new(
+            &store,
+            Some(Arc::new(PartialScorer::new(vec![None, None, None]))),
+            weighted_cfg(),
+        );
+        assert_eq!(none.query("repo", "alpha beta gamma").unwrap().scored, 0);
+
+        let no_model = Retriever::new(&store, None, weighted_cfg());
+        assert_eq!(
+            no_model.query("repo", "alpha beta gamma").unwrap().scored,
+            0
+        );
+    }
+
+    #[test]
+    fn the_model_scores_only_the_top_score_top_candidates() {
+        let store = FakeStore::new(abc_chunks());
+        // The model would put c first if it saw it; capped at 2 it never does.
+        let scorer = Arc::new(PartialScorer::new(vec![Some(0.1), Some(0.9), Some(0.99)]));
+        let cfg = RetrieverConfig {
+            score_top: 2,
+            ..weighted_cfg()
+        };
+        let r = Retriever::new(&store, Some(scorer.clone()), cfg);
+        let out = r.query("repo", "alpha beta gamma").unwrap();
+        assert_eq!(
+            *scorer.seen.lock().unwrap(),
+            2,
+            "only the top 2 go to the model"
+        );
+        assert_eq!(
+            (out.mode, out.scored, out.offered, out.candidates),
+            (RankMode::Laya, 2, 2, 3),
+            "capped, not cut short"
+        );
+        let paths: Vec<&str> = out.spans.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(paths, ["src/b.rs", "src/a.rs", "src/c.rs"]);
+        assert_eq!(
+            out.spans[2].p_relevant, None,
+            "c stays in lexical order below"
+        );
+    }
+
+    #[test]
+    fn score_top_zero_scores_every_candidate() {
+        let store = FakeStore::new(abc_chunks());
+        let scorer = Arc::new(PartialScorer::new(vec![Some(0.5); 3]));
+        let cfg = RetrieverConfig {
+            score_top: 0,
+            ..weighted_cfg()
+        };
+        let out = Retriever::new(&store, Some(scorer.clone()), cfg)
+            .query("repo", "alpha beta gamma")
+            .unwrap();
+        assert_eq!(*scorer.seen.lock().unwrap(), 3);
+        assert_eq!(out.scored, 3);
     }
 
     struct TaskRecorder(Mutex<Vec<String>>);

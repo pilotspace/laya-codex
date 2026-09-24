@@ -170,6 +170,8 @@ mod tests {
                     mode: RankMode::Laya,
                     elapsed_ms: 3,
                     candidates: 5,
+                    scored: 0,
+                    offered: 0,
                     related: vec![],
                 },
                 rendered: None,

@@ -40,14 +40,42 @@ pub struct Outcome {
     pub output: Option<Value>,
     pub action: &'static str,
     pub injected_chars: usize,
+    /// How the prompt's query was ranked, when one ran.
+    pub rank: Option<Rank>,
+}
+
+/// How a query was ranked, so benchmarks can attribute effects to the model: `laya` (every
+/// candidate the model was given was scored), `laya-partial` (the budget stopped it early) or
+/// `lexical` (keyword order only; `offered > 0` means the model timed out rather than being off).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct Rank {
+    pub mode: &'static str,
+    pub scored: usize,
+    pub offered: usize,
+    pub candidates: usize,
+}
+
+impl Rank {
+    pub fn of(result: &QueryResult) -> Self {
+        let mode = match result.mode {
+            RankMode::Lexical => "lexical",
+            RankMode::Laya if result.scored < result.offered => "laya-partial",
+            RankMode::Laya => "laya",
+        };
+        Rank {
+            mode,
+            scored: result.scored,
+            offered: result.offered,
+            candidates: result.candidates,
+        }
+    }
 }
 
 impl Outcome {
     fn skip(action: &'static str) -> Self {
         Outcome {
-            output: None,
             action,
-            injected_chars: 0,
+            ..Outcome::default()
         }
     }
 }
@@ -98,12 +126,19 @@ fn user_prompt(prompt: &str, session: &str, ctx: &HookCtx) -> Outcome {
         }) => (result, rendered),
         _ => return Outcome::skip("query_failed"),
     };
+    let rank = Some(Rank::of(&result));
     if result.spans.is_empty() {
-        return Outcome::skip("no_spans");
+        return Outcome {
+            rank,
+            ..Outcome::skip("no_spans")
+        };
     }
     let text = if let Some(text) = rendered {
         if text.is_empty() {
-            return Outcome::skip("already_in_context");
+            return Outcome {
+                rank,
+                ..Outcome::skip("already_in_context")
+            };
         }
         text
     } else if ctx.compact {
@@ -117,6 +152,7 @@ fn user_prompt(prompt: &str, session: &str, ctx: &HookCtx) -> Outcome {
             json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}),
         ),
         action: "inject",
+        rank,
     }
 }
 
@@ -195,6 +231,7 @@ fn pre_read(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
         } else {
             "outline_read"
         },
+        rank: None,
     }
 }
 
@@ -226,6 +263,7 @@ fn pre_agent(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
             "updatedInput": updated}}),
         ),
         action: "agent_handoff",
+        rank: None,
     }
 }
 
@@ -264,6 +302,8 @@ fn session_start(source: &str, session: &str, ctx: &HookCtx) -> Outcome {
             mode: RankMode::Laya,
             elapsed_ms: 0,
             candidates: 0,
+            scored: 0,
+            offered: 0,
             related: vec![],
         };
         let text = laya_rank::render_context(&result, ctx.inject_tokens * 2 / 3);
@@ -273,6 +313,7 @@ fn session_start(source: &str, session: &str, ctx: &HookCtx) -> Outcome {
                 json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}),
             ),
             action: "reinject_after_compact",
+            rank: None,
         };
     }
     // Only git repositories are indexed automatically: with laya-codex enabled everywhere (a user-scope
@@ -421,8 +462,57 @@ mod tests {
             mode: RankMode::Laya,
             elapsed_ms: 5,
             candidates: 10,
+            scored: 10,
+            offered: 10,
             related: vec![],
         }
+    }
+
+    #[test]
+    fn prompt_outcome_records_how_the_query_was_ranked() {
+        let prompt = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is wal replay done"});
+        let cases = [
+            (RankMode::Laya, 10, "laya"),
+            (RankMode::Laya, 4, "laya-partial"),
+            (RankMode::Lexical, 0, "lexical"),
+        ];
+        for (mode, scored, label) in cases {
+            let f = fake(
+                Some(QueryResult {
+                    mode,
+                    scored,
+                    offered: 10,
+                    ..res(vec![span("src/a.rs", 1, 20, 0.8)])
+                }),
+                0,
+            );
+            let o = handle(&prompt, &ctx(&f));
+            assert_eq!(o.action, "inject");
+            assert_eq!(
+                o.rank,
+                Some(Rank {
+                    mode: label,
+                    scored,
+                    offered: 10,
+                    candidates: 10
+                })
+            );
+        }
+        // Nothing new to send still ran a ranked query: the log keeps its mode.
+        let mut g = fake(Some(res(vec![span("src/a.rs", 1, 20, 0.8)])), 0);
+        g.rendered = Some(String::new());
+        let c = HookCtx {
+            compact: true,
+            adaptive: true,
+            ..ctx(&g)
+        };
+        let o = handle(&prompt, &c);
+        assert_eq!(o.action, "already_in_context");
+        assert_eq!(o.rank.map(|r| r.mode), Some("laya"));
+        // No daemon, no rank.
+        let mut d = fake(None, 0);
+        d.down = true;
+        assert_eq!(handle(&prompt, &ctx(&d)).rank, None);
     }
 
     #[test]

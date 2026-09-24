@@ -32,6 +32,9 @@ fn default_use_laya() -> bool {
 fn default_max_related() -> usize {
     8
 }
+fn default_score_top() -> usize {
+    16
+}
 
 fn deserialize_millis<'de, D>(deserializer: D) -> std::result::Result<Duration, D::Error>
 where
@@ -81,6 +84,12 @@ pub struct RetrieverConfig {
     /// `0` disables expansion entirely (no extra `Store` calls).
     #[serde(default = "default_max_related")]
     pub max_related: usize,
+    /// The Laya model scores at most this many candidates, best-first; the rest keep their
+    /// lexical order below the scored ones. `0` scores all of them. Replaying the 60 benchmark
+    /// v2 tasks, scoring 16 of 24 kept the correct file in the top 2 as often (48 vs 48) and cut
+    /// the median query from 936 to 644 ms.
+    #[serde(default = "default_score_top")]
+    pub score_top: usize,
 }
 
 impl Default for RetrieverConfig {
@@ -96,6 +105,7 @@ impl Default for RetrieverConfig {
             use_laya: default_use_laya(),
             laya_weight: None,
             max_related: default_max_related(),
+            score_top: default_score_top(),
         }
     }
 }
@@ -117,6 +127,7 @@ mod tests {
         assert!(cfg.use_laya);
         assert_eq!(cfg.laya_weight, None);
         assert_eq!(cfg.max_related, 8);
+        assert_eq!(cfg.score_top, 16);
     }
 
     #[test]

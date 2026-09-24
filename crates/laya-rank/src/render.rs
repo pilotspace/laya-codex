@@ -377,6 +377,8 @@ mod compact_tests {
             mode: RankMode::Laya,
             elapsed_ms: 1,
             candidates: 3,
+            scored: 0,
+            offered: 0,
             related: Vec::new(),
         };
         let out = render_compact(&r, 1, 10_000);
@@ -393,6 +395,8 @@ mod compact_tests {
             mode: RankMode::Laya,
             elapsed_ms: 1,
             candidates: 2,
+            scored: 0,
+            offered: 0,
             related: Vec::new(),
         };
         let out = render_compact(&r, 2, 150);
@@ -407,6 +411,8 @@ mod compact_tests {
             mode: RankMode::Laya,
             elapsed_ms: 1,
             candidates: 1,
+            scored: 0,
+            offered: 0,
             related: vec![rel("src/x.rs", 10, "fn foo", "calls `bar` (#1)")],
         };
         let out = render_compact(&r, 1, 10_000);
@@ -425,6 +431,8 @@ mod compact_tests {
             mode: RankMode::Laya,
             elapsed_ms: 1,
             candidates: 1,
+            scored: 0,
+            offered: 0,
             related: Vec::new(),
         };
         let out = render_compact(&r, 1, 10_000);
@@ -438,6 +446,8 @@ mod compact_tests {
             mode: RankMode::Laya,
             elapsed_ms: 1,
             candidates: 1,
+            scored: 0,
+            offered: 0,
             related: vec![rel("src/x.rs", 10, "", "calls `bar` (#1)")],
         };
         let out = render_compact(&r, 1, 10_000);
@@ -473,6 +483,8 @@ mod compact_tests {
             mode: RankMode::Laya,
             elapsed_ms: 1,
             candidates: 4,
+            scored: 0,
+            offered: 0,
             related,
         };
         let out = render_compact(&r, 3, 100_000);
@@ -494,6 +506,8 @@ mod compact_tests {
             mode: RankMode::Laya,
             elapsed_ms: 1,
             candidates: 4,
+            scored: 0,
+            offered: 0,
             related: Vec::new(),
         };
         let out = render_compact(&r, 3, 100_000);
@@ -520,6 +534,8 @@ mod compact_tests {
             mode: RankMode::Laya,
             elapsed_ms: 1,
             candidates: 1,
+            scored: 0,
+            offered: 0,
             related: vec![rel("src/x.rs", 10, "fn foo", "calls `bar` (#1)"), usage],
         };
         let out = render_compact(&r, 1, 10_000);
@@ -538,6 +554,8 @@ mod compact_tests {
             mode: RankMode::Laya,
             elapsed_ms: 1,
             candidates: 1,
+            scored: 0,
+            offered: 0,
             related: vec![rel("src/x.rs", 10, "fn foo", "calls `bar` (#1)")],
         };
         let with_related = render_compact_opts(&r, 1, 10_000, true);
@@ -583,6 +601,8 @@ mod tests {
             mode: RankMode::Laya,
             elapsed_ms: 5,
             candidates: 3,
+            scored: 0,
+            offered: 0,
             related,
         }
     }

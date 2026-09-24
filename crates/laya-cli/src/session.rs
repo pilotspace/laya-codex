@@ -180,6 +180,8 @@ mod tests {
             mode: RankMode::Lexical,
             elapsed_ms: 1,
             candidates: 3,
+            scored: 0,
+            offered: 0,
             related: vec![],
         }
     }

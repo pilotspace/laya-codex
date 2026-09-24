@@ -119,7 +119,8 @@ pub struct RankedSpan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RankMode {
-    /// Laya scored every candidate within budget.
+    /// Laya scored at least one candidate within budget (`QueryResult::scored` says how many);
+    /// the candidates it did not reach keep their lexical order below the scored ones.
     Laya,
     /// Laya missed its deadline or is unavailable; candidate-generation order was used.
     Lexical,
@@ -142,6 +143,14 @@ pub struct QueryResult {
     pub mode: RankMode,
     pub elapsed_ms: u64,
     pub candidates: usize,
+    /// How many of `candidates` the Laya model scored: 0 in `Lexical` mode, fewer than
+    /// `candidates` when the budget or the scoring cap stopped it early.
+    #[serde(default)]
+    pub scored: usize,
+    /// How many candidates were given to the Laya model (at most its scoring cap); `scored`
+    /// below this means the time budget stopped the model early.
+    #[serde(default)]
+    pub offered: usize,
     /// One-hop reference neighbours of the top spans (callees' definitions and callers).
     #[serde(default)]
     pub related: Vec<Related>,

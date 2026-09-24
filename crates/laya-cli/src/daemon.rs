@@ -885,6 +885,9 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     if let Some(m) = env_num::<usize>("LAYA_CODEX_MIN_KEEP") {
         base.min_keep = m;
     }
+    if let Some(n) = env_num::<usize>("LAYA_CODEX_SCORE_TOP") {
+        base.score_top = n;
+    }
     let state_tokens = env_num::<usize>("LAYA_CODEX_STATE_TOKENS").unwrap_or(128);
     eprintln!("[laya-codex] retriever config {base:?} state_tokens={state_tokens}");
     // Rank-based by default (thresholds 0 = full code for the top spans by fused rank, capped by
@@ -1555,6 +1558,8 @@ mod tests {
                 mode: laya_core::RankMode::Laya,
                 elapsed_ms: 1,
                 candidates: 1,
+                scored: 0,
+                offered: 0,
                 related: vec![],
             },
         );
@@ -1585,6 +1590,8 @@ mod tests {
                 mode: laya_core::RankMode::Lexical,
                 elapsed_ms: 1,
                 candidates: 3,
+                scored: 0,
+                offered: 0,
                 related: vec![],
             },
         );
