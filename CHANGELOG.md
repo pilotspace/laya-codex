@@ -20,8 +20,8 @@ open. Replayed offline on the 60 benchmark v2 tasks; not yet measured with Claud
     identifiers (``test using `x` ``, at most two per file), and a longer "Definitions and uses"
     list (16 lines). A follow-up that asks for neither gets one code block; one that names code
     (`and replay_wal3?`) keeps the normal sizing.
-  - Replay: the second prompt's injection fell 61–65% (hono 3,961 → 1,443 characters, httpx
-    4,179 → 1,474, moon 4,715 → 1,842), 30–32% per session. Correct test files named stayed
+  - Replay against v0.3.0: the second prompt's injection fell 60–64% (moon 4,554 → 1,842
+    characters, httpx 4,131 → 1,474, hono 3,926 → 1,443), 29–32% per session. Correct test files named stayed
     the same (22/23 hono, 12/13 httpx, 2/2 moon); correct files named fell 29 → 27 of 35 on
     httpx and stayed the same on hono and moon.
 - **Documentation is listed, not inlined**, unless the task asks about docs or configuration:

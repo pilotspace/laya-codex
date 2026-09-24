@@ -4,6 +4,86 @@ All numbers are reproducible from this repo; raw per-run rows are in `bench/resu
 Hardware: Apple M4 Pro, 24 GB. Agent: Claude Code 2.1.280, model `sonnet`, isolated from user
 settings/plugins/MCP (`--setting-sources project --strict-mcp-config`), tools Read/Grep/Glob.
 
+## At a glance
+
+*Updated 2026-09-24. The report in one page; the sections below hold the detail.*
+
+**Summary.**
+- **What benchmark v2 showed:** with laya-codex, Claude reads 38% less code, takes 21% fewer
+  turns, costs 10% less and names the right files more often. Sessions were not faster.
+- **Why not faster:** time follows how much Claude *writes*. Fewer turns didn't help because each
+  remaining turn wrote more.
+- **What changed since:**
+  - the session's second prompt gets answers (test pointers, call sites) instead of more code;
+  - every prompt's ranking mode is logged;
+  - the benchmark can repeat tasks, compare builds and flag failed injections.
+- **What is proven so far:** these changes are measured offline, by replaying the benchmark's
+  prompts through the real hook, plus a 5-task pilot that checked the harness. The next
+  60-task run with Claude will measure the effect on sessions.
+
+| limit (benchmark v2) | cause found | what changed | evidence so far | status |
+|---|---|---|---|---|
+| Not faster: time +3.5%, n.s. (goal −30%) | Time ≈ 4.5 s + 10.7 s per 1,000 output tokens (R² 0.92). laya-codex: turns −21%, output per turn +28% | Output tokens reported with time. The model scores the top 16 candidates. | Charts 1–2. Hook median 0.81–0.97 s → 0.52–0.67 s per prompt. | Goal kept (decision 2026-09-24); next run measures it |
+| Small repos: the added code cancels what it saves | The second prompt inlined the topic's next-ranked blocks, mostly redundant | That prompt gets test pointers, call sites and locations | Chart 3: −60% to −64% per second prompt, −29% to −32% per session; test files named unchanged | Replayed; next run measures it |
+| v7 didn't replicate (noise) | One 20-task run; per-task time effects didn't repeat between runs (correlation 0.08) | `--repeat`, `--effort` pinned, versions per row, A/B of builds | The harness reproduces v8 exactly | Ready |
+| Model vs keywords unsettled | Rank mode not recorded; a budget-cut run still said "model" | `rank_mode` logged per prompt; each arm warmed before its first session | Pilot: every session that started with a warm daemon had both prompts ranked by the model (4 of 4) | Ready |
+| Scope: no edit tasks, one model | — | — | — | Open: a 10-task edit pilot first |
+
+### 1. Session time follows output tokens
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-time-dark.svg">
+  <img alt="Scatter of 180 benchmark sessions: wall-clock time rises about 10.7 s per 1,000 output tokens (R² 0.92), with stock and laya-codex sessions on the same line" src="assets/insight-time-light.svg" width="760">
+</picture>
+
+| arm (60 sessions each) | output tokens per session | wall-clock per session | turns |
+|---|---|---|---|
+| stock Claude Code | 4,145 | 49.0 s | 14.2 |
+| laya-codex (v0.1.2 defaults) | 4,209 (+1.5%) | 50.7 s (+3.5%) | 11.2 (−21%) |
+| laya-codex, keywords only | 3,920 (−5.4%) | 44.7 s (−8.8%) | 10.0 (−29%) |
+
+Time moved with output in every arm, not with turns. So "fewer turns" becomes "faster" only when
+the answer turns write less. This is why the next run reports output tokens with a confidence
+interval.
+
+### 2. Fewer turns, but each turn writes more
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-turns-dark.svg">
+  <img alt="Turns per session fell on every repository (moon 18.8 → 16.8, httpx 12.7 → 9.3, hono 11.2 → 7.6) while output tokens per turn rose (302 → 363, 261 → 348, 312 → 436)" src="assets/insight-turns-light.svg" width="760">
+</picture>
+
+| repo | turns per session, stock → laya-codex | output tokens per turn, stock → laya-codex |
+|---|---|---|
+| moon | 18.8 → 16.8 | 302 → 363 |
+| httpx | 12.7 → 9.3 | 261 → 348 |
+| hono | 11.2 → 7.6 | 312 → 436 |
+
+### 3. The follow-up prompt now gets answers, not more code
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-followup-dark.svg">
+  <img alt="Characters added to the second prompt: moon 4,554 → 1,842, httpx 4,131 → 1,474, hono 3,926 → 1,443 (v0.3.0 → now)" src="assets/insight-followup-light.svg" width="760">
+</picture>
+
+| repo | second prompt, characters (v0.3.0 → now) | whole session | test files named in the second prompt |
+|---|---|---|---|
+| moon | 4,554 → 1,842 (−60%) | 9,230 → 6,581 (−29%) | 2 of 2 → 2 of 2 |
+| httpx | 4,131 → 1,474 (−64%) | 8,439 → 5,716 (−32%) | 12 of 13 → 12 of 13 |
+| hono | 3,926 → 1,443 (−63%) | 8,028 → 5,429 (−32%) | 22 of 23 → 22 of 23 |
+
+**The trade-off:** correct files the second prompt used to inline are now listed, and Claude
+Reads them if it needs them. On httpx the second prompt names 27 of 35 correct files instead of
+29; hono and moon are unchanged.
+
+### What happens next
+
+| step | cost | what it answers |
+|---|---|---|
+| ~~5-task pilot~~ (done): baseline / this build / keywords only | $2.58 | Harness health. It found cold daemons at the start of a run, now fixed. |
+| Full run: 60 tasks × those 3 arms, `--effort medium`, output tokens and rank mode logged | ≈ $50, 2.5 h | Whether the follow-up change cuts output and time. Model vs keywords, with ≥ 90% of prompts ranked by the model. |
+| 10-task edit pilot (httpx) | ≈ $10 | Whether edit tasks can be graded reliably by the commit's tests |
+
 ## Since benchmark v2: what the limits pointed at
 
 *Added 2026-09-24. Offline replays of the 60 benchmark v2 tasks through the real hook; no
@@ -43,19 +123,21 @@ went unanswered by the injection. Now a follow-up that asks for tests or callers
 - the tests that use the task's identifiers;
 - a 16-line "Definitions and uses" list.
 
-Per prompt, mean over 20 tasks per repo (`rank` = the 16-candidate build before this change,
-`follow-up` = after):
+Per prompt, mean over 20 tasks per repo, v0.3.0 → this branch (which also has the top-16
+scoring below; the replay data is in `bench/results/replay-2026-09-24/`):
 
-| repo | prompt | characters, rank → follow-up | code blocks | gold inlined | gold named | test gold named |
+| repo | prompt | characters | code blocks | gold inlined | gold named | test gold named |
 |---|---|---|---|---|---|---|
-| httpx | 1 | 4,292 → 4,242 | 2.00 → 1.95 | 19 → 19 of 35 | 29 → 29 | – |
-| httpx | 2 | 4,179 → **1,474** | 2.00 → 0 | 11 → 0 | 29 → 27 | 12 → 12 of 13 |
-| hono | 1 | 3,986 → 3,986 | 2.00 → 2.00 | 27 → 27 of 46 | 42 → 42 | – |
-| hono | 2 | 3,961 → **1,443** | 2.00 → 0 | 22 → 0 | 42 → 42 | 22 → 22 of 23 |
-| moon | 1 | 4,739 → 4,739 | 1.95 → 1.95 | 17 → 17 of 34 | 27 → 27 | – |
-| moon | 2 | 4,715 → **1,842** | 1.90 → 0 | 15 → 0 | 27 → 27 | 2 → 2 of 2 |
+| httpx | 1 | 4,308 → 4,242 | 2.00 → 1.95 | 18 → 19 of 35 | 29 → 29 | – |
+| httpx | 2 | 4,131 → **1,474** | 2.00 → 0 | 12 → 0 | 29 → 27 | 12 → 12 of 13 |
+| hono | 1 | 4,102 → 3,986 | 2.00 → 2.00 | 26 → 27 of 46 | 41 → 42 | – |
+| hono | 2 | 3,926 → **1,443** | 1.95 → 0 | 24 → 0 | 42 → 42 | 22 → 22 of 23 |
+| moon | 1 | 4,676 → 4,739 | 1.95 → 1.95 | 19 → 17 of 34 | 27 → 27 | – |
+| moon | 2 | 4,554 → **1,842** | 1.90 → 0 | 13 → 0 | 27 → 27 | 2 → 2 of 2 |
 
-- Per session, the injection falls by 30–32% on every repository. That is the part of the
+- Per session, the injection falls by 29–32% on every repository. Measured against the
+  16-candidate build alone, the follow-up change accounts for all of it (second prompt −61% to
+  −65%). That is the part of the
   small-repository limit the injection controls: on httpx, laya-codex injected about 3.4k tokens
   per session against 1.0k tokens of reading saved.
 - The cost: gold files that the second prompt used to inline are now only listed. Most were

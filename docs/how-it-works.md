@@ -210,7 +210,7 @@ less code of its own (unreleased; the capture below is from v0.3.0, which inline
 - **It asks for something else**: one code block.
 - **It names code** (`and replay_wal3?`): the normal sizing, since the named code ranks first.
 
-Replaying the benchmark's second prompt on its 60 tasks, this made that injection 61–65% smaller
+Replaying the benchmark's second prompt on its 60 tasks, this made that injection 60–64% smaller than in v0.3.0
 with the same test files named ([RESULTS](RESULTS.md#since-benchmark-v2-what-the-limits-pointed-at)).
 
 This is the second prompt in the same session (captured):

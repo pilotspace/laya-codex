@@ -149,31 +149,37 @@ bootstrap confidence intervals.
 
 Code reading fell on every repository: −37% on moon, −32% on httpx and −47% on hono.
 
-**Limits of this result:**
-- **Not faster yet.** Task time did not change. Most of a session goes to checking and writing
-  the answer after the right code is already in context (87–90% of it on moon), and laya-codex
-  doesn't shorten that part yet. Our −30% time goal is not met.
-- **An earlier single-repository run didn't replicate.** The first benchmark (v7 in the results)
-  measured −50% reading and −17% time on the same 20 moon tasks; this run measured −37% and +14%.
-  Treat any single 20-task result as noisy.
-- **Small repositories trade reads for injected code.** Stock Claude already reads little on httpx
-  and hono, so the code laya-codex adds roughly cancels what it saves, and total input doesn't fall.
-- **Scope.** Tasks that find and explain code, not edits; one model (Sonnet).
+### What limits this result, and what changed since
 
-**Since this run** (not yet re-measured with Claude; offline replays of the same 60 tasks in
-[docs/RESULTS.md](docs/RESULTS.md#since-benchmark-v2-what-the-limits-pointed-at)):
-- The second prompt of a session now gets test pointers and call sites instead of more code
-  blocks: its injection is 61–65% smaller, 30–32% less per session, which targets the
-  small-repository limit.
-- Time turned out to follow output tokens (≈ 10.8 s per 1,000), not reading. Fewer turns didn't
-  shorten sessions because each turn wrote more. The next run reports output tokens alongside
-  time.
-- Every prompt's ranking mode (model, partial or keywords) is now logged, and the benchmark can
-  repeat tasks and compare two builds, so the model-vs-keywords question can be settled.
+| limit | why | since this run (unreleased, replayed offline, not yet re-measured with Claude) |
+|---|---|---|
+| **Not faster yet**: time +3.5%, not significant; our −30% goal is not met | Time follows how much Claude *writes*, not how much it reads (chart below). laya-codex cut turns by 21%, but each remaining turn wrote more. | Runs now report output tokens next to time, so the next one shows where the time goes. |
+| **Small repositories trade reads for injected code**: on httpx and hono the added code roughly cancels what it saves | The session's second prompt got two more blocks of code that was mostly already covered | That prompt now gets test pointers, call sites and locations instead: **60–64% smaller**, 29–32% less per session (chart below) |
+| **An earlier run didn't replicate**: v7 measured −50% reading and −17% time on moon, this run −37% and +14% | A single 20-task run is noisy | The benchmark can repeat tasks, pin settings and compare two builds |
+| **Model vs keywords unsettled** | The run didn't record which prompts the model actually ranked | Every prompt's ranking mode (model, partial or keywords) is now logged |
+| **Scope**: tasks that find and explain code, not edits; one model (Sonnet) | — | Still open: an edit-task pilot comes first |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/insight-time-dark.svg">
+  <img alt="Scatter of 180 benchmark sessions: wall-clock time rises about 10.7 s per 1,000 output tokens (R² 0.92), with stock and laya-codex sessions on the same line" src="docs/assets/insight-time-light.svg" width="760">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/insight-followup-dark.svg">
+  <img alt="Characters added to the second prompt: moon 4,554 → 1,842, httpx 4,131 → 1,474, hono 3,926 → 1,443 (v0.3.0 → now)" src="docs/assets/insight-followup-light.svg" width="760">
+</picture>
+
+The report behind these, with every number and the plan for the next run:
+[docs/RESULTS.md](docs/RESULTS.md#at-a-glance).
 
 Full method, per-repository results, the model-vs-keywords comparison and raw data:
 [docs/RESULTS.md](docs/RESULTS.md). To regenerate the charts:
-`python3 scripts/charts.py bench/results/headline-v8.json docs/assets`.
+
+```sh
+cd scripts
+python3 charts.py ../bench/results/headline-v8.json ../docs/assets
+python3 insight_charts.py ../bench/results/claude-v8 ../bench/results/replay-2026-09-24 ../docs/assets
+```
 
 ## How it works
 
