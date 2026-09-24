@@ -35,6 +35,12 @@ fn default_max_related() -> usize {
 fn default_score_top() -> usize {
     16
 }
+fn default_usage_lines() -> usize {
+    10
+}
+fn default_usage_per_ident() -> usize {
+    4
+}
 
 fn deserialize_millis<'de, D>(deserializer: D) -> std::result::Result<Duration, D::Error>
 where
@@ -90,6 +96,15 @@ pub struct RetrieverConfig {
     /// the median query from 936 to 644 ms.
     #[serde(default = "default_score_top")]
     pub score_top: usize,
+    /// Lines in the "Definitions and uses" list, and lines per identifier.
+    #[serde(default = "default_usage_lines")]
+    pub usage_lines: usize,
+    #[serde(default = "default_usage_per_ident")]
+    pub usage_per_ident: usize,
+    /// Test-file chunks that use the task's identifiers, listed first among the related items
+    /// (`0` = none). The daemon turns this on for follow-ups that ask for tests.
+    #[serde(default)]
+    pub test_refs: usize,
 }
 
 impl Default for RetrieverConfig {
@@ -106,6 +121,9 @@ impl Default for RetrieverConfig {
             laya_weight: None,
             max_related: default_max_related(),
             score_top: default_score_top(),
+            usage_lines: default_usage_lines(),
+            usage_per_ident: default_usage_per_ident(),
+            test_refs: 0,
         }
     }
 }

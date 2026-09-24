@@ -69,6 +69,10 @@ pub(crate) const COMPLETE_USES: &str = " (all indexed uses shown)";
 pub(crate) const COMPACT_FOOTER: &str = "Use the code above directly. Search or Read further only for what is \
 still missing, and prefer Read with offset/limit around the listed lines.\n";
 
+/// The footer of an injection that inlines no code (a follow-up answered by lists).
+pub(crate) const NO_CODE_FOOTER: &str =
+    "For code you still need, Read with offset/limit around the listed lines.\n";
+
 /// Compact injection: a ranked file map (every span as `path:lines — symbol`, grouped per file)
 /// plus the full code of only the first `full_spans` spans, then (when non-empty) a
 /// "Related by references:" section listing `result.related`. Roughly half the tokens of

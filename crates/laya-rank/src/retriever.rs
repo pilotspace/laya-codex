@@ -12,7 +12,7 @@ use laya_core::{Candidate, Chunk, QueryResult, RankMode, Result, Scorer, Store};
 
 use crate::config::RetrieverConfig;
 use crate::fusion::fuse_ranked_lists;
-use crate::related::expand_related;
+use crate::related::{expand_related, test_pointers};
 use crate::signals::{extract_signals, task_focus};
 use crate::span::{Scored, shape_spans};
 
@@ -128,8 +128,19 @@ impl<'a> Retriever<'a> {
                 }
             }
             related.extend(
-                crate::related::usage_list(self.store, repo_id, &idents).unwrap_or_default(),
+                crate::related::usage_list(
+                    self.store,
+                    repo_id,
+                    &idents,
+                    self.cfg.usage_lines,
+                    self.cfg.usage_per_ident,
+                )
+                .unwrap_or_default(),
             );
+            // Tests first, so the related cap never cuts them.
+            let tests =
+                test_pointers(self.store, repo_id, &idents, self.cfg.test_refs).unwrap_or_default();
+            related.splice(0..0, tests);
         }
 
         Ok(QueryResult {
@@ -320,10 +331,16 @@ const NON_CODE_INTENT: &[&str] = &[
 /// Unless the prompt is about docs/config, line-window (`Lang::Text`) chunks halve their fused
 /// score and move behind code chunks (stable). Prose matches the task's words without being the
 /// code the agent must read, and was 17% of returned spans on the moon dev set.
-pub(crate) fn demote_non_code(mut candidates: Vec<Candidate>, prompt: &str) -> Vec<Candidate> {
+/// Whether `prompt` asks about documentation or configuration (README, changelog, YAML, …),
+/// so prose may rank and be inlined like code.
+pub fn asks_for_non_code(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
     let words: Vec<&str> = lower.split(|c: char| !c.is_ascii_alphanumeric()).collect();
-    if NON_CODE_INTENT.iter().any(|w| words.contains(w)) {
+    NON_CODE_INTENT.iter().any(|w| words.contains(w))
+}
+
+pub(crate) fn demote_non_code(mut candidates: Vec<Candidate>, prompt: &str) -> Vec<Candidate> {
+    if asks_for_non_code(prompt) {
         return candidates;
     }
     for c in candidates
@@ -406,6 +423,7 @@ mod tests {
         FailingReferencingStore, FailingScorer, FailingStore, FakeStore, ProbScorer, SleepyScorer,
         WrongLengthScorer,
     };
+    use crate::related::is_test_path;
     use laya_core::Lang;
     use std::collections::HashMap as StdHashMap;
     use std::sync::Mutex;
@@ -610,6 +628,114 @@ mod tests {
             .unwrap();
         assert_eq!(*scorer.seen.lock().unwrap(), 3);
         assert_eq!(out.scored, 3);
+    }
+
+    fn url_chunks() -> Vec<Chunk> {
+        vec![
+            chunk(
+                "src/url.rs",
+                1,
+                10,
+                &["parse_url"],
+                "fn parse_url() { url parse }\n",
+            ),
+            chunk_with_refs(
+                "src/client.rs",
+                1,
+                10,
+                &["send"],
+                &["parse_url"],
+                "fn send() { parse_url() }\n",
+            ),
+            chunk_with_refs(
+                "tests/url_test.rs",
+                1,
+                10,
+                &["parses_hosts"],
+                &["parse_url"],
+                "fn parses_hosts() { parse_url() }\n",
+            ),
+        ]
+    }
+
+    #[test]
+    fn test_refs_list_the_tests_that_use_the_task_identifiers_first() {
+        let store = FakeStore::new(url_chunks());
+        let cfg = RetrieverConfig {
+            test_refs: 2,
+            ..RetrieverConfig::default()
+        };
+        let out = Retriever::new(&store, None, cfg)
+            .query("repo", "where does parse_url split the url")
+            .unwrap();
+        let first = &out.related[0];
+        assert_eq!(first.path, "tests/url_test.rs");
+        assert_eq!(first.relation, "test using `parse_url`");
+        assert_eq!(
+            out.related
+                .iter()
+                .filter(|r| r.relation.starts_with("test using"))
+                .count(),
+            1,
+            "only test files"
+        );
+        let off = Retriever::new(&store, None, RetrieverConfig::default())
+            .query("repo", "where does parse_url split the url")
+            .unwrap();
+        assert!(
+            !off.related
+                .iter()
+                .any(|r| r.relation.starts_with("test using"))
+        );
+    }
+
+    #[test]
+    fn usage_list_size_comes_from_the_config() {
+        let store = FakeStore::new(url_chunks());
+        let usages = |lines: usize| {
+            let cfg = RetrieverConfig {
+                usage_lines: lines,
+                ..RetrieverConfig::default()
+            };
+            Retriever::new(&store, None, cfg)
+                .query("repo", "where does parse_url split the url")
+                .unwrap()
+                .related
+                .iter()
+                .filter(|r| crate::render::is_usage(r))
+                .count()
+        };
+        assert_eq!(usages(1), 1);
+        assert!(usages(10) >= 3, "definition and two uses");
+    }
+
+    #[test]
+    fn test_paths() {
+        for p in [
+            "tests/a.rs",
+            "src/test/x.py",
+            "a/__tests__/b.ts",
+            "test_url.py",
+            "pkg/url_test.go",
+            "src/cors/index.test.ts",
+            "x.spec.ts",
+            "src/wal/tests.rs",
+            "spec/models/user_spec.rb",
+            "Tests/AppTests/ClientTests.swift",
+            "src/parser_tests.rs",
+        ] {
+            assert!(is_test_path(p), "{p}");
+        }
+        for p in [
+            "src/url.rs",
+            "src/testing.rs",
+            "contest.py",
+            "src/attest/a.rs",
+            "src/test_utils.rs",
+            "cmd/test_runner.go",
+        ] {
+            assert!(!is_test_path(p), "{p}");
+        }
     }
 
     struct TaskRecorder(Mutex<Vec<String>>);

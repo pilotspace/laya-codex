@@ -235,6 +235,56 @@ pub fn is_follow_up(prompt: &str) -> bool {
     refers_back && sig.identifiers.is_empty() && sig.paths.is_empty()
 }
 
+/// What a follow-up asks for beyond the session's topic: the tests that cover it and the code
+/// that calls it. Used to render a follow-up as answers to those questions instead of more
+/// blocks of the topic's lower-ranked code.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FollowUpIntent {
+    pub tests: bool,
+    pub callers: bool,
+}
+
+impl FollowUpIntent {
+    pub fn any(&self) -> bool {
+        self.tests || self.callers
+    }
+}
+
+const TEST_WORDS: &[&str] = &["test", "tests", "tested", "testing", "coverage"];
+const CALLER_WORDS: &[&str] = &[
+    "caller",
+    "callers",
+    "callsite",
+    "callsites",
+    "invoke",
+    "invokes",
+    "invoked",
+    "usage",
+    "usages",
+];
+
+/// [`FollowUpIntent`] of `prompt`, from whole words. Callers: the words above, "call site(s)",
+/// "used by" / "referenced by", or "where" with "used" / "referenced". Everyday words such as
+/// "uses", "cover" or "spec" alone are not enough.
+pub fn follow_up_intent(prompt: &str) -> FollowUpIntent {
+    let lower = prompt.to_ascii_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let pair = |a: &str, b: &[&str]| words.windows(2).any(|w| w[0] == a && b.contains(&w[1]));
+    let used = |w: &&str| *w == "used" || *w == "referenced";
+    let callers = words.iter().any(|w| CALLER_WORDS.contains(w))
+        || pair("call", &["site", "sites"])
+        || pair("used", &["by"])
+        || pair("referenced", &["by"])
+        || (words.contains(&"where") && words.iter().any(used));
+    FollowUpIntent {
+        tests: words.iter().any(|w| TEST_WORDS.contains(w)),
+        callers,
+    }
+}
+
 /// Quoted passages with at least this many distinct content terms are a task, not a name.
 const MIN_QUOTED_TASK_TERMS: usize = 3;
 
@@ -535,6 +585,44 @@ mod tests {
             "joined identifier term kept: {:?}",
             s.terms
         );
+    }
+
+    #[test]
+    fn follow_up_intent_names_tests_and_callers() {
+        let bench = "Now, for the same change, identify the tests that cover this code and the main \
+                     call sites that invoke it. Be efficient: read only what you need.";
+        assert_eq!(
+            follow_up_intent(bench),
+            FollowUpIntent {
+                tests: true,
+                callers: true
+            }
+        );
+        assert_eq!(
+            follow_up_intent("and where is it used?"),
+            FollowUpIntent {
+                tests: false,
+                callers: true
+            }
+        );
+        assert_eq!(
+            follow_up_intent("add a test for the same thing"),
+            FollowUpIntent {
+                tests: true,
+                callers: false
+            }
+        );
+        assert_eq!(follow_up_intent("ok, do it"), FollowUpIntent::default());
+        assert!(!follow_up_intent("ok, do it").any());
+        // Words inside identifiers or other words do not count.
+        assert!(!follow_up_intent("update the contest and the callsign").any());
+        // Everyday uses of "uses", "cover", "spec" and "used" are not a request for callers or tests.
+        assert!(!follow_up_intent("which of the above uses less memory?").any());
+        assert!(!follow_up_intent("does that cover the timeout case?").any());
+        assert!(!follow_up_intent("what does the spec say about retries?").any());
+        assert!(!follow_up_intent("what algorithm is used there?").any());
+        assert!(follow_up_intent("where is it used?").callers);
+        assert!(follow_up_intent("is this used by the client?").callers);
     }
 
     #[test]
