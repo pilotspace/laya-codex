@@ -16,6 +16,9 @@ settings/plugins/MCP (`--setting-sources project --strict-mcp-config`), tools Re
 - Neither numeric goal is met, pooled or on any single repo.
 - The Laya model **did not beat lexical-only ranking**: `laya-adaptive` is 13% *slower* than
   `laya-lex` (significant).
+  - *Caveat (added later):* the model probably fell back to keyword ranking on part of the
+    `laya-adaptive` prompts, after using up its time budget. The run didn't record how many (see
+    [the caveat below](#caveat-the-model-may-not-have-ranked-every-prompt)).
 - On moon, the v7 task set gave wall-clock −17.4% in v7 and +13.8% now, with the same tasks, the
   same repo commit and the same injection mechanics. So a single 20-task run cannot pin the
   wall-clock effect.
@@ -112,6 +115,39 @@ input:
 
 The model's scoring alone costs about 1.1 s per prompt, roughly 4% of a session. It does not
 explain the whole +13%: the adaptive sessions also took more turns.
+
+#### Caveat: the model may not have ranked every prompt
+
+*Added 2026-09-24, after the run.*
+
+**Why it could fall back.** The model's time budget was 1,200 ms (`LAYA_BUDGET_MS`). Scoring 24
+candidates takes about 5,500 tokens/s on this machine. The benchmark wording made the model's
+question long, so a scoring run took about as long as the whole budget.
+- **All or nothing:** a run that missed the budget gave no model ranking. The prompt was ranked
+  by keywords alone, after waiting out the budget.
+- **Not recorded:** `runs.jsonl` records hook actions but not which ranking each prompt got. So
+  the share of `laya-adaptive` prompts that the model actually ranked is **unknown**.
+
+**How large the share could be.** I replayed the same 60 first prompts afterwards, with the same
+wording, the same 1,200 ms budget and the same scoring code (v0.2.0 differs from v0.1.2 here only
+in renamed variables).
+- **Quiet machine:** the model ranked 53 of 60 prompts.
+- **Busy machine:** it ranked 13 of 60.
+- **Timing run with the budget lifted:** 51 of 60 scorings took longer than 1.2 s.
+
+**What this means for the comparison:**
+- `laya-adaptive` was partly a keyword-ranked arm that paid for the model's time. That may
+  account for part of its +13% wall-clock against `laya-lex`.
+- "The model did not beat lexical-only ranking" should read as "this run could not show it
+  does", not "the model makes no difference".
+
+**Fixes in progress** (open PRs at the time of writing):
+- #10: the model's question no longer carries the prompt's instructions;
+- #11: the model scores candidates best-first inside the budget instead of all or nothing. Under
+  load it ranked 59 of 60 of these prompts instead of 0–2.
+
+The next model-vs-keywords run should record the ranking mode of every prompt. The trace log
+(`laya-codex trace`, #8) does this.
 
 The forensics (`bench/results/claude-v8/forensics-*.md`) show that the re-ranker injects no more
 gold files than BM25 does. The gold files it inlines:

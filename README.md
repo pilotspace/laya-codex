@@ -235,6 +235,11 @@ same hooks with the model switched off.
   1 s per prompt, around 4% of a session; the rest came from Claude taking more turns.
 - The effect changes sign by repository (hono was 10% *faster* with the model) and between earlier
   runs.
+- **Caveat:** the model probably fell back to keyword ranking on part of these prompts, after using
+  up its 1.2 s budget. The run didn't record how many. In later replays of the same prompts, the
+  model ranked 53 of 60 on a quiet machine and 13 of 60 under load. Details are in
+  [docs/RESULTS.md](docs/RESULTS.md#caveat-the-model-may-not-have-ranked-every-prompt). PR #11
+  makes the model score what fits in its budget instead of all or nothing.
 
 We keep the model on. Choosing which code blocks Claude gets, instead of what it would find by
 searching and reading, is the decision laya-codex exists to make, and the model makes it far
