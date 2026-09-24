@@ -16,6 +16,8 @@ import os
 import random
 import sys
 
+from runs import load_runs
+
 B = 10000
 
 
@@ -38,10 +40,11 @@ QUALITY = {
 
 
 def load(run_dir, arm, base):
-    rows = [json.loads(l) for l in open(os.path.join(run_dir, "runs.jsonl"))]
-    by = {a: {r["task_id"]: r for r in rows if r["arm"] == a} for a in (arm, base)}
+    # Repeated sessions of a task are averaged into one row (bench/runs.py), so tasks stay the unit.
+    by = load_runs(os.path.join(run_dir, "runs.jsonl"), arms=(arm, base))
+    by = {a: by.get(a, {}) for a in (arm, base)}
     tasks = sorted(set(by[arm]) & set(by[base]))
-    bad = [(r["arm"], r["task_id"], r["rc"]) for r in rows if r["arm"] in (arm, base) and any(c != 0 for c in r["rc"])]
+    bad = [(a, t, r["rc"]) for a in (arm, base) for t, r in by[a].items() if any(c != 0 for c in r["rc"])]
     return [(by[arm][k], by[base][k]) for k in tasks], bad
 
 

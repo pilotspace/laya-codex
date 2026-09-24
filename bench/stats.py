@@ -7,10 +7,13 @@ import os
 import random
 import sys
 
+from runs import load_runs
+
 out, arm = sys.argv[1], sys.argv[2]
 base = sys.argv[3] if len(sys.argv) > 3 else "baseline"
-rows = [json.loads(l) for l in open(os.path.join(out, "runs.jsonl"))]
-by = {a: {r["task_id"]: r for r in rows if r["arm"] == a} for a in (arm, base)}
+# Repeated sessions of a task are averaged into one row (bench/runs.py), so tasks stay the unit.
+by = load_runs(os.path.join(out, "runs.jsonl"), arms=(arm, base))
+by = {a: by.get(a, {}) for a in (arm, base)}
 tasks = sorted(set(by[arm]) & set(by[base]))
 
 

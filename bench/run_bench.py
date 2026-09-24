@@ -7,6 +7,11 @@ total input tokens, cost, wall-clock, turns, and answer accuracy (gold files fro
     python3 bench/run_bench.py run --repo <clone> --tasks bench/tasks.jsonl --arms baseline,laya \
         --out bench/results/<name> [--model sonnet] [--limit N]
     python3 bench/run_bench.py report --out bench/results/<name>
+
+Arms are `name[:template][@binary]` (bench/runs.py): `baseline`, `laya-adaptive`, or e.g.
+`v030:laya-adaptive@/opt/v030/laya-codex` to compare two builds with the same hooks. An arm with its
+own binary gets its own LAYA_CODEX_HOME and Moon port under <out>/homes/, so its daemon serves only it.
+`--repeat N` runs every task N times per arm; the stats average the repeats of a task before pairing.
 """
 import argparse
 import json
@@ -16,6 +21,8 @@ import re
 import subprocess
 import sys
 import time
+
+from runs import load_runs, parse_arm, read_hook_log
 
 SRC_EXT = (".rs", ".py", ".ts", ".tsx", ".js", ".go", ".java", ".c", ".h", ".cc", ".cpp", ".hpp", ".rb", ".php", ".kt", ".swift", ".cs")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -69,17 +76,43 @@ def make_tasks(args):
     print("wrote %d tasks to %s" % (len(tasks), args.out))
 
 
-def render_configs(out_dir):
-    """Materialize bench/config/*.json templates with the absolute laya-codex binary path."""
-    laya_bin = os.environ.get("LAYA_CODEX_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya-codex"))
-    if not os.path.exists(laya_bin):
-        sys.exit("laya-codex binary not found at %s (build with cargo build --release -p laya-cli or set LAYA_CODEX_BIN)" % laya_bin)
+MOON_PORT_BASE = 16500
+
+
+def default_bin():
+    return os.environ.get("LAYA_CODEX_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya-codex"))
+
+
+def render_configs(out_dir, specs):
+    """Materialize each arm's bench/config/laya-{settings,mcp}.<template>.json as
+    <out>/config/laya-{settings,mcp}.<arm>.json with the arm's absolute laya-codex binary path."""
     dst = os.path.join(out_dir, "config")
     os.makedirs(dst, exist_ok=True)
-    for name in os.listdir(os.path.join(HERE, "config")):
-        src = open(os.path.join(HERE, "config", name)).read().replace("@LAYA_CODEX_BIN@", laya_bin)
-        open(os.path.join(dst, name), "w").write(src)
+    for name, template, binary in specs:
+        if template is None:
+            continue
+        laya_bin = os.path.abspath(binary or default_bin())
+        if not os.path.exists(laya_bin):
+            sys.exit("laya-codex binary not found at %s (build with cargo build --release -p laya-cli or set LAYA_CODEX_BIN)" % laya_bin)
+        if not os.path.exists(os.path.join(HERE, "config", "laya-settings.%s.json" % template)):
+            sys.exit("arm %s: no bench/config/laya-settings.%s.json" % (name, template))
+        for kind in ("settings", "mcp"):
+            src = os.path.join(HERE, "config", "laya-%s.%s.json" % (kind, template))
+            if os.path.exists(src):
+                text = open(src).read().replace("@LAYA_CODEX_BIN@", laya_bin)
+                open(os.path.join(dst, "laya-%s.%s.json" % (kind, name)), "w").write(text)
     return dst
+
+
+def arm_env(out_dir, specs):
+    """Extra environment per arm: an arm with its own binary gets its own home and Moon port."""
+    env = {}
+    for i, (name, _, binary) in enumerate(specs):
+        env[name] = {}
+        if binary:
+            env[name] = {"LAYA_CODEX_HOME": os.path.join(os.path.abspath(out_dir), "homes", name),
+                         "LAYA_CODEX_MOON_PORT": str(MOON_PORT_BASE + i)}
+    return env
 
 
 def arm_flags(arm, cfg_dir):
@@ -92,21 +125,6 @@ def arm_flags(arm, cfg_dir):
     if os.path.exists(mcp):
         flags += ["--mcp-config", mcp]
     return flags
-
-
-def read_hook_log(path):
-    out = {"injected_tokens": 0, "hook_actions": {}}
-    if not os.path.exists(path):
-        return out
-    for line in open(path):
-        try:
-            e = json.loads(line)
-        except ValueError:
-            continue
-        out["injected_tokens"] += tok_estimate("x" * int(e.get("injected_chars") or 0))
-        a = e.get("action", "?")
-        out["hook_actions"][a] = out["hook_actions"].get(a, 0) + 1
-    return out
 
 
 def tok_estimate(text):
@@ -177,16 +195,22 @@ def _claude(prompt, arm, args, cfg_dir, env, session_flags):
     return lines, rc, time.time() - t0
 
 
-def run_one(arm, task, args, cfg_dir):
+def run_name(task_id, arm, rep):
+    """File stem of a session's raw transcript and hook log; repeat 0 keeps the pre-repeat name."""
+    return "%s_%s" % (task_id, arm) + ("_r%d" % rep if rep else "")
+
+
+def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None):
     """One task = one Claude session of `args.turns` prompts (turn 2+ resume the same session)."""
     import uuid
-    hook_log = os.path.join(args.out, "hooklogs", "%s_%s.jsonl" % (task["id"], arm))
+    hook_log = os.path.join(args.out, "hooklogs", run_name(task["id"], arm, rep) + ".jsonl")
     os.makedirs(os.path.dirname(hook_log), exist_ok=True)
     if os.path.exists(hook_log):
         os.remove(hook_log)
     # LAYA_CODEX_MEMO=0: score every prompt cold, as a new prompt is in real use; otherwise whichever arm
     # runs a task first pays the model run and the others hit its cache.
-    env = dict(os.environ, LAYA_CODEX_HOOK_LOG=hook_log, LAYA_CODEX_MEMO=os.environ.get("LAYA_CODEX_MEMO", "0"))
+    env = dict(os.environ, LAYA_CODEX_HOOK_LOG=hook_log, LAYA_CODEX_MEMO=os.environ.get("LAYA_CODEX_MEMO", "0"),
+               **(extra_env or {}))
     prompts = [PROMPT.format(task=task["task"])] + [FOLLOWUP] * (args.turns - 1)
     sid = str(uuid.uuid4())
     all_lines, wall, rcs = [], 0.0, []
@@ -209,10 +233,13 @@ def run_one(arm, task, args, cfg_dir):
             agg["tool_calls"][t] = agg["tool_calls"].get(t, 0) + n
         answers.append(r["result"])
     h = read_hook_log(hook_log)
-    row = {"arm": arm, "task_id": task["id"], "wall_s": round(wall, 2), "rc": rcs, "total_input_tokens": agg["total_in"],
-           "output_tokens": agg["output"], "reading_tokens": agg["reading_tokens"], "injected_tokens": h["injected_tokens"],
-           "cost_usd": round(agg["cost"], 6), "num_turns": agg["turns"], "tool_calls": agg["tool_calls"],
-           "hook_actions": h["hook_actions"], "prompts": len(prompts)}
+    row = {"arm": arm, "task_id": task["id"], "rep": rep, "model": args.model, "wall_s": round(wall, 2), "rc": rcs,
+           "total_input_tokens": agg["total_in"], "output_tokens": agg["output"], "reading_tokens": agg["reading_tokens"],
+           "injected_tokens": h["injected_tokens"], "cost_usd": round(agg["cost"], 6), "num_turns": agg["turns"],
+           "tool_calls": agg["tool_calls"], "hook_actions": h["hook_actions"], "prompts": len(prompts),
+           # How each prompt was ranked (laya / laya-partial / lexical; None from builds that do not log it).
+           "rank_modes": h["rank_modes"], "scored": h["scored"], "offered": h["offered"],
+           "prompt_injected_tokens": h["prompt_injected_tokens"]}
     row.update(grade(answers[0], task["gold"]))
     if len(answers) > 1:
         named = [n for a in answers for n in grade(a, task["gold"])["named"]]
@@ -222,38 +249,56 @@ def run_one(arm, task, args, cfg_dir):
     return row, all_lines
 
 
+def make_plan(tasks, arms, repeat, seed=7):
+    """(arm, task, rep) in run order: each repeat of a task runs every arm, in a random order per
+    task and repeat, so machine and API drift hit all arms alike. Repeat 0 is the pre-repeat plan."""
+    rng = random.Random(seed)
+    return [(a, t, rep) for rep in range(repeat) for t in tasks for a in rng.sample(arms, len(arms))]
+
+
 def run(args):
     tasks = [json.loads(l) for l in open(args.tasks)][: args.limit or None]
-    arms = args.arms.split(",")
+    specs = [parse_arm(a) for a in args.arms.split(",")]
+    arms = [name for name, _, _ in specs]
+    if len(set(arms)) != len(arms):
+        sys.exit("duplicate arm names in --arms")
     os.makedirs(os.path.join(args.out, "raw"), exist_ok=True)
     res_path = os.path.join(args.out, "runs.jsonl")
-    done = set()
+    done, spent = set(), 0.0
     if os.path.exists(res_path):
-        done = {(r["arm"], r["task_id"]) for r in map(json.loads, open(res_path))}
-    cfg_dir = render_configs(args.out)
-    # Restart the daemon so the first hook starts it with this run's environment (LAYA_CODEX_MEMO etc.).
-    laya_bin = os.environ.get("LAYA_CODEX_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya-codex"))
-    subprocess.run([laya_bin, "stop"], capture_output=True)
-    rng = random.Random(7)
-    plan = [(a, t) for t in tasks for a in rng.sample(arms, len(arms))]  # interleave arms per task, random order
-    for i, (arm, task) in enumerate(plan):
-        if (arm, task["id"]) in done:
+        for r in map(json.loads, open(res_path)):
+            done.add((r["arm"], r["task_id"], r.get("rep", 0)))
+            spent += r.get("cost_usd") or 0
+    cfg_dir = render_configs(args.out, specs)
+    envs = arm_env(args.out, specs)
+    # Restart each daemon so the first hook starts it with this run's environment (LAYA_CODEX_MEMO etc.).
+    for name, template, binary in specs:
+        if template is not None:
+            subprocess.run([binary or default_bin(), "stop"], capture_output=True, env=dict(os.environ, **envs[name]))
+    plan = make_plan(tasks, arms, args.repeat)
+    for i, (arm, task, rep) in enumerate(plan):
+        if (arm, task["id"], rep) in done:
             continue
-        row, lines = run_one(arm, task, args, cfg_dir)
-        with open(os.path.join(args.out, "raw", "%s_%s.jsonl" % (task["id"], arm)), "w") as f:
+        if args.max_total_usd and spent >= args.max_total_usd:
+            print("stopping: spent $%.2f of the $%.2f cap (--max-total-usd); rerun to resume" % (spent, args.max_total_usd))
+            break
+        row, lines = run_one(arm, task, args, cfg_dir, rep, envs[arm])
+        spent += row["cost_usd"] or 0
+        with open(os.path.join(args.out, "raw", run_name(task["id"], arm, rep) + ".jsonl"), "w") as f:
             f.write("\n".join(lines))
         with open(res_path, "a") as f:
             f.write(json.dumps(row) + "\n")
-        print("[%d/%d] %-10s %s wall=%5.1fs read=%6d inj=%5d total_in=%7d recall=%.2f cost=%s" % (
-            i + 1, len(plan), arm, task["id"], row["wall_s"], row["reading_tokens"], row["injected_tokens"],
-            row["total_input_tokens"], row["recall"], row["cost_usd"]), flush=True)
+        print("[%d/%d] %-10s %s r%d wall=%5.1fs read=%6d inj=%5d total_in=%7d recall=%.2f cost=%s rank=%s" % (
+            i + 1, len(plan), arm, task["id"], rep, row["wall_s"], row["reading_tokens"], row["injected_tokens"],
+            row["total_input_tokens"], row["recall"], row["cost_usd"], ",".join(str(m) for m in row["rank_modes"])),
+            flush=True)
     report(args)
 
 
 def report(args):
-    rows = [json.loads(l) for l in open(os.path.join(args.out, "runs.jsonl"))]
-    arms = sorted({r["arm"] for r in rows}, key=lambda a: (a != "baseline", a))
-    by = {a: {r["task_id"]: r for r in rows if r["arm"] == a} for a in arms}
+    by = load_runs(os.path.join(args.out, "runs.jsonl"))
+    arms = sorted(by, key=lambda a: (a != "baseline", a))
+    rows = [r for a in arms for r in by[a].values()]
     common = set.intersection(*[set(v) for v in by.values()])
     keys = ["reading_tokens", "injected_tokens", "total_input_tokens", "output_tokens", "wall_s", "num_turns", "cost_usd",
             "recall", "precision", "hit_any"] + (["recall_all_turns"] if all("recall_all_turns" in r for r in rows) else [])
@@ -311,6 +356,9 @@ def main():
     r.add_argument("--timeout", type=int, default=900)
     r.add_argument("--max-usd", type=float, default=2.0)
     r.add_argument("--turns", type=int, default=1, help="prompts per session (2 = localisation + follow-up)")
+    r.add_argument("--repeat", type=int, default=1, help="sessions per task and arm; the stats average them")
+    r.add_argument("--max-total-usd", type=float, default=0.0,
+                   help="stop starting sessions once the run (with resumed rows) has spent this much; 0 = no cap")
     p = sub.add_parser("report")
     p.add_argument("--out", required=True)
     args = ap.parse_args()
