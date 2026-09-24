@@ -2,6 +2,7 @@
 
     python3 bench/headline.py --out bench/results/headline-v8.json \
         --run <run dir> <tasks.jsonl> [--run <run dir> <tasks.jsonl> ...] [--raw-root <dir with <repo>/raw>]
+        [--version v9 --arm branch --lex branch-lex --with-output]
 
 pct = laya-adaptive vs baseline (ratio of sums - 1, in %), 95% CI from the paired bootstrap of
 bench/stats_pooled.py (pooled = stratified by repo). laya_vs_lex = laya-adaptive vs laya-lex.
@@ -26,7 +27,8 @@ METRICS = {
 }
 
 LABELS = {"reading_tokens": "Code-reading tokens", "reading_plus_injected": "Reading + injected",
-          "total_input": "Total input tokens", "wall_clock": "Wall-clock time", "turns": "Turns", "cost": "Cost"}
+          "total_input": "Total input tokens", "wall_clock": "Wall-clock time", "turns": "Turns", "cost": "Cost",
+          "output_tokens": "Output tokens"}
 
 
 def compare(runs, arm, base, keys, B=10000):
@@ -60,24 +62,33 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--run", nargs=2, action="append", metavar=("RUN_DIR", "TASKS"), required=True)
     ap.add_argument("--raw-root", help="dir holding <repo>/raw transcripts (for read accuracy)")
+    ap.add_argument("--version", default="v8")
+    ap.add_argument("--arm", default="laya-adaptive", help="the laya-codex arm")
+    ap.add_argument("--lex", default="laya-lex", help="the same build with keyword-only ranking")
+    ap.add_argument("--with-output", action="store_true", help="also report output tokens (runs from v9 on)")
+    ap.add_argument("--title", default="With laya-codex, Claude reads less code and takes fewer turns")
     a = ap.parse_args()
+    arm, lex_arm = a.arm, a.lex
+    if a.with_output:
+        METRICS["output_tokens"] = sp.METRICS["output tokens"]
     runs = [(os.path.basename(os.path.normpath(d)), d) for d, _ in a.run]
     keys = list(METRICS)
-    pooled, per_repo, q, n = compare(runs, "laya-adaptive", "baseline", keys)
-    lex, lex_repo, lex_q, _ = compare(runs, "laya-adaptive", "laya-lex", keys)
-    lexb, _, lexb_q, _ = compare(runs, "laya-lex", "baseline", keys)
-    out = {"version": "v8", "n_tasks": n, "repos": [r for r, _ in runs], "model": "sonnet", "arm": "laya-adaptive",
+    pooled, per_repo, q, n = compare(runs, arm, "baseline", keys)
+    lex, lex_repo, lex_q, _ = compare(runs, arm, lex_arm, keys)
+    lexb, _, lexb_q, _ = compare(runs, lex_arm, "baseline", keys)
+    out = {"version": a.version, "n_tasks": n, "repos": [r for r, _ in runs], "model": "sonnet", "arm": arm,
            "metrics": {k: {"label": LABELS[k], **v} for k, v in pooled.items()},
-           "chart_metrics": ["reading_tokens", "turns", "cost", "total_input", "wall_clock"],
-           "chart_title": "With laya-codex, Claude reads less code and takes fewer turns",
+           "chart_metrics": ["reading_tokens", "turns", "cost", "total_input"]
+           + (["output_tokens"] if a.with_output else []) + ["wall_clock"],
+           "chart_title": a.title,
            "per_repo": per_repo,
-           "answer_recall": {"baseline": q["answer_recall"]["baseline"], "laya": q["answer_recall"]["laya-adaptive"],
+           "answer_recall": {"baseline": q["answer_recall"]["baseline"], "laya": q["answer_recall"][arm],
                              "diff": q["answer_recall"]["diff"], "lo": q["answer_recall"]["lo"], "hi": q["answer_recall"]["hi"]},
            "answer_recall_both_turns": {"baseline": q["answer_recall_both_turns"]["baseline"],
-                                        "laya": q["answer_recall_both_turns"]["laya-adaptive"],
+                                        "laya": q["answer_recall_both_turns"][arm],
                                         "diff": q["answer_recall_both_turns"]["diff"],
                                         "lo": q["answer_recall_both_turns"]["lo"], "hi": q["answer_recall_both_turns"]["hi"]},
-           "laya_vs_lex": {"note": "laya-adaptive vs laya-lex (same hooks, LAYA_BUDGET_MS=0: lexical-only ranking)",
+           "laya_vs_lex": {"note": f"{arm} vs {lex_arm} (same hooks, LAYA_BUDGET_MS=0: lexical-only ranking)",
                            "pooled": {k: lex[k] for k in ("reading_tokens", "total_input", "wall_clock", "cost")},
                            "per_repo": {r: {k: v[k] for k in ("reading_tokens", "wall_clock")} for r, v in lex_repo.items()},
                            "answer_recall": lex_q["answer_recall"]},
@@ -91,12 +102,12 @@ def main():
             v = [r[k] for r in rs if r[k] is not None]
             return round(sum(v) / max(1, len(v)), 3)
         out["read_precision"] = {"baseline": mean(pooled_rows["baseline"], "read_precision"),
-                                 "laya": mean(pooled_rows["laya-adaptive"], "read_precision"),
-                                 "lex": mean(pooled_rows["laya-lex"], "read_precision")}
+                                 "laya": mean(pooled_rows[arm], "read_precision"),
+                                 "lex": mean(pooled_rows[lex_arm], "read_precision")}
         out["first_gold_read_turn"] = {"baseline": round(mean(pooled_rows["baseline"], "first_gold_read_turn"), 2),
-                                       "laya": round(mean(pooled_rows["laya-adaptive"], "first_gold_read_turn"), 2),
-                                       "lex": round(mean(pooled_rows["laya-lex"], "first_gold_read_turn"), 2)}
-        base, laya = pooled_rows["baseline"], pooled_rows["laya-adaptive"]
+                                       "laya": round(mean(pooled_rows[arm], "first_gold_read_turn"), 2),
+                                       "lex": round(mean(pooled_rows[lex_arm], "first_gold_read_turn"), 2)}
+        base, laya = pooled_rows["baseline"], pooled_rows[arm]
         out["reads"] = {  # scripts/charts.py: reads chart
             "read_precision": {"label": "Read precision", "baseline": mean(base, "read_precision"),
                                "laya": mean(laya, "read_precision"), "better": "higher", "fmt": "{:.2f}"},
@@ -114,7 +125,7 @@ def main():
             "baseline": turns(base, "first_gold_seen_turn"),
             "laya_seen": turns(laya, "first_gold_seen_turn"),
             "laya_read": turns(laya, "first_gold_read_turn"),
-            "lex_seen": turns(pooled_rows["laya-lex"], "first_gold_seen_turn"),
+            "lex_seen": turns(pooled_rows[lex_arm], "first_gold_seen_turn"),
         }
     with open(a.out, "w") as f:
         f.write(json.dumps(out, indent=1) + "\n")
