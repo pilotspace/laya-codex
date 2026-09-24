@@ -98,6 +98,12 @@ stays opt-in and off. The follow-up change above addresses the same limit withou
 - **Metrics:** output tokens next to wall-clock and turns, and `injection_ok` to catch sessions
   whose injection failed (v8's disk-guard incident), re-run with `--rerun-unhealthy`.
 - **Cost:** about $45–55 at v8's rate (180 sessions).
+- **Pilot (2026-09-24, 5 tasks × 3 arms, $2.58):** the model arm's first session in each
+  repository met a daemon the run had just restarted: its first prompt failed (`query_failed`,
+  2 sessions) or was ranked by keywords (1). `run_bench.py` now warms each arm (index, then
+  query until the model ranks) before the first session. The 2 failed sessions were re-run
+  with `--rerun-unhealthy` and both prompts of each were ranked by the model. Five tasks say
+  nothing about the effect.
 - **Edit tasks** are still not measured. They need a repository reset and a test run per
   session (minutes for moon's `cargo test`, competing with the model for the machine), at 2–3×
   the cost. A 10-task httpx pilot comes first.

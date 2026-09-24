@@ -104,6 +104,37 @@ def injection_health(prompt_actions, n_prompts):
     return len(prompt_actions) >= n_prompts
 
 
+def warm_arm(binary, env, repo, run=subprocess.run, sleep=time.sleep, clock=time.monotonic, timeout_s=180):
+    """Index `repo` and query until the Laya model ranks (mode `laya`) or `timeout_s` passes; returns
+    the last mode. Restarting a daemon empties its model, so without this the first session of a
+    run gets a daemon that is still starting or loading (the pilot: `query_failed` or `lexical`
+    on the first prompt of the model arm, in every repository)."""
+    env = dict(os.environ, **env)
+    run([binary, "index", repo], env=env, capture_output=True, text=True, timeout=900)
+    deadline, mode = clock() + timeout_s, None
+    while True:
+        try:
+            p = run([binary, "query", "warm up the model", "--repo", repo, "--json"], env=env,
+                    capture_output=True, text=True, timeout=120)
+            mode = json.loads(p.stdout or "{}").get("mode")
+        except (ValueError, subprocess.TimeoutExpired):
+            mode = None
+        if mode == "laya" or clock() >= deadline:
+            return mode
+        sleep(2)
+
+
+def rank_mode_counts(rows):
+    """How the prompts of `rows` were ranked: {"laya": n, "laya-partial": n, "lexical": n, "unknown": n}
+    (unknown = a build that does not log it, or a prompt whose query failed)."""
+    counts = {}
+    for r in rows:
+        for m in r.get("rank_modes") or []:
+            k = m or "unknown"
+            counts[k] = counts.get(k, 0) + 1
+    return counts
+
+
 def default_bin():
     return os.environ.get("LAYA_CODEX_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya-codex"))
 
@@ -351,10 +382,14 @@ def run(args):
     envs = arm_env(args.out, specs)
     versions = arm_versions(specs)
     claude_version = _cli_version("claude")
-    # Restart each daemon so the first hook starts it with this run's environment (LAYA_CODEX_MEMO etc.).
+    # Restart each daemon with this run's environment (LAYA_CODEX_MEMO etc.), then warm it so the
+    # first session gets an indexed repo and a loaded model.
     for name, template, binary in specs:
         if template is not None:
-            subprocess.run([binary or default_bin(), "stop"], capture_output=True, env=dict(os.environ, **envs[name]))
+            env = dict(envs[name], LAYA_CODEX_MEMO=os.environ.get("LAYA_CODEX_MEMO", "0"))
+            subprocess.run([binary or default_bin(), "stop"], capture_output=True, env=dict(os.environ, **env))
+            mode = warm_arm(binary or default_bin(), env, args.repo)
+            print("warmed %s: %s" % (name, mode), flush=True)
     plan = make_plan(tasks, arms, args.repeat)
     for i, (arm, task, rep) in enumerate(plan):
         if (arm, task["id"], rep) in done:
@@ -379,6 +414,11 @@ def report(args):
     by = load_runs(os.path.join(args.out, "runs.jsonl"))
     arms = sorted(by, key=lambda a: (a != "baseline", a))
     rows = [r for a in arms for r in by[a].values()]
+    raw = [json.loads(l) for l in open(os.path.join(args.out, "runs.jsonl")) if l.strip()]
+    for a in arms:
+        counts = rank_mode_counts(r for r in raw if r["arm"] == a)
+        if counts:
+            print("rank modes %s: %s" % (a, ", ".join("%s %d" % kv for kv in sorted(counts.items()))))
     common = set.intersection(*[set(v) for v in by.values()])
     keys = ["reading_tokens", "injected_tokens", "total_input_tokens", "output_tokens", "wall_s", "num_turns", "cost_usd",
             "recall", "precision", "hit_any"] + (["recall_all_turns"] if all("recall_all_turns" in r for r in rows) else [])

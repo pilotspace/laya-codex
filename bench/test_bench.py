@@ -240,5 +240,47 @@ class StatsPooledMetrics(unittest.TestCase):
         self.assertEqual(stats_pooled.METRICS["output tokens"]({"output_tokens": None}), 0)
 
 
+class WarmUp(unittest.TestCase):
+    def setUp(self):
+        import run_bench
+        self.rb = run_bench
+
+    def fake(self, modes):
+        calls = []
+
+        class P:
+            def __init__(self, out):
+                self.stdout, self.returncode = out, 0
+
+        def run(cmd, **kw):
+            calls.append(cmd[1])
+            if cmd[1] == "query":
+                return P(json.dumps({"mode": modes.pop(0) if modes else "lexical", "spans": []}))
+            return P("")
+        return run, calls
+
+    def test_indexes_then_queries_until_the_model_ranks(self):
+        run, calls = self.fake(["lexical", "lexical", "laya"])
+        mode = self.rb.warm_arm("/bin/laya", {}, "/repo", run=run, sleep=lambda s: None, timeout_s=60)
+        self.assertEqual(mode, "laya")
+        self.assertEqual(calls, ["index", "query", "query", "query"])
+
+    def test_gives_up_at_the_deadline_and_reports_the_last_mode(self):
+        run, calls = self.fake([])
+        t = [0.0]
+
+        def clock():
+            t[0] += 10
+            return t[0]
+        mode = self.rb.warm_arm("/bin/laya", {}, "/repo", run=run, sleep=lambda s: None, timeout_s=30,
+                                clock=clock)
+        self.assertEqual(mode, "lexical")
+        self.assertLessEqual(calls.count("query"), 4)
+
+    def test_rank_mode_counts(self):
+        rows = [{"rank_modes": ["laya", "lexical"]}, {"rank_modes": ["laya", None]}, {}]
+        self.assertEqual(self.rb.rank_mode_counts(rows), {"laya": 2, "lexical": 1, "unknown": 1})
+
+
 if __name__ == "__main__":
     unittest.main()
