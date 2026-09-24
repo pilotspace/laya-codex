@@ -160,6 +160,17 @@ Code reading fell on every repository: −37% on moon, −32% on httpx and −47
   and hono, so the code laya-codex adds roughly cancels what it saves, and total input doesn't fall.
 - **Scope.** Tasks that find and explain code, not edits; one model (Sonnet).
 
+**Since this run** (not yet re-measured with Claude; offline replays of the same 60 tasks in
+[docs/RESULTS.md](docs/RESULTS.md#since-benchmark-v2-what-the-limits-pointed-at)):
+- The second prompt of a session now gets test pointers and call sites instead of more code
+  blocks: its injection is 61–65% smaller, 30–32% less per session, which targets the
+  small-repository limit.
+- Time turned out to follow output tokens (≈ 10.8 s per 1,000), not reading. Fewer turns didn't
+  shorten sessions because each turn wrote more. The next run reports output tokens alongside
+  time.
+- Every prompt's ranking mode (model, partial or keywords) is now logged, and the benchmark can
+  repeat tasks and compare two builds, so the model-vs-keywords question can be settled.
+
 Full method, per-repository results, the model-vs-keywords comparison and raw data:
 [docs/RESULTS.md](docs/RESULTS.md). To regenerate the charts:
 `python3 scripts/charts.py bench/results/headline-v8.json docs/assets`.
@@ -179,7 +190,7 @@ your prompt ─► laya-codex hook ─► local daemon ─► BM25 keyword searc
 - **Indexing.** laya-codex splits your code into 10–50-line chunks along function and class boundaries using
   [tree-sitter](https://tree-sitter.github.io/), for 14 languages. Moon, a small local search server that
   laya-codex runs for you, stores the chunks. Edits are re-indexed as Claude makes them.
-- **Ranking.** Keyword search picks the 24 best candidates, and laya-codex re-ranks them with the
+- **Ranking.** Keyword search picks the 24 best candidates, and laya-codex re-ranks the top 16 with the
   [Laya](https://huggingface.co/convaiinnovations/laya) model:
   [laya-code](https://huggingface.co/tindang/laya-code), a code-tuned Laya fine-tune running on the
   Metal GPU, scores how relevant each one is to your task, and the two rankings are blended. The
@@ -208,7 +219,7 @@ server is trusted. Picking the right piece of code needs a judgment about the ta
   into vectors separately and only their similarity is compared.
 - **It stays cheap.** A cross-encoder is too slow to run over a whole repository, so laya-codex
   uses it only where it counts. Keyword search narrows the repository to 24 candidates, and the
-  model scores just those, in about 0.8 s on the Metal GPU. Indexing needs no model and no
+  model scores the top 16 of those, in about 0.5 s on the Metal GPU. Indexing needs no model and no
   vector database, so a repository indexes in seconds (Moon's source: 485 files in about 1.2 s).
 - **It has to be tuned for code.** Laya was trained for triage, moderation and routing, not code,
   and out of the box it ranks code no better than keywords. laya-code is Laya fine-tuned on the
@@ -386,7 +397,9 @@ Flags:
 | `LAYA_CODEX_BUDGET_MS` | `1200` | Laya time budget per prompt: the model scores as many candidates as fit (lexical only if none) |
 | `LAYA_CODEX_RENDER` | `compact` | `full` injects every span's code |
 | `LAYA_CODEX_WEIGHT` / `LAYA_CODEX_STATE_TOKENS` / `LAYA_CODEX_K` / `LAYA_CODEX_P_THRESHOLD` | `0.5` / `128` / `24` / `0` | ranking knobs (daemon start) |
-| `LAYA_CODEX_ADAPTIVE` | on | `0` = fixed compact injection; default skips code already sent or read in the session |
+| `LAYA_CODEX_ADAPTIVE` | on | `0` = fixed compact injection; default skips code already sent or read in the session, and answers follow-ups about tests or callers with lists instead of code |
+| `LAYA_CODEX_SCORE_TOP` | `16` | candidates the model scores (best first); `0` = all of them |
+| `LAYA_CODEX_SIZE_BY_REPO` | off | `1` = one inlined block and a shorter map in repositories under 200 indexed files (a number sets the threshold); off because the replay lost correct inlined files |
 | `LAYA_CODEX_SCOPE` | off | `1` = let a Laya scope classifier size the injection (measured no-op; see RESULTS) |
 | `LAYA_CODEX_MOON_START_SECS` | `30` | how long a freshly started Moon may take to answer |
 | `LAYA_CODEX_MOON_PORT` / `LAYA_CODEX_MOON_BIN` | `16379` / `moon` beside the real `laya-codex` binary, else in `../libexec` (Homebrew), else on `PATH` | Moon sidecar; a missing binary is reported with every path tried |

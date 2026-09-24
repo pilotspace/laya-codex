@@ -82,9 +82,15 @@ Make the first five minutes painless and the tool visible where Claude Code user
 
 - **Close the time gap (no measurable change today → −30%).** Time is spent in the final answer and
   verification turns, after the right code is already in context (forensics §6, v8). Candidates:
-  - richer usage lists for the identifiers the answer names;
-  - `search` (MCP) as the cheap default for follow-up lookups;
+  - ~~richer usage lists for the identifiers the answer names~~: follow-ups that ask for tests or
+    callers now get test pointers and a 16-line usage list instead of more code (unreleased;
+    replay in [RESULTS](docs/RESULTS.md#since-benchmark-v2-what-the-limits-pointed-at));
+  - `search` (MCP) as the cheap default for follow-up lookups (called once in v8's 180 sessions);
   - fix third-file misses on multi-file tasks (e.g. the `warm_search.rs` pattern).
+  - **Finding (2026-09-24):** wall-clock follows output tokens (≈ 10.8 s per 1,000, R² 0.92 over
+    v8's 180 sessions), not reading. laya-codex cut turns 21% but each turn wrote more, so time
+    didn't move. Reaching −30% needs about 30% fewer output tokens per session; retrieval alone is
+    unlikely to get there. The goal stands until the owner decides otherwise.
 - **Per-repo IDF-aware term selection** so generic chunks stop recurring across unrelated tasks.
 - **Benchmark v2:** done for localisation tasks (v8: moon, httpx, hono; 60 tasks;
   [docs/RESULTS.md](docs/RESULTS.md)).
@@ -98,8 +104,12 @@ Make the first five minutes painless and the tool visible where Claude Code user
     separates model from keywords with more tasks. `LAYA_CODEX_NO_MODEL=1` stays the opt-out.
   - **Moon's append-only log grew to 4.1 GB** during the run and Moon paused writes on a nearly
     full disk. laya-codex should compact it automatically.
-  - The fixed ~3.4k-token injection exceeds what stock Claude reads on small repos.
-  - SWE-bench-style edit tasks are still open.
+  - The fixed ~3.4k-token injection exceeds what stock Claude reads on small repos. The follow-up
+    change cuts the injection about 30% per session on every repo (replay). Repo-size caps
+    (`LAYA_CODEX_SIZE_BY_REPO`) are opt-in: they dropped correct inlined files on httpx.
+  - **Next run** (needs approval, ≈ $50): baseline / this build / this build keywords-only, 60
+    tasks, rank mode and output tokens logged, `--rerun-unhealthy` for failed injections.
+  - SWE-bench-style edit tasks are still open; a 10-task httpx pilot comes first.
 - **Linux performance:** a smaller distilled re-ranker or a CUDA path, so Linux users get the
   model inside the time budget instead of lexical-only.
 

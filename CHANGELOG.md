@@ -4,6 +4,54 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Follow-up prompts get answers instead of more code, the model scores only the candidates that
+matter, and a benchmark run now records what it needs to settle the questions benchmark v2 left
+open. Replayed offline on the 60 benchmark v2 tasks; not yet measured with Claude.
+
+### Changed
+- **Follow-up prompts inline no more code when they ask for tests or callers.**
+  - Why: a follow-up ("now find the tests and call sites") is ranked on the session's topic, so
+    it used to inline the topic's next-ranked blocks. Replaying the benchmark v2 sessions, the
+    second prompt injected as much as the first (about 4.2k characters) and added 5 new correct
+    files of 35 (httpx) and 5 of 46 (hono).
+  - Now it gets a location list of up to 6 spans not sent yet, the tests that use the task's
+    identifiers (``test using `x` ``, at most two per file), and a longer "Definitions and uses"
+    list (16 lines). A follow-up that asks for neither gets one code block; one that names code
+    (`and replay_wal3?`) keeps the normal sizing.
+  - Replay: the second prompt's injection fell 61–65% (hono 3,961 → 1,443 characters, httpx
+    4,179 → 1,474, moon 4,715 → 1,842), 30–32% per session. Correct test files named stayed
+    the same (22/23 hono, 12/13 httpx, 2/2 moon); correct files named fell 29 → 27 of 35 on
+    httpx and stayed the same on hono and moon.
+- **Documentation is listed, not inlined**, unless the task asks about docs or configuration:
+  a changelog line shares the task's words but is rarely the code to change. README, CHANGELOG,
+  LICENSE, `.md`, `.rst`, `.adoc` and similar files stay in the location list.
+- **The model scores the top 16 candidates**, not all 24; the rest keep their keyword order
+  below (`LAYA_CODEX_SCORE_TOP`, `0` = all). Replay: the correct files inlined stayed the same
+  (63 of 115 on the first prompt, both ways), and the hook's median time per prompt fell from
+  0.81–0.97 s to 0.52–0.67 s.
+- An injection with no code blocks no longer ends with "Use the code above directly".
+
+### Added
+- **Rank mode in the hook log:** each prompt's line records `rank_mode` (`laya`, `laya-partial`
+  when the time budget stopped the model early, or `lexical`), `scored`, `offered` and
+  `candidates`. Query results carry `scored` and `offered` (additive fields).
+- **`LAYA_CODEX_SIZE_BY_REPO`** (opt-in, off): repositories under 200 indexed files (`1`) or
+  under a given count get one inlined block and a shorter map. Replay on httpx (92 files): the
+  first prompt's injection fell 31%, but the correct files inlined fell from 19 to 10 of 35, so
+  it stays off.
+
+### Benchmark tooling
+- `run_bench.py run`: `--repeat N` (the stats average a task's repeats before pairing),
+  `--max-total-usd`, `--effort` (pins `CLAUDE_EFFORT`), `--rerun-unhealthy`, and arms with their
+  own binary (`name[:template][@binary]`, each on its own home and Moon port) to compare builds.
+  Rows record the model, effort, versions, rank modes, per-prompt output tokens, answer length,
+  turns and time, and whether every prompt got its injection (`injection_ok`).
+- `bench/replay_hooks.py` replays the benchmark's two prompts per task through the real hook
+  without Claude; `bench/runs.py` holds the shared loaders; `bench/test_bench.py` tests them.
+- `stats.py` and `stats_pooled.py` report output tokens, which drive wall-clock time.
+
 ## [0.3.0] — 2026-09-24
 
 Better-aimed and steadier ranking, fewer re-checks by Claude, and a debug trace:

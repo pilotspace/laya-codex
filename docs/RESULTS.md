@@ -4,6 +4,103 @@ All numbers are reproducible from this repo; raw per-run rows are in `bench/resu
 Hardware: Apple M4 Pro, 24 GB. Agent: Claude Code 2.1.280, model `sonnet`, isolated from user
 settings/plugins/MCP (`--setting-sources project --strict-mcp-config`), tools Read/Grep/Glob.
 
+## Since benchmark v2: what the limits pointed at
+
+*Added 2026-09-24. Offline replays of the 60 benchmark v2 tasks through the real hook; no
+Claude sessions. These show what each change does to the injection, not what it does to a
+session: that needs the next paid run (plan below).*
+
+**Method.** `bench/replay_hooks.py` sends each task's two benchmark prompts (`run_bench.PROMPT`,
+then `FOLLOWUP`) through `laya-codex hook` in one session. Each build had its own scratch home and
+Moon port. The daemon was warmed first, the laya-code model ran on Metal, and prompts were scored
+cold (`LAYA_CODEX_MEMO=0`). It records the injected characters, the files inlined, the gold files
+inlined or named anywhere in the injection, the hook's time and the rank mode. It cannot see the
+Reads Claude makes between the prompts, so real follow-up injections are somewhat smaller.
+
+### Time follows output tokens
+
+Over the 180 v8 sessions, wall-clock is explained by output tokens:
+`wall ≈ 5.2 s + 10.8 s × output k-tokens − 0.16 s × turns + 0.33 s × input 100k-tokens`
+(R² 0.92). Wall correlates 0.96 with output tokens and 0.79 with turns.
+- laya-codex cut turns by 21%, but each remaining turn wrote more: output per turn went from
+  261 to 348 tokens on httpx, 312 to 436 on hono and 302 to 363 on moon.
+- Output per session hardly moved (moon +7%, httpx −2%, hono −5%), so neither did time.
+- The two answer turns are 31–43% of a session, and retrieval doesn't touch them.
+
+**Implication for the −30% time goal:** it needs about 30% fewer output tokens per session.
+Retrieval changes alone are unlikely to get there on these tasks. The benchmark now reports
+output tokens with a CI next to wall-clock (`bench/stats_pooled.py`), and rows keep per-prompt
+output tokens, so the next run can show where the output goes.
+
+### The follow-up prompt: lists instead of more code
+
+A follow-up is ranked on the session's topic. So the spans it had not sent yet were the topic's
+lower-ranked ones, and the benchmark's second prompt ("the tests … and the main call sites")
+went unanswered by the injection. Now a follow-up that asks for tests or callers gets:
+- no code blocks;
+- a location list of 6 spans not sent yet;
+- the tests that use the task's identifiers;
+- a 16-line "Definitions and uses" list.
+
+Per prompt, mean over 20 tasks per repo (`rank` = the 16-candidate build before this change,
+`follow-up` = after):
+
+| repo | prompt | characters, rank → follow-up | code blocks | gold inlined | gold named | test gold named |
+|---|---|---|---|---|---|---|
+| httpx | 1 | 4,292 → 4,242 | 2.00 → 1.95 | 19 → 19 of 35 | 29 → 29 | – |
+| httpx | 2 | 4,179 → **1,474** | 2.00 → 0 | 11 → 0 | 29 → 27 | 12 → 12 of 13 |
+| hono | 1 | 3,986 → 3,986 | 2.00 → 2.00 | 27 → 27 of 46 | 42 → 42 | – |
+| hono | 2 | 3,961 → **1,443** | 2.00 → 0 | 22 → 0 | 42 → 42 | 22 → 22 of 23 |
+| moon | 1 | 4,739 → 4,739 | 1.95 → 1.95 | 17 → 17 of 34 | 27 → 27 | – |
+| moon | 2 | 4,715 → **1,842** | 1.90 → 0 | 15 → 0 | 27 → 27 | 2 → 2 of 2 |
+
+- Per session, the injection falls by 30–32% on every repository. That is the part of the
+  small-repository limit the injection controls: on httpx, laya-codex injected about 3.4k tokens
+  per session against 1.0k tokens of reading saved.
+- The cost: gold files that the second prompt used to inline are now only listed. Most were
+  already inlined by the first prompt; replaying v0.3.0, the second prompt added 5 new gold files
+  of 35 on httpx and 5 of 46 on hono. Claude has to Read those itself.
+- The first prompt's small change on httpx is the documentation guard: a `CHANGELOG.md` block is
+  no longer inlined (listed instead), with no gold file lost.
+
+### The model scores the top 16 candidates
+
+| | v0.3.0 (all 24) | top 16 |
+|---|---|---|
+| gold inlined, first prompt (httpx + hono + moon) | 18 + 26 + 19 = 63 | 19 + 27 + 17 = 63 |
+| gold inlined, second prompt | 12 + 24 + 13 = 49 | 11 + 22 + 15 = 48 |
+| hook time per prompt, median | 0.81–0.97 s | 0.52–0.67 s |
+| prompts ranked by the model (full) | not logged | 120 of 120 |
+
+This saves about 0.3 s per prompt, under 2% of a session. The rank-mode line in the hook log is
+new: every replayed prompt was ranked by the model in full on this machine, which is the check the
+next model-vs-keywords run needs.
+
+### Repository-size caps: tried, left off
+
+`LAYA_CODEX_SIZE_BY_REPO=1` gives repositories under 200 indexed files one inlined block and a
+6-entry map. On httpx (92 files; hono and moon are above the threshold), the first prompt's
+injection fell from 4,242 to 2,910 characters. But the gold inlined fell from 19 to 10 of 35, and
+gold named from 29 to 26. The injection it saves is not worth the correct code it drops, so it
+stays opt-in and off. The follow-up change above addresses the same limit without that loss.
+
+### What the next benchmark run should be
+
+- **Arms:** stock Claude Code, this build, and this build with `LAYA_CODEX_BUDGET_MS=0`
+  (keywords only). The last arm settles the model-vs-keywords question, now that the rank mode is
+  logged: a run should count only if at least 90% of the model arm's prompts show `laya`.
+- **Size:** the same 60 tasks, one session each, `--effort medium` pinned. Per task, the wall
+  effect did not reproduce between v7 and v8 (correlation 0.08 on the same moon tasks). So a
+  repeat and a new task reduce noise about equally, and a 60-task run can resolve effects of
+  about 13% or more. An A/B of two builds, where the expected difference is 10% or less, would
+  need about 85 tasks.
+- **Metrics:** output tokens next to wall-clock and turns, and `injection_ok` to catch sessions
+  whose injection failed (v8's disk-guard incident), re-run with `--rerun-unhealthy`.
+- **Cost:** about $45–55 at v8's rate (180 sessions).
+- **Edit tasks** are still not measured. They need a repository reset and a test run per
+  session (minutes for moon's `cargo test`, competing with the model for the machine), at 2–3×
+  the cost. A 10-task httpx pilot comes first.
+
 ## v8 — benchmark v2 (3 repos, 60 tasks)
 
 **Bottom line.** The v7 result did not hold up over three repositories:
