@@ -4,7 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] — 2026-09-24
+
+Better-aimed and steadier ranking, fewer re-checks by Claude, and a debug trace:
+- ranking uses the task rather than the instructions around it;
+- the Laya model ranks within its time budget even under load;
+- inlined code carries trust labels, and at most two files are inlined;
+- `laya-codex trace` records what Claude Code and laya-codex exchange;
+- a nearly full disk no longer disables laya-codex silently.
+
+Also: benchmark v2 results across three repositories. No breaking changes.
 
 ### Added
 - **Trust line:** when code is inlined, the injection says it is the exact current content of

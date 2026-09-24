@@ -1156,7 +1156,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "laya-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1175,7 +1175,7 @@ dependencies = [
 
 [[package]]
 name = "laya-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "serde",
@@ -1185,7 +1185,7 @@ dependencies = [
 
 [[package]]
 name = "laya-model"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -1200,7 +1200,7 @@ dependencies = [
 
 [[package]]
 name = "laya-parse"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "ignore",
@@ -1227,7 +1227,7 @@ dependencies = [
 
 [[package]]
 name = "laya-rank"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "laya-core",
  "serde",
@@ -1236,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "laya-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "fastrand",
