@@ -21,7 +21,13 @@ def tok_estimate(chars):
 
 def load_runs(path, arms=None):
     """{arm: {task_id: row}} with repeated (arm, task) rows averaged. Refuses rows of one task that
-    mix models: a mean over two models is not a measurement of either."""
+    mix models: a mean over two models is not a measurement of either.
+
+    A row whose laya-codex injection failed (`injection_ok`: False, see run_bench.py) is dropped once
+    a healthy rerun of the same (arm, task) exists (`--rerun-unhealthy` reruns it; the old row stays
+    in runs.jsonl). Rows without the field (baseline, or runs from before this field existed) are
+    never dropped by this. If every row of a task is unhealthy, they are kept (nothing better to
+    average) and the merged row is marked `unhealthy: True`."""
     groups = {}
     with open(path) as f:
         lines = f.readlines()
@@ -34,7 +40,9 @@ def load_runs(path, arms=None):
         groups.setdefault(r["arm"], {}).setdefault(r["task_id"], []).append(r)
     out = {}
     for arm, tasks in groups.items():
-        for task, rows in tasks.items():
+        for task, all_rows in tasks.items():
+            healthy = [r for r in all_rows if r.get("injection_ok") is not False]
+            rows = healthy or all_rows
             models = {r.get("model") for r in rows}
             if len(models) > 1:
                 raise ValueError("%s/%s mixes models %s" % (arm, task, sorted(map(str, models))))
@@ -48,6 +56,8 @@ def load_runs(path, arms=None):
             merged["rc"] = [c for r in rows for c in r.get("rc", [])]
             merged["reps"] = len(rows)
             merged.pop("rep", None)
+            if not healthy:
+                merged["unhealthy"] = True
             out.setdefault(arm, {})[task] = merged
     return out
 
@@ -69,7 +79,7 @@ def parse_arm(spec):
 
 def read_hook_log(path):
     out = {"injected_tokens": 0, "hook_actions": {}, "rank_modes": [], "scored": [], "offered": [],
-           "candidates": [], "prompt_injected_tokens": []}
+           "candidates": [], "prompt_injected_tokens": [], "prompt_actions": []}
     if not os.path.exists(path):
         return out
     with open(path) as f:
@@ -89,4 +99,5 @@ def read_hook_log(path):
             out["offered"].append(e.get("offered"))
             out["candidates"].append(e.get("candidates"))
             out["prompt_injected_tokens"].append(tokens)
+            out["prompt_actions"].append(a)
     return out

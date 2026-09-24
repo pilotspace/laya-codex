@@ -32,6 +32,9 @@ METRICS = {
     "wall seconds": lambda r: r["wall_s"],
     "turns": lambda r: r["num_turns"] or 0,
     "cost usd": lambda r: r["cost_usd"] or 0,
+    # Output tokens drive wall time (wall ~ 5.2 + 10.8*output_ktok): a time proxy that is cheap to
+    # read off the API usage, unlike wall_s which also carries CLI startup and network noise.
+    "output tokens": lambda r: r["output_tokens"] or 0,
 }
 QUALITY = {
     "answer recall (turn 1)": lambda r: r["recall"],
@@ -41,11 +44,14 @@ QUALITY = {
 
 def load(run_dir, arm, base):
     # Repeated sessions of a task are averaged into one row (bench/runs.py), so tasks stay the unit.
+    # load_runs already dropped unhealthy rows in favor of a healthy rerun where one exists; a pair
+    # is still `unhealthy` here only when every attempt at it failed to inject.
     by = load_runs(os.path.join(run_dir, "runs.jsonl"), arms=(arm, base))
     by = {a: by.get(a, {}) for a in (arm, base)}
     tasks = sorted(set(by[arm]) & set(by[base]))
     bad = [(a, t, r["rc"]) for a in (arm, base) for t, r in by[a].items() if any(c != 0 for c in r["rc"])]
-    return [(by[arm][k], by[base][k]) for k in tasks], bad
+    unhealthy = [(a, t) for a in (arm, base) for t, r in by[a].items() if r.get("unhealthy")]
+    return [(by[arm][k], by[base][k]) for k in tasks], bad, unhealthy
 
 
 def ratio(pairs, f):
@@ -67,37 +73,39 @@ def main():
     repos = {os.path.basename(os.path.normpath(d)): load(d, arm, base) for d in dirs}
     rng = random.Random(0)
     # one set of stratified resample indices shared by all metrics (paired across metrics too)
-    idx = [{name: [rng.randrange(len(p)) for _ in p] for name, (p, _) in repos.items()} for _ in range(B)]
-    print("%s vs %s  (paired tasks: %s)" % (arm, base, ", ".join("%s %d" % (n, len(p)) for n, (p, _) in repos.items())))
-    for n, (_, bad) in repos.items():
+    idx = [{name: [rng.randrange(len(p)) for _ in p] for name, (p, _, _) in repos.items()} for _ in range(B)]
+    print("%s vs %s  (paired tasks: %s)" % (arm, base, ", ".join("%s %d" % (n, len(p)) for n, (p, _, _) in repos.items())))
+    for n, (_, bad, unhealthy) in repos.items():
         if bad:
             print("  non-zero exits in %s: %s" % (n, bad))
+        if unhealthy:
+            print("  unhealthy injection (all attempts failed) in %s: %s" % (n, unhealthy))
     print("| metric | " + " | ".join(repos) + " | pooled (ratio of sums) | pooled (repo-balanced) |")
     print("|---" * (len(repos) + 3) + "|")
     for name, f in METRICS.items():
         cells = []
-        for rn, (p, _) in repos.items():
+        for rn, (p, _, _) in repos.items():
             boots = [ratio([p[i] for i in ix[rn]], f) for ix in idx]
             lo, hi = ci(boots)
             wins = sum(f(t) < f(b) for t, b in p)
             cells.append("%+.1f%% [%+.1f, %+.1f] %d/%d" % (100 * ratio(p, f), 100 * lo, 100 * hi, wins, len(p)))
-        allp = [x for p, _ in repos.values() for x in p]
+        allp = [x for p, _, _ in repos.values() for x in p]
         pooled_boot = [ratio([repos[rn][0][i] for rn in repos for i in ix[rn]], f) for ix in idx]
         lo, hi = ci(pooled_boot)
         wins = sum(f(t) < f(b) for t, b in allp)
         cells.append("**%+.1f%%** [%+.1f, %+.1f] %d/%d" % (100 * ratio(allp, f), 100 * lo, 100 * hi, wins, len(allp)))
         bal = lambda ix: sum(ratio([repos[rn][0][i] for i in ix[rn]], f) for rn in repos) / len(repos)
-        point = sum(ratio(p, f) for p, _ in repos.values()) / len(repos)
+        point = sum(ratio(p, f) for p, _, _ in repos.values()) / len(repos)
         lo, hi = ci([bal(ix) for ix in idx])
         cells.append("%+.1f%% [%+.1f, %+.1f]" % (100 * point, 100 * lo, 100 * hi))
         print("| %s | %s |" % (name, " | ".join(cells)))
     for name, f in QUALITY.items():
         cells = []
-        for rn, (p, _) in repos.items():
+        for rn, (p, _, _) in repos.items():
             lo, hi = ci([mean_diff([p[i] for i in ix[rn]], f) for ix in idx])
             cells.append("%.3f vs %.3f (%+.3f [%+.3f, %+.3f])" % (
                 sum(f(t) for t, _ in p) / len(p), sum(f(b) for _, b in p) / len(p), mean_diff(p, f), lo, hi))
-        allp = [x for p, _ in repos.values() for x in p]
+        allp = [x for p, _, _ in repos.values() for x in p]
         lo, hi = ci([mean_diff([repos[rn][0][i] for rn in repos for i in ix[rn]], f) for ix in idx])
         cells.append("%.3f vs %.3f (**%+.3f** [%+.3f, %+.3f])" % (
             sum(f(t) for t, _ in allp) / len(allp), sum(f(b) for _, b in allp) / len(allp), mean_diff(allp, f), lo, hi))

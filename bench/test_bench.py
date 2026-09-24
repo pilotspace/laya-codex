@@ -98,6 +98,7 @@ class HookLog(unittest.TestCase):
         self.assertEqual(h["injected_tokens"], 100 + 10 + 20)
         self.assertEqual(h["prompt_injected_tokens"], [100, 20])
         self.assertEqual(h["hook_actions"], {"index_started": 1, "inject": 2, "narrow_read": 1})
+        self.assertEqual(h["prompt_actions"], ["inject", "inject"])
 
     def test_older_builds_without_rank_fields_record_unknown(self):
         h = runs.read_hook_log(write([{"event": "UserPromptSubmit", "action": "inject", "injected_chars": 7}]))
@@ -105,7 +106,45 @@ class HookLog(unittest.TestCase):
 
     def test_missing_log(self):
         h = runs.read_hook_log("/nonexistent/hooklog.jsonl")
-        self.assertEqual((h["injected_tokens"], h["rank_modes"]), (0, []))
+        self.assertEqual((h["injected_tokens"], h["rank_modes"], h["prompt_actions"]), (0, [], []))
+
+    def test_prompt_actions_records_the_failure_that_hit_each_prompt(self):
+        log = write([
+            {"event": "UserPromptSubmit", "action": "inject", "injected_chars": 100},
+            {"event": "UserPromptSubmit", "action": "query_failed", "injected_chars": 0},
+        ])
+        h = runs.read_hook_log(log)
+        self.assertEqual(h["prompt_actions"], ["inject", "query_failed"])
+
+
+class LoadRunsInjectionHealth(unittest.TestCase):
+    """runs.load_runs prefers a healthy rerun over an unhealthy row for the same (arm, task)."""
+
+    def test_unhealthy_row_dropped_once_a_healthy_row_exists(self):
+        by = runs.load_runs(write([
+            row("laya", "t1", 0, injection_ok=False, wall_s=50.0),
+            row("laya", "t1", 1, injection_ok=True, wall_s=10.0),
+        ]))
+        self.assertEqual(by["laya"]["t1"]["wall_s"], 10.0)
+        self.assertEqual(by["laya"]["t1"]["reps"], 1)
+        self.assertNotIn("unhealthy", by["laya"]["t1"])
+
+    def test_all_unhealthy_rows_are_kept_and_flagged(self):
+        by = runs.load_runs(write([row("laya", "t1", 0, injection_ok=False, wall_s=50.0)]))
+        self.assertEqual(by["laya"]["t1"]["wall_s"], 50.0)
+        self.assertTrue(by["laya"]["t1"]["unhealthy"])
+
+    def test_baseline_rows_without_the_field_are_never_dropped(self):
+        by = runs.load_runs(write([row("baseline", "t1", 0), row("baseline", "t1", 1)]))
+        self.assertEqual(by["baseline"]["t1"]["reps"], 2)
+        self.assertNotIn("unhealthy", by["baseline"]["t1"])
+
+    def test_older_rows_without_injection_ok_are_unaffected(self):
+        old = row("laya", "t1", 0)
+        del old["rc"]
+        by = runs.load_runs(write([row("laya", "t1", 0), row("laya", "t1", 1)]))
+        self.assertEqual(by["laya"]["t1"]["reps"], 2)
+        self.assertNotIn("unhealthy", by["laya"]["t1"])
 
 
 class RunBench(unittest.TestCase):
@@ -141,6 +180,64 @@ class RunBench(unittest.TestCase):
         self.assertIn(fake_bin, settings)
         self.assertNotIn("@LAYA_CODEX_BIN@", settings)
         self.assertTrue(os.path.exists(os.path.join(cfg, "laya-mcp.v030.json")))
+
+    def test_injection_ok_when_every_prompt_got_a_clean_inject(self):
+        self.assertTrue(self.rb.injection_health(["inject", "inject"], 2))
+
+    def test_injection_not_ok_on_a_daemon_failure_action(self):
+        self.assertFalse(self.rb.injection_health(["inject", "query_failed"], 2))
+        self.assertFalse(self.rb.injection_health(["daemon_unavailable"], 1))
+
+    def test_injection_not_ok_when_fewer_userpromptsubmit_entries_than_prompts_sent(self):
+        # e.g. the session died after turn 1 and the follow-up's hook never ran
+        self.assertFalse(self.rb.injection_health(["inject"], 2))
+
+    def test_injection_ok_on_ordinary_non_failure_skips(self):
+        # already_in_context / no_spans / skip_prompt are normal outcomes, not daemon failures
+        self.assertTrue(self.rb.injection_health(["inject", "already_in_context"], 2))
+
+    def test_arm_versions_are_cached_per_resolved_binary_and_baseline_is_none(self):
+        calls = []
+
+        def fake_version(path):
+            calls.append(path)
+            return "laya-codex 0.3.0"
+
+        specs = [("baseline", None, None), ("laya-adaptive", "laya-adaptive", None),
+                  ("v030", "laya-adaptive", "/x/v030")]
+        versions = self.rb.arm_versions(specs, version_of=fake_version)
+        self.assertIsNone(versions["baseline"])
+        self.assertEqual(versions["laya-adaptive"], "laya-codex 0.3.0")
+        self.assertEqual(versions["v030"], "laya-codex 0.3.0")
+        self.assertEqual(len(calls), 2)  # default binary once, v030's own binary once
+        self.assertIn("/x/v030", calls)
+
+    def test_rerun_unhealthy_excludes_unhealthy_rows_from_done_but_still_counts_their_spend(self):
+        path = write([row("laya", "t1", 0, injection_ok=False, cost_usd=0.5),
+                      row("laya", "t2", 0, injection_ok=True, cost_usd=0.3),
+                      row("baseline", "t1", 0, cost_usd=0.2)])
+        done, spent = self.rb.done_set(path, rerun_unhealthy=True)
+        self.assertEqual(done, {("laya", "t2", 0), ("baseline", "t1", 0)})
+        self.assertAlmostEqual(spent, 1.0)
+
+        done2, spent2 = self.rb.done_set(path, rerun_unhealthy=False)
+        self.assertEqual(done2, {("laya", "t1", 0), ("laya", "t2", 0), ("baseline", "t1", 0)})
+        self.assertAlmostEqual(spent2, 1.0)
+
+    def test_done_set_of_a_missing_file_is_empty(self):
+        done, spent = self.rb.done_set("/nonexistent/runs.jsonl", rerun_unhealthy=True)
+        self.assertEqual((done, spent), (set(), 0.0))
+
+
+class StatsPooledMetrics(unittest.TestCase):
+    def test_output_tokens_is_appended_after_the_existing_metrics(self):
+        import stats_pooled
+        keys = list(stats_pooled.METRICS)
+        self.assertEqual(keys[-1], "output tokens")
+        self.assertEqual(keys[:-1], ["code-reading tokens", "reading+injected tokens", "total input tokens",
+                                     "wall seconds", "turns", "cost usd"])
+        self.assertEqual(stats_pooled.METRICS["output tokens"]({"output_tokens": 123}), 123)
+        self.assertEqual(stats_pooled.METRICS["output tokens"]({"output_tokens": None}), 0)
 
 
 if __name__ == "__main__":

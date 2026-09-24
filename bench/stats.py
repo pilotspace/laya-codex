@@ -28,6 +28,8 @@ METRICS = {
     "wall seconds": lambda r: r["wall_s"],
     "turns": lambda r: r["num_turns"] or 0,
     "cost usd": lambda r: r["cost_usd"] or 0,
+    # Output tokens drive wall time (wall ~ 5.2 + 10.8*output_ktok): a time proxy.
+    "output tokens": lambda r: r["output_tokens"] or 0,
 }
 rng = random.Random(0)
 B = 10000

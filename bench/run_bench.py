@@ -5,13 +5,23 @@ total input tokens, cost, wall-clock, turns, and answer accuracy (gold files fro
 
     python3 bench/run_bench.py tasks --repo <clone> --skip 40 --n 20 --out bench/tasks.jsonl
     python3 bench/run_bench.py run --repo <clone> --tasks bench/tasks.jsonl --arms baseline,laya \
-        --out bench/results/<name> [--model sonnet] [--limit N]
+        --out bench/results/<name> [--model sonnet] [--limit N] [--effort medium] [--rerun-unhealthy]
     python3 bench/run_bench.py report --out bench/results/<name>
 
 Arms are `name[:template][@binary]` (bench/runs.py): `baseline`, `laya-adaptive`, or e.g.
 `v030:laya-adaptive@/opt/v030/laya-codex` to compare two builds with the same hooks. An arm with its
 own binary gets its own LAYA_CODEX_HOME and Moon port under <out>/homes/, so its daemon serves only it.
 `--repeat N` runs every task N times per arm; the stats average the repeats of a task before pairing.
+
+`--effort` (default "medium") is set as `CLAUDE_EFFORT` explicitly for every session, so a run is
+pinned to the value on the command line rather than whatever the parent shell happened to export.
+Each row also records `claude_version`, and `laya_version` (the arm's `laya-codex --version`, None
+for baseline) so a run can be told apart from a different binary or CLI build after the fact.
+
+Each row of a laya arm records `injection_ok`: whether every prompt of the session got a clean
+laya-codex injection (see `injection_health` / `DAEMON_FAILURE_ACTIONS`). `--rerun-unhealthy` treats
+rows with `injection_ok: false` as not done, so the next `run` retries just those sessions; the old,
+unhealthy row is left in runs.jsonl (bench/runs.py's `load_runs` prefers the healthy rerun over it).
 """
 import argparse
 import json
@@ -78,9 +88,64 @@ def make_tasks(args):
 
 MOON_PORT_BASE = 16500
 
+# Skip actions crates/laya-cli/src/hook.rs returns only when the daemon call itself failed or was
+# unreachable -- "query_failed" from the UserPromptSubmit handler (`user_prompt`), "daemon_unavailable"
+# from the Read/Agent/compact hooks that also call the daemon. Distinct from ordinary skip reasons
+# (e.g. "already_in_context", "skip_prompt", "no_spans") which are not injection failures.
+DAEMON_FAILURE_ACTIONS = {"query_failed", "daemon_unavailable"}
+
+
+def injection_health(prompt_actions, n_prompts):
+    """False if a UserPromptSubmit hook entry hit a daemon failure (Moon disk guard etc, v8's
+    `query_failed` incident) or fewer UserPromptSubmit entries were logged than prompts were sent
+    (the session died, or hooks were not wired up, before a later prompt's hook could run)."""
+    if any(a in DAEMON_FAILURE_ACTIONS for a in prompt_actions):
+        return False
+    return len(prompt_actions) >= n_prompts
+
 
 def default_bin():
     return os.environ.get("LAYA_CODEX_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya-codex"))
+
+
+def _cli_version(cmd):
+    """`<cmd> --version`, or None if the binary is missing or times out."""
+    try:
+        p = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=30)
+        return p.stdout.strip() or None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def arm_versions(specs, version_of=_cli_version):
+    """{arm name: laya-codex --version}, None for baseline. Run once per distinct resolved binary
+    path (cached), since several arms commonly share the default binary."""
+    cache, versions = {}, {}
+    for name, template, binary in specs:
+        if template is None:
+            versions[name] = None
+            continue
+        path = os.path.abspath(binary or default_bin())
+        if path not in cache:
+            cache[path] = version_of(path)
+        versions[name] = cache[path]
+    return versions
+
+
+def done_set(res_path, rerun_unhealthy):
+    """((arm, task_id, rep) already run, $ already spent) from an existing runs.jsonl. With
+    `--rerun-unhealthy`, a row whose injection failed (`injection_ok: false`) does not count as
+    done -- the plan reruns it -- but its cost still counts toward `--max-total-usd`, since it was
+    already spent. The old row is left in place; runs.py's `load_runs` prefers the healthy rerun."""
+    done, spent = set(), 0.0
+    if not os.path.exists(res_path):
+        return done, spent
+    for r in map(json.loads, open(res_path)):
+        spent += r.get("cost_usd") or 0
+        if rerun_unhealthy and r.get("injection_ok") is False:
+            continue
+        done.add((r["arm"], r["task_id"], r.get("rep", 0)))
+    return done, spent
 
 
 def render_configs(out_dir, specs):
@@ -200,7 +265,7 @@ def run_name(task_id, arm, rep):
     return "%s_%s" % (task_id, arm) + ("_r%d" % rep if rep else "")
 
 
-def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None):
+def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None, versions=None, claude_version=None):
     """One task = one Claude session of `args.turns` prompts (turn 2+ resume the same session)."""
     import uuid
     hook_log = os.path.join(args.out, "hooklogs", run_name(task["id"], arm, rep) + ".jsonl")
@@ -209,13 +274,16 @@ def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None):
         os.remove(hook_log)
     # LAYA_CODEX_MEMO=0: score every prompt cold, as a new prompt is in real use; otherwise whichever arm
     # runs a task first pays the model run and the others hit its cache.
+    # CLAUDE_EFFORT is set explicitly (not just inherited) so every arm is pinned to --effort rather
+    # than whatever the parent shell happens to export (v8 silently ran the whole benchmark at medium).
     env = dict(os.environ, LAYA_CODEX_HOOK_LOG=hook_log, LAYA_CODEX_MEMO=os.environ.get("LAYA_CODEX_MEMO", "0"),
-               **(extra_env or {}))
+               CLAUDE_EFFORT=args.effort, **(extra_env or {}))
     prompts = [PROMPT.format(task=task["task"])] + [FOLLOWUP] * (args.turns - 1)
     sid = str(uuid.uuid4())
     all_lines, wall, rcs = [], 0.0, []
     agg = {"reading_tokens": 0, "total_in": 0, "output": 0, "cost": 0.0, "turns": 0, "tool_calls": {}}
     answers = []
+    prompt_output_tokens, prompt_answer_chars, prompt_turns, prompt_wall_s = [], [], [], []
     for k, prompt in enumerate(prompts):
         flags = (["--no-session-persistence"] if args.turns == 1 else ["--session-id", sid]) if k == 0 else ["--resume", sid]
         lines, rc, w = _claude(prompt, arm, args, cfg_dir, env, flags)
@@ -232,14 +300,28 @@ def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None):
         for t, n in r["tool_calls"].items():
             agg["tool_calls"][t] = agg["tool_calls"].get(t, 0) + n
         answers.append(r["result"])
+        # Per-prompt breakdown (a timeout truncates the stream, so a later prompt's parse_stream sees
+        # no "result" event: output tokens 0, turns 0, empty answer -- consistent with the aggregates).
+        prompt_output_tokens.append(u.get("output_tokens") or 0)
+        prompt_answer_chars.append(len(r["result"] or ""))
+        prompt_turns.append(r["num_turns"] or 0)
+        prompt_wall_s.append(round(w, 2))
     h = read_hook_log(hook_log)
-    row = {"arm": arm, "task_id": task["id"], "rep": rep, "model": args.model, "wall_s": round(wall, 2), "rc": rcs,
+    injection_ok = injection_health(h["prompt_actions"], len(prompts)) if arm != "baseline" else None
+    if injection_ok is False:
+        print("WARNING: unhealthy injection for %s (prompt_actions=%s, %d/%d prompts logged)" % (
+            run_name(task["id"], arm, rep), h["prompt_actions"], len(h["prompt_actions"]), len(prompts)), flush=True)
+    row = {"arm": arm, "task_id": task["id"], "rep": rep, "model": args.model, "effort": args.effort,
+           "laya_version": (versions or {}).get(arm), "claude_version": claude_version,
+           "wall_s": round(wall, 2), "rc": rcs,
            "total_input_tokens": agg["total_in"], "output_tokens": agg["output"], "reading_tokens": agg["reading_tokens"],
            "injected_tokens": h["injected_tokens"], "cost_usd": round(agg["cost"], 6), "num_turns": agg["turns"],
            "tool_calls": agg["tool_calls"], "hook_actions": h["hook_actions"], "prompts": len(prompts),
            # How each prompt was ranked (laya / laya-partial / lexical; None from builds that do not log it).
            "rank_modes": h["rank_modes"], "scored": h["scored"], "offered": h["offered"],
-           "prompt_injected_tokens": h["prompt_injected_tokens"]}
+           "prompt_injected_tokens": h["prompt_injected_tokens"], "injection_ok": injection_ok,
+           "prompt_output_tokens": prompt_output_tokens, "prompt_answer_chars": prompt_answer_chars,
+           "prompt_turns": prompt_turns, "prompt_wall_s": prompt_wall_s}
     row.update(grade(answers[0], task["gold"]))
     if len(answers) > 1:
         named = [n for a in answers for n in grade(a, task["gold"])["named"]]
@@ -264,13 +346,11 @@ def run(args):
         sys.exit("duplicate arm names in --arms")
     os.makedirs(os.path.join(args.out, "raw"), exist_ok=True)
     res_path = os.path.join(args.out, "runs.jsonl")
-    done, spent = set(), 0.0
-    if os.path.exists(res_path):
-        for r in map(json.loads, open(res_path)):
-            done.add((r["arm"], r["task_id"], r.get("rep", 0)))
-            spent += r.get("cost_usd") or 0
+    done, spent = done_set(res_path, args.rerun_unhealthy)
     cfg_dir = render_configs(args.out, specs)
     envs = arm_env(args.out, specs)
+    versions = arm_versions(specs)
+    claude_version = _cli_version("claude")
     # Restart each daemon so the first hook starts it with this run's environment (LAYA_CODEX_MEMO etc.).
     for name, template, binary in specs:
         if template is not None:
@@ -282,7 +362,7 @@ def run(args):
         if args.max_total_usd and spent >= args.max_total_usd:
             print("stopping: spent $%.2f of the $%.2f cap (--max-total-usd); rerun to resume" % (spent, args.max_total_usd))
             break
-        row, lines = run_one(arm, task, args, cfg_dir, rep, envs[arm])
+        row, lines = run_one(arm, task, args, cfg_dir, rep, envs[arm], versions, claude_version)
         spent += row["cost_usd"] or 0
         with open(os.path.join(args.out, "raw", run_name(task["id"], arm, rep) + ".jsonl"), "w") as f:
             f.write("\n".join(lines))
@@ -359,6 +439,9 @@ def main():
     r.add_argument("--repeat", type=int, default=1, help="sessions per task and arm; the stats average them")
     r.add_argument("--max-total-usd", type=float, default=0.0,
                    help="stop starting sessions once the run (with resumed rows) has spent this much; 0 = no cap")
+    r.add_argument("--effort", default="medium", help="CLAUDE_EFFORT, set explicitly for every session (not inherited)")
+    r.add_argument("--rerun-unhealthy", action="store_true",
+                   help="rows whose laya-codex injection failed (injection_ok: false) do not count as done")
     p = sub.add_parser("report")
     p.add_argument("--out", required=True)
     args = ap.parse_args()
