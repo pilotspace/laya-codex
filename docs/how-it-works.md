@@ -106,13 +106,14 @@ Code replaces hook output over 10,000 characters with a file preview.
   set the number: the third block was the largest and the least often right (22% vs 52% and 33%),
   and dropping it cut the injection by a quarter. Any span that doesn't fit stays in the map
   without its code; code is never cut mid-span.
-- **Batch reads.** Claude otherwise Reads around an inlined block, or another listed span of the
+- **Batch reads** (opt-in, `LAYA_CODEX_BATCH_READS=1`). Claude otherwise Reads around an inlined block, or another listed span of the
   same file, in later turns (in benchmark v2, 43% of its Reads after an injection went to a file
   whose code was already inlined). So the top file's block is widened by 30 lines each side and
   snapped to the indexed chunks at its edges, and one more listed span of each inlined file is
   inlined too, merged when they touch, at most 150 lines per file. The added spans are dropped
   first when the 9,500-character cap is tight. The footer also asks Claude to Read several listed
-  locations in one message. `LAYA_CODEX_BATCH_READS=0` turns all three off.
+  locations in one message. It is off by default: in a pilot it enlarged whatever ranked first,
+  which was often not the code the task needed, and added text without saving Read turns.
 - **Prefetch on Read** (opt-in, `LAYA_CODEX_PREFETCH=1`). On the first Read after a prompt, the
   hook attaches the next ranked code of up to two other files the session does not have yet,
   checked against disk, at most 4,000 characters. It adds `additionalContext` only: the Read and

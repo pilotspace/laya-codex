@@ -98,14 +98,10 @@ pub struct RenderReq {
     /// Size adaptively (scope + calibrated P) and skip spans already sent in this session;
     /// `false` = the fixed compact format.
     pub adaptive: bool,
-    /// Batch reads (adaptive only): widen the top block into its surroundings, add another
-    /// listed span of each inlined file, and ask for parallel Reads. Absent (older hooks) = on.
-    #[serde(default = "yes")]
+    /// Batch reads (adaptive only, opt-in): widen the top block into its surroundings, add
+    /// another listed span of each inlined file, and ask for parallel Reads. Absent = off.
+    #[serde(default)]
     pub batch_reads: bool,
-}
-
-fn yes() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -189,6 +185,17 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn batch_reads_are_off_unless_the_hook_asks() {
+        let old: RenderReq =
+            serde_json::from_str(r#"{"budget_tokens":3500,"related":true,"adaptive":true}"#)
+                .unwrap();
+        assert!(
+            !old.batch_reads,
+            "a hook that does not send the field gets no batch reads"
+        );
     }
 
     #[test]

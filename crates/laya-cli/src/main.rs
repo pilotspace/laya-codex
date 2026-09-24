@@ -426,9 +426,11 @@ fn hook_inner(cfg: &Config) {
         related: std::env::var("LAYA_CODEX_RELATED")
             .map(|v| v != "0")
             .unwrap_or(true),
+        // Opt-in: in the pilot, widening and bundling enlarged whatever ranked first, which was
+        // often not the code the task needed, and added text without saving Read turns.
         batch_reads: std::env::var("LAYA_CODEX_BATCH_READS")
-            .map(|v| v != "0")
-            .unwrap_or(true),
+            .map(|v| v == "1")
+            .unwrap_or(false),
         prefetch: std::env::var("LAYA_CODEX_PREFETCH")
             .map(|v| v == "1")
             .unwrap_or(false),
