@@ -33,33 +33,46 @@ def svg(w, h, body, t, title):
 
 
 def savings(d, t):
-    """Horizontal bars: how much less each metric costs with laya-codex, with the 95% CI."""
-    rows = list(d["metrics"].values())
+    """Horizontal bars: change per metric with laya-codex, with the 95% CI.
+
+    Reductions grow to the right of zero, increases to the left. A metric whose CI crosses zero is
+    drawn grey (no measurable effect)."""
+    keys = d.get("chart_metrics") or list(d["metrics"])
+    rows = [d["metrics"][k] for k in keys]
     w, left, right, top, row_h = 760, 200, 60, 74, 44
     h = top + row_h * len(rows) + 46
-    span = max(abs(r["lo"]) for r in rows)
-    scale = (w - left - right) / (span * 1.08)
+    less = max(max(-r["lo"] for r in rows), 0)  # largest reduction
+    more = max(max(r["hi"] for r in rows), 0)   # largest increase
+    scale = (w - left - right) / ((less + more) * 1.08)
+    zero = left + more * 1.04 * scale
+    xv = lambda v: zero - v * scale
+    title = d.get("chart_title", "With laya-codex, Claude Code spends less on every measure")
     body = [
-        text(24, 32, f"With laya-codex, Claude Code spends less on every measure", 17, t["fg"], weight="600"),
+        text(24, 32, title, 17, t["fg"], weight="600"),
         text(24, 54, f"Paired change vs stock Claude Code · {d['n_tasks']} tasks · {', '.join(d['repos'])} · "
-                     f"{d['model']} · 95% bootstrap CI", 12, t["muted"]),
+                     f"{d['model']} · 95% bootstrap CI" + (" · grey = no significant change" if more else ""),
+             12, t["muted"]),
     ]
-    for tick in range(0, int(span * 1.08) + 1, 10):
-        x = left + tick * scale
+    for tick in range(-int(more), int(less * 1.08) + 1):
+        if tick % 10:
+            continue
+        x = xv(-tick)
         body.append(f'<line x1="{x:.1f}" y1="{top - 8}" x2="{x:.1f}" y2="{h - 40}" stroke="{t["grid"]}" stroke-width="1"/>')
-        body.append(text(x, h - 22, f"−{tick}%" if tick else "0", 11, t["muted"], "middle"))
+        label = f"−{tick}%" if tick > 0 else (f"+{-tick}%" if tick < 0 else "0")
+        body.append(text(x, h - 22, label, 11, t["muted"], "middle"))
     for i, r in enumerate(rows):
         y = top + i * row_h
         cy = y + row_h / 2 - 4
         body.append(text(left - 14, cy + 5, r["label"], 14, t["fg"], "end"))
-        bw = abs(r["pct"]) * scale
-        body.append(f'<rect x="{left}" y="{cy - 12:.1f}" width="{bw:.1f}" height="24" rx="4" fill="{t["laya"]}"/>')
-        x1, x2 = left + abs(r["hi"]) * scale, left + abs(r["lo"]) * scale
+        color = t["laya"] if r["hi"] < 0 else t["base"]
+        bx = min(zero, xv(r["pct"]))
+        body.append(f'<rect x="{bx:.1f}" y="{cy - 12:.1f}" width="{abs(r["pct"]) * scale:.1f}" height="24" rx="4" fill="{color}"/>')
+        x1, x2 = xv(r["hi"]), xv(r["lo"])
         body.append(f'<line x1="{x1:.1f}" y1="{cy:.1f}" x2="{x2:.1f}" y2="{cy:.1f}" stroke="{t["ci"]}" stroke-width="1.5"/>')
         for x in (x1, x2):
             body.append(f'<line x1="{x:.1f}" y1="{cy - 6:.1f}" x2="{x:.1f}" y2="{cy + 6:.1f}" stroke="{t["ci"]}" stroke-width="1.5"/>')
         body.append(text(x2 + 8, cy + 5, f"{r['pct']:+.1f}%".replace("-", "−"), 14, t["fg"], weight="600"))
-    return svg(w, h, body, t, "laya-codex benchmark: savings vs stock Claude Code")
+    return svg(w, h, body, t, "laya-codex benchmark: change vs stock Claude Code")
 
 
 def reads(d, t):
@@ -89,7 +102,8 @@ def reads(d, t):
 
 
 def median(xs):
-    s = sorted(xs)
+    """Median turn; None (the task never got there) sorts last, as a very late turn."""
+    s = sorted(float("inf") if x is None else x for x in xs)
     n = len(s)
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
 
@@ -136,7 +150,7 @@ def journey(d, t):
     cx, cy = sx(8.6), sy(0.52)
     body.append(f'<line x1="{sx(0) + 6:.1f}" y1="{sy(at0 / n) + 4:.1f}" x2="{cx - 4:.1f}" y2="{cy - 4:.1f}" stroke="{t["muted"]}" stroke-width="1"/>')
     body.append(text(cx, cy + 4, f"{at0} of {n} tasks: the right code arrives with the prompt", 12, t["fg"], weight="600"))
-    first_b = min(j["baseline"])
+    first_b = min(x for x in j["baseline"] if x is not None)
     body.append(text(sx(first_b) + 8, sy(0) - 10, f"stock: first correct file at turn {first_b}", 12, t["muted"]))
 
     lx, ly = sx(8.6), sy(0.36)

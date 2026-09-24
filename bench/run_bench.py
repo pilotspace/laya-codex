@@ -30,6 +30,13 @@ def git(repo, *args):
     return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, check=True).stdout
 
 
+def is_test_path(path):
+    """Test file by the usual Rust / Python / TS conventions (tests/ dir, test_*.py, *_test.*, *.test.*, *.spec.*)."""
+    base = path.rsplit("/", 1)[-1]
+    return bool(re.search(r"(^|/)(tests?|__tests__)/", path) or base.startswith("test_")
+                or re.search(r"(_test|\.test|\.spec)\.[a-z]+$", base))
+
+
 def make_tasks(args):
     tracked = set(git(args.repo, "ls-files").splitlines())
     log = git(args.repo, "log", "--no-merges", "-n", "2000", "--name-only", "--format=@@%H%x09%s")
@@ -46,6 +53,12 @@ def make_tasks(args):
             continue
         # keep feature/behaviour descriptions; test-only, lint and formatting commits are not "find the code" tasks
         if subj.lower().startswith(("test(", "style", "docs")) or re.search(r"clippy|lint|fmt|typo|RED\b", subj, re.I):
+            continue
+        # --code-only (v8, repos whose tests are separate source files): drop reverts, ruff/mypy fixes (linters
+        # the v7 regex does not name) and commits that touch only tests -- "moving test cases" is not a "find the
+        # code" task. Off by default; the v7 moon task set is unchanged with the flag on (docs/RESULTS.md v8).
+        if getattr(args, "code_only", False) and (subj.lower().startswith("revert") or re.search(r"\bruff\b|\bmypy\b", subj, re.I)
+                                                  or all(is_test_path(g) for g in gold)):
             continue
         tasks.append({"id": sha[:10], "task": subj, "gold": gold})
         if len(tasks) >= args.n:
@@ -287,6 +300,7 @@ def main():
     t.add_argument("--skip", type=int, default=40)
     t.add_argument("--n", type=int, default=20)
     t.add_argument("--out", required=True)
+    t.add_argument("--code-only", action="store_true", help="drop reverts and test-only commits (v8 repos)")
     r = sub.add_parser("run")
     r.add_argument("--repo", required=True)
     r.add_argument("--tasks", required=True)

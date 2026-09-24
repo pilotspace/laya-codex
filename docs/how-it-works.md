@@ -46,7 +46,15 @@ This is the hook input Claude Code sends for a prompt (captured):
 laya-codex uses the git root that contains `cwd` as the repository. It skips the prompt if the prompt
 starts with `/` or `#`, is under 3 characters, or has fewer than 2 content terms. Otherwise it
 asks the daemon to rank the prompt. The daemon has a time budget (`LAYA_CODEX_BUDGET_MS`, default
-1,200 ms) and falls back to the lexical ranking when the budget runs out.
+1,200 ms).
+- **Within the budget:** the model scores candidates best-first in batches of 8. It starts a
+  batch only if the measured speed says it will finish within 85% of the budget.
+- **Out of time:** candidates it didn't reach keep their keyword order below the scored ones.
+- **Lexical fallback:** the lexical ranking is used alone only when nothing was scored in time.
+
+Scoring cost grows with *candidates × (question + chunk) tokens*: about 5,500 tokens/s on an
+Apple-silicon GPU. So all 24 candidates take about 0.6–1.4 s, depending on the prompt's length
+(`crates/laya-model/examples/bench.rs`).
 
 ## 2. How the code is ranked
 
@@ -266,22 +274,26 @@ files and never needed the whole file.
 
 Without laya-codex, Claude Code finds code by searching: Grep, Glob, then whole-file Reads, many of
 them of the wrong file. laya-codex front-loads a small, ranked answer (about 1.5–2.5k tokens), so
-fewer of those steps happen. From [RESULTS.md](RESULTS.md) (v0.1.0 defaults vs stock Claude
-Code, 20 held-out tasks, two prompts per session, paired, Claude Sonnet):
+fewer of those steps happen. From [RESULTS.md](RESULTS.md) (benchmark v2: v0.1.2 defaults vs
+stock Claude Code, 60 tasks on moon, httpx and hono, two prompts per session, paired, Claude
+Sonnet):
 
 | | stock Claude Code | with laya-codex |
 |---|---|---|
-| code-reading tokens (Read/Grep/Glob output) | 100% | **−50.1%** (95% CI −61.6%…−33.0%) |
-| total input tokens | 100% | −26.8% |
-| wall-clock | 100% | −17.4% (CI −31.5%…−1.0%) |
-| read precision | 0.373 | 0.546 |
-| first Read of a gold file | turn 8.2 | turn 4.0 |
-| wasted Read tokens per task | 4,993 | 2,118 |
-| answer recall | 0.975 | 0.933 (difference not significant) |
+| code-reading tokens (Read/Grep/Glob output) | 100% | **−38.2%** (95% CI −50.8%…−21.8%) |
+| turns | 100% | −20.9% (CI −27.7%…−13.7%) |
+| total input tokens | 100% | −3.7% (not significant) |
+| wall-clock | 100% | +3.5% (not significant) |
+| correct code in context before the first turn | 0 of 60 tasks | 46 of 60 tasks |
+| read precision | 0.595 | 0.624 |
+| first Read of a gold file | turn 5.9 | turn 3.3 |
+| wasted Read tokens per task | 2,005 | 1,187 |
+| answer recall, first prompt | 0.815 | 0.899 (+0.083, significant) |
 
-The injected text itself costs tokens. Counting reading and injected tokens together, the saving
-is −27.9%. That is why the injection is capped at 9,500 characters and adaptive mode never
-re-sends code. Inlining more saved little and cost more.
+The injected text itself costs tokens. On small repositories, where stock Claude reads little,
+it roughly cancels the reading it saves (reading plus injected tokens: +7%, not significant,
+pooled). That is why the injection is capped at 9,500 characters and adaptive mode never re-sends
+code. Inlining more saved little and cost more.
 
 ## 7. Tuning
 
@@ -291,7 +303,7 @@ re-sends code. Inlining more saved little and cost more.
 | `LAYA_CODEX_RELATED` | on | `0` drops "Related by references" |
 | `LAYA_CODEX_RENDER` | compact | `full` inlines every span (bigger, and not what the benchmark measured) |
 | `LAYA_CODEX_NO_MODEL` | unset | `1` gives lexical-only ranking with no model load |
-| `LAYA_CODEX_BUDGET_MS` | 1200 | Laya's time budget per prompt. Past it, the lexical ranking is used |
+| `LAYA_CODEX_BUDGET_MS` | 1200 | Laya's time budget per prompt. The model scores as many candidates as fit; the lexical ranking is used only if none do |
 | `LAYA_CODEX_WEIGHT` | 0.5 | Laya's weight in the fusion; `rrf` switches to rank fusion |
 
 ## 8. Troubleshooting with `laya-codex doctor`

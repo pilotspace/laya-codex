@@ -1,0 +1,20 @@
+{"id": "8bf03c377a", "task": "fix(cors): append Origin to Vary header on OPTIONS preflight", "gold": ["src/middleware/cors/index.test.ts", "src/middleware/cors/index.ts"]}
+{"id": "546eca0c40", "task": "fix(etag): avoid skipping headers when filtering 304 response headers", "gold": ["src/middleware/etag/index.test.ts", "src/middleware/etag/index.ts"]}
+{"id": "7195c24860", "task": "fix(etag): copy pending stream bytes", "gold": ["src/middleware/etag/digest.test.ts", "src/middleware/etag/digest.ts", "src/middleware/etag/index.test.ts"]}
+{"id": "4eb022de68", "task": "fix(client): prevent URL corruption when replaceUrlParam contains $ replacement tokens", "gold": ["src/client/utils.test.ts", "src/client/utils.ts"]}
+{"id": "6ea514d6ff", "task": "feat(secure-headers): add missing W3C Permissions-Policy directives", "gold": ["src/middleware/secure-headers/index.test.ts", "src/middleware/secure-headers/permissions-policy.ts"]}
+{"id": "329b6f4686", "task": "fix(client): send falsy JSON bodies", "gold": ["src/client/client.test.ts", "src/client/client.ts"]}
+{"id": "a1e4ac7d46", "task": "perf(cors): pre-join static array header options during initialization", "gold": ["src/middleware/cors/index.test.ts", "src/middleware/cors/index.ts"]}
+{"id": "d982f637eb", "task": "fix(url): strip trailing question mark correctly for optional params with regex quantifiers", "gold": ["src/utils/url.test.ts", "src/utils/url.ts"]}
+{"id": "26de73133b", "task": "fix(etag): stabilize digest across stream chunks", "gold": ["src/middleware/etag/digest.ts", "src/middleware/etag/index.test.ts"]}
+{"id": "f2a72d333a", "task": "fix(client): serialize multiple cookies correctly", "gold": ["src/client/client.test.ts", "src/client/client.ts"]}
+{"id": "8a5852d4c1", "task": "fix(etag): resolve incorrect incremental hashing for chunked responses", "gold": ["src/middleware/etag/digest.ts", "src/middleware/etag/index.test.ts"]}
+{"id": "765d13b009", "task": "fix(jsx): render async children of document metadata tags instead of [object Promise]", "gold": ["src/jsx/intrinsic-element/components.test.tsx", "src/jsx/intrinsic-element/components.ts"]}
+{"id": "13a9481ee1", "task": "fix(secure-headers): output standard empty parentheses () instead of none for disabled Permissions-Policy directives", "gold": ["src/middleware/secure-headers/index.test.ts", "src/middleware/secure-headers/secure-headers.ts"]}
+{"id": "f6aa913c3f", "task": "fix(etag): skip unsafe methods or error responses on non-* case", "gold": ["src/middleware/etag/index.test.ts", "src/middleware/etag/index.ts"]}
+{"id": "cd31bc196e", "task": "fix(utils/stream): re-acquire writer lock when pipe() throws", "gold": ["src/utils/stream.test.ts", "src/utils/stream.ts"]}
+{"id": "569b4191a2", "task": "fix(trie-router): count every slash a pattern consumes", "gold": ["src/router/common.case.test.ts", "src/router/trie-router/node.test.ts", "src/router/trie-router/node.ts"]}
+{"id": "8f07028270", "task": "fix(compress): set Vary: Accept-Encoding on negotiated responses", "gold": ["src/middleware/compress/index.test.ts", "src/middleware/compress/index.ts"]}
+{"id": "8a0b18fd9b", "task": "feat(reg-exp-router): throw UnsupportedPathError during route registration", "gold": ["src/router/reg-exp-router/node.ts", "src/router/reg-exp-router/router.test.ts", "src/router/reg-exp-router/router.ts", "src/router/reg-exp-router/trie.ts"]}
+{"id": "30277aee0d", "task": "feat(jwt,jwk): add a configurable WWW-Authenticate realm", "gold": ["src/middleware/jwk/index.test.ts", "src/middleware/jwk/jwk.ts", "src/middleware/jwt/index.test.ts", "src/middleware/jwt/jwt.ts"]}
+{"id": "1f707c5637", "task": "feat(middleware): add method-not-allowed middleware", "gold": ["src/middleware/method-not-allowed/index.test.ts", "src/middleware/method-not-allowed/index.ts"]}

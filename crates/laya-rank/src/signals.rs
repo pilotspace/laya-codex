@@ -235,6 +235,104 @@ pub fn is_follow_up(prompt: &str) -> bool {
     refers_back && sig.identifiers.is_empty() && sig.paths.is_empty()
 }
 
+/// Quoted passages with at least this many distinct content terms are a task, not a name.
+const MIN_QUOTED_TASK_TERMS: usize = 3;
+
+/// Phrases that mark a sentence as an instruction about the answer or the process rather
+/// than the code ("Be efficient: …", "End your answer with … of the form").
+const OUTPUT_FORMAT_MARKERS: &[&str] = &[
+    "your answer",
+    "your response",
+    "of the form",
+    "answer with",
+    "respond with",
+    "reply with",
+    "output format",
+    "be efficient",
+    "be concise",
+    "be brief",
+    "read only what",
+];
+
+/// The part of `prompt` that describes the task, for BM25 terms and the Laya scorer.
+///
+/// Agent and benchmark prompts wrap the task in instructions ("find the source code that …
+/// FILES: <paths>") whose code-domain words (`source`, `change`, `files`, `paths`) the stoplist
+/// must keep, because in a task they are content. So structure decides instead: a quoted
+/// passage of at least [`MIN_QUOTED_TASK_TERMS`] content terms is the task; otherwise
+/// sentences that instruct the answer's format are dropped. Falls back to the whole prompt
+/// when nothing would remain.
+pub fn task_focus(prompt: &str) -> String {
+    let quoted: Vec<&str> = quoted_passages(prompt)
+        .into_iter()
+        .filter(|q| content_terms(q) >= MIN_QUOTED_TASK_TERMS)
+        .collect();
+    if !quoted.is_empty() {
+        return quoted.join("\n");
+    }
+    let kept: Vec<&str> = sentences(prompt)
+        .into_iter()
+        .filter(|s| !is_output_instruction(s))
+        .collect();
+    if kept.is_empty() || content_terms(&kept.join(" ")) == 0 {
+        return prompt.to_string();
+    }
+    kept.join(" ")
+}
+
+/// Text between straight (`"…"`) or curly (`“…”`) double quotes, trimmed, non-empty.
+fn quoted_passages(prompt: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut open: Option<(usize, char)> = None;
+    for (i, c) in prompt.char_indices() {
+        match (open, c) {
+            (None, '"') => open = Some((i + 1, '"')),
+            (None, '\u{201c}') => open = Some((i + c.len_utf8(), '\u{201d}')),
+            (Some((start, close)), c) if c == close => {
+                let q = prompt[start..i].trim();
+                if !q.is_empty() {
+                    out.push(q);
+                }
+                open = None;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Sentences of `prompt`: split after `.`/`!`/`?` followed by whitespace, and at line breaks.
+fn sentences(prompt: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut chars = prompt.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        let next_is_space = chars.peek().is_none_or(|&(_, n)| n.is_whitespace());
+        let end = match c {
+            '\n' => Some(i),
+            '.' | '!' | '?' if next_is_space => Some(i + 1),
+            _ => None,
+        };
+        if let Some(end) = end {
+            let s = prompt[start..end].trim();
+            if !s.is_empty() {
+                out.push(s);
+            }
+            start = end;
+        }
+    }
+    let s = prompt[start..].trim();
+    if !s.is_empty() {
+        out.push(s);
+    }
+    out
+}
+
+fn is_output_instruction(sentence: &str) -> bool {
+    let lower = sentence.to_lowercase();
+    lower.starts_with("files:") || OUTPUT_FORMAT_MARKERS.iter().any(|m| lower.contains(m))
+}
+
 /// Extract [`PromptSignals`] from a raw user prompt.
 pub fn extract_signals(prompt: &str) -> PromptSignals {
     let terms: Vec<String> = ident::terms(prompt)
@@ -531,5 +629,60 @@ mod tests {
     fn path_mention_is_not_also_counted_as_identifier() {
         let s = extract_signals("fix src/rank/retriever.rs");
         assert!(!s.identifiers.iter().any(|i| i.contains("rs")));
+    }
+
+    const WRAPPED: &str = "In this repository, find the source code that implements or would need \
+        to change for the following change, and briefly explain how it works:\n\n\"Enforce the \
+        mmap budget when sealing vector segments\"\n\nBe efficient: read only what you need. End \
+        your answer with one line exactly of the form\nFILES: <comma-separated repo-relative \
+        paths of the most relevant source files>";
+
+    #[test]
+    fn a_quoted_task_is_the_focus_of_a_wrapped_prompt() {
+        let focus = task_focus(WRAPPED);
+        assert_eq!(
+            focus,
+            "Enforce the mmap budget when sealing vector segments"
+        );
+        let terms = extract_signals(&focus).terms;
+        for wrapper_word in [
+            "source", "code", "change", "files", "paths", "form", "relative",
+        ] {
+            assert!(
+                !terms.iter().any(|t| t == wrapper_word),
+                "{wrapper_word} leaked"
+            );
+        }
+    }
+
+    #[test]
+    fn curly_quotes_count_as_a_quoted_task() {
+        let p = "Please look into this: \u{201c}retry the upload when the socket resets\u{201d}";
+        assert_eq!(task_focus(p), "retry the upload when the socket resets");
+    }
+
+    #[test]
+    fn short_quotes_do_not_replace_the_prompt() {
+        let p = "rename \"foo\" to \"bar\" in the config loader";
+        assert_eq!(task_focus(p), p);
+    }
+
+    #[test]
+    fn output_format_sentences_are_dropped() {
+        let p = "Fix the wal replay ordering after a crash. Be efficient: read only what you need. \
+                 End your answer with one line of the form\nFILES: <paths>";
+        assert_eq!(task_focus(p), "Fix the wal replay ordering after a crash.");
+    }
+
+    #[test]
+    fn task_sentences_about_reading_or_files_are_kept() {
+        let p = "Make the read path skip files that end with a slash. Keep the fast path as is.";
+        assert_eq!(task_focus(p), p);
+    }
+
+    #[test]
+    fn a_prompt_that_is_all_instructions_is_kept_whole() {
+        let p = "Be concise. Reply with the answer only.";
+        assert_eq!(task_focus(p), p);
     }
 }
