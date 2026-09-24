@@ -54,7 +54,9 @@ All notable changes to this project are documented here. The format follows
   not change (+3.5%, not significant). The earlier −50% reading / −17% time result on moon did not
   replicate.
 - The README states what the model-vs-keywords comparison showed (no end-to-end gain yet, sessions
-  13% longer) and why the Laya model stays on by default.
+  13% longer) and why the Laya model stays on by default. A caveat in `docs/RESULTS.md` adds that
+  the model probably fell back to keyword ranking on part of that run's prompts, which it didn't
+  record, so the comparison is inconclusive.
 
 ### Benchmark tooling
 - `bench/stats_pooled.py` and `bench/headline.py` for multi-repository runs; `read_accuracy.py`
