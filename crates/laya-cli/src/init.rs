@@ -168,6 +168,16 @@ fn is_assignment(w: &Word) -> bool {
         })
 }
 
+/// The program a command runs, as the shell reads it: leading `NAME=value` assignments skipped,
+/// quotes removed. `None` if `cmd` is not a plain command line (see `shell_words`) or has no
+/// program.
+pub fn command_program(cmd: &str) -> Option<String> {
+    shell_words(cmd)?
+        .into_iter()
+        .find(|w| !is_assignment(w))
+        .map(|w| w.text)
+}
+
 /// Is `cmd` a laya-codex hook command? Exactly: optional `NAME=value` assignments (laya-codex
 /// writes `LAYA_CODEX_ADAPTIVE=1`), then a program that is `laya-codex` or a path whose file name
 /// is `laya-codex`, then `hook` and nothing else. `laya-codex hook`, `/abs/laya-codex hook` and

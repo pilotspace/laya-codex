@@ -45,6 +45,9 @@ All notable changes to this project are documented here. The format follows
   with reworded instructions, and 49 either way with free-form prompts.
 
 ### Fixed
+- `laya-codex doctor` reported FAIL for hooks whose command sets environment variables to paths
+  (`LAYA_CODEX_HOME=/… laya-codex hook`): it took the assignments for the program. It now reads
+  the command the way the hook matcher does.
 - **The Laya model no longer silently drops out under load.**
 
   *The problem:*

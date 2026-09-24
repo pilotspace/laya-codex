@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::client::Client;
 use crate::config::{Config, INSTALL_SH, MOON_FIX, is_executable, model_candidates};
 use crate::hook::DaemonApi;
-use crate::init::{HOOK_EVENTS, is_laya_hook};
+use crate::init::{HOOK_EVENTS, command_program, is_laya_hook};
 use crate::protocol::{Request, Response};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -432,20 +432,10 @@ pub fn check_hooks_with(root: &Path, home: &Path) -> Check {
     )
 }
 
-/// The executable of a laya-codex hook command: env assignments dropped, shell quotes removed.
+/// The executable of a laya-codex hook command, parsed the way `is_laya_hook` reads it:
+/// `NAME=value` assignments dropped (values may be paths), shell quotes removed.
 fn hook_exe(cmd: &str) -> String {
-    let mut head = cmd.trim().strip_suffix(" hook").unwrap_or(cmd).trim();
-    while let Some((tok, rest)) = head.split_once(' ')
-        && tok.contains('=')
-        && !tok.starts_with('\'')
-        && !tok.contains('/')
-    {
-        head = rest.trim_start();
-    }
-    match head.strip_prefix('\'').and_then(|h| h.strip_suffix('\'')) {
-        Some(inner) => inner.replace(r"'\''", "'"),
-        None => head.to_string(),
-    }
+    command_program(cmd).unwrap_or_else(|| cmd.trim().to_string())
 }
 
 fn exe_found(exe: &str) -> bool {
@@ -631,6 +621,59 @@ pub fn run(cfg: &Config, root: &Path, start: bool) -> Vec<Check> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn hook_exe_skips_env_assignments_whose_values_are_paths() {
+        assert_eq!(
+            hook_exe(
+                "LAYA_CODEX_HOME=/tmp/h LAYA_CODEX_MOON_BIN=/tmp/w.sh /usr/local/bin/laya-codex hook"
+            ),
+            "/usr/local/bin/laya-codex"
+        );
+    }
+
+    #[test]
+    fn hook_exe_reads_plain_quoted_and_escaped_programs() {
+        assert_eq!(hook_exe("laya-codex hook"), "laya-codex");
+        assert_eq!(
+            hook_exe("LAYA_CODEX_ADAPTIVE=1 laya-codex hook"),
+            "laya-codex"
+        );
+        assert_eq!(hook_exe("X=1 '/a b/laya-codex' hook"), "/a b/laya-codex");
+        assert_eq!(hook_exe(r"'/it'\''s/laya-codex' hook"), "/it's/laya-codex");
+        // A path containing `=` is a program, not an assignment.
+        assert_eq!(hook_exe("/opt/a=b/laya-codex hook"), "/opt/a=b/laya-codex");
+    }
+
+    #[test]
+    fn hooks_with_env_prefixed_commands_pass_when_the_program_exists() {
+        let root = scratch("envprefix");
+        let exe = root.join("bin/laya-codex");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        script(&exe, "");
+        let cmd = format!(
+            "LAYA_CODEX_HOME={} LAYA_CODEX_MEMO=0 {} hook",
+            root.join("home").display(),
+            exe.display()
+        );
+        let hooks: serde_json::Map<String, Value> = HOOK_EVENTS
+            .iter()
+            .map(|(e, ..)| {
+                (
+                    e.to_string(),
+                    json!([{"hooks": [{"type": "command", "command": cmd}]}]),
+                )
+            })
+            .collect();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(
+            root.join(".claude/settings.local.json"),
+            json!({ "hooks": hooks }).to_string(),
+        )
+        .unwrap();
+        let c = check_hooks_with(&root, &root.join("nohome"));
+        assert_eq!(c.level, Level::Pass, "{}", c.detail);
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("laya-doctor-{tag}-{}", std::process::id()));
