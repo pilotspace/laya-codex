@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use laya_core::QueryResult;
 use laya_core::{Chunk, Scorer, Store};
-use laya_rank::{FollowUpIntent, Retriever, RetrieverConfig, SizeOpts, SizingPolicy, SpanKey};
+use laya_rank::{FollowUpIntent, Retriever, RetrieverConfig, SizeOpts, SpanKey};
 
 use crate::config::{Config, rel_path, repo_root};
 use crate::indexer;
@@ -152,7 +152,6 @@ impl Scorer for MemoScorer {
 pub struct Daemon {
     pub store: Arc<dyn Store>,
     pub scorer: RwLock<Option<Arc<dyn Scorer>>>,
-    pub sizing: SizingPolicy,
     pub sessions: Mutex<Sessions>,
     pub indexing: Mutex<HashSet<String>>,
     pub base_cfg: RetrieverConfig,
@@ -181,19 +180,17 @@ const FOLLOW_UP_TEST_REFS: usize = 4;
 impl Daemon {
     #[cfg(test)]
     pub fn new(store: Arc<dyn Store>, base_cfg: RetrieverConfig) -> Arc<Self> {
-        Self::with_options(store, base_cfg, SizingPolicy::default(), None)
+        Self::with_options(store, base_cfg, None)
     }
 
     pub fn with_options(
         store: Arc<dyn Store>,
         base_cfg: RetrieverConfig,
-        sizing: SizingPolicy,
         small_repo_files: Option<usize>,
     ) -> Arc<Self> {
         Arc::new(Daemon {
             store,
             scorer: RwLock::new(None),
-            sizing,
             sessions: Mutex::new(Sessions::default()),
             indexing: Mutex::new(HashSet::new()),
             base_cfg,
@@ -269,7 +266,7 @@ impl Daemon {
             caps,
             inline_prose: laya_rank::asks_for_non_code(prompt),
         };
-        let mut ctx = laya_rank::size_context_opts(result, &opts, &self.sizing, &already);
+        let mut ctx = laya_rank::size_context_opts(result, &opts, &already);
         self.keep_only_current_code(root, id, &mut ctx);
         if !req.related {
             ctx.related.clear();
@@ -872,16 +869,6 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     }
     let state_tokens = env_num::<usize>("LAYA_CODEX_STATE_TOKENS").unwrap_or(128);
     eprintln!("[laya-codex] retriever config {base:?} state_tokens={state_tokens}");
-    // Rank-based by default (thresholds 0 = full code for the top spans by fused rank, capped by
-    // scope). Laya's P scale shifts with prompt wording, so on agent-wrapped prompts every P
-    // threshold lost gold coverage vs the fused rank at equal code volume (bench/size_sweep.py on
-    // --template bench/alt dumps). Adaptive's gain is the session delta, not P thresholds.
-    let sizing = SizingPolicy {
-        tau_full: env_num::<f32>("LAYA_CODEX_TAU_FULL").unwrap_or(0.0),
-        tau_map: env_num::<f32>("LAYA_CODEX_TAU_MAP").unwrap_or(0.0),
-        ..SizingPolicy::default()
-    };
-    eprintln!("[laya-codex] sizing {sizing:?}");
     // Opt-in: `1` = repositories under 200 indexed files, a number = that threshold.
     let small_repo_files = match std::env::var("LAYA_CODEX_SIZE_BY_REPO").as_deref() {
         Ok("1") => Some(200),
@@ -889,7 +876,7 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
         Err(_) => None,
     };
     eprintln!("[laya-codex] small_repo_files={small_repo_files:?}");
-    let daemon = Daemon::with_options(Arc::clone(&store), base, sizing, small_repo_files);
+    let daemon = Daemon::with_options(Arc::clone(&store), base, small_repo_files);
 
     if let (true, Some(dir)) = (cfg.use_model, cfg.model_dir.clone()) {
         let d = Arc::clone(&daemon);
@@ -1439,12 +1426,7 @@ mod tests {
     #[test]
     fn a_repo_being_indexed_is_not_sized_as_small() {
         let (d, repo) = daemon_with_files(WAL_FILES);
-        let small = Daemon::with_options(
-            d.store.clone(),
-            RetrieverConfig::default(),
-            SizingPolicy::default(),
-            Some(200),
-        );
+        let small = Daemon::with_options(d.store.clone(), RetrieverConfig::default(), Some(200));
         let (_, id) = small.repo(&repo);
         small.indexing.lock().unwrap().insert(id.clone());
         assert_eq!(
@@ -1485,12 +1467,7 @@ mod tests {
             p_threshold: 0.0,
             ..RetrieverConfig::default()
         };
-        let sizing = SizingPolicy {
-            tau_full: 0.0,
-            tau_map: 0.0,
-            ..SizingPolicy::default()
-        };
-        let d = Daemon::with_options(store, cfg, sizing, None);
+        let d = Daemon::new(store, cfg);
         *d.scorer.write().unwrap() = Some(Arc::new(LowScorer));
         d
     }
@@ -1610,12 +1587,7 @@ mod tests {
             blocks(&ask(&d, &repo, "s1", "where is the wal segment replayed")),
             2
         );
-        let small = Daemon::with_options(
-            d.store.clone(),
-            RetrieverConfig::default(),
-            SizingPolicy::default(),
-            Some(200),
-        );
+        let small = Daemon::with_options(d.store.clone(), RetrieverConfig::default(), Some(200));
         assert_eq!(
             blocks(&ask(
                 &small,
@@ -1625,12 +1597,7 @@ mod tests {
             )),
             1
         );
-        let large = Daemon::with_options(
-            d.store.clone(),
-            RetrieverConfig::default(),
-            SizingPolicy::default(),
-            Some(3),
-        );
+        let large = Daemon::with_options(d.store.clone(), RetrieverConfig::default(), Some(3));
         assert_eq!(
             blocks(&ask(
                 &large,
