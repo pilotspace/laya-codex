@@ -4,10 +4,14 @@ Each task becomes one hook session with the benchmark's two prompts (`run_bench.
 `run_bench.FOLLOWUP`), so the adaptive session delta and follow-up handling run exactly as in a
 benchmark session. Per prompt it records what the injection would cost and what it contains:
 
-- injected characters and the files whose code was inlined (`### path:a-b` blocks);
-- the files the ranked map and the related lists name;
-- gold coverage: gold files inlined, and gold files named anywhere in the injection;
-- the rank mode, scored and offered counts from the hook log (builds that log them).
+- injected characters and the files whose code was inlined (`### path:a-b` blocks), in rank order;
+- the files the ranked map and the related lists name, beyond what was inlined;
+- gold coverage: gold files inlined, gold files inlined among the first two blocks (Laya's job is
+  to rank the right code first, not just eventually include it), and gold files named anywhere;
+- the rank mode, scored/offered/candidate counts, and the hook's own latency, from the hook log.
+
+This is the reranker gate the plan names: run it before and after a ranking change and compare the
+`summary` table -- gold inlined must not fall, for no more injected chars.
 
     python3 bench/replay_hooks.py --bin target/release/laya-codex --home /tmp/lc-home \\
         --moon-port 16494 --repo <clone> --tasks bench/tasks-v8/httpx.jsonl --out replay.jsonl \\
@@ -40,11 +44,14 @@ def gold_hit(path, gold):
 
 
 def parse(ctx, gold):
+    """What one hook response cost and contained. `inlined` is in the order the blocks appear in
+    the injection, i.e. rank order: the ranker's best guess comes first."""
     inlined = list(dict.fromkeys(m.group(1) for m in INLINED.finditer(ctx)))
     named = set(inlined) | {m.group(1) for m in NAMED.finditer(ctx)} | {m.group(1) for m in MAP_LINE.finditer(ctx)}
     g_in = sorted({g for p in inlined for g in gold_hit(p, gold)})
     g_named = sorted({g for p in named for g in gold_hit(p, gold)})
-    return {"chars": len(ctx), "inlined": inlined, "gold_inlined": g_in, "gold_named": g_named}
+    g_top2 = sorted({g for p in inlined[:2] for g in gold_hit(p, gold)})
+    return {"chars": len(ctx), "inlined": inlined, "gold_inlined": g_in, "gold_named": g_named, "gold_top2": g_top2}
 
 
 def run(args):
@@ -94,12 +101,20 @@ def run(args):
     os.unlink(log)
 
 
+def percentile(values, p):
+    """Nearest-rank percentile (0 <= p <= 1) of a non-empty list."""
+    ordered = sorted(values)
+    idx = min(len(ordered) - 1, int(len(ordered) * p))
+    return ordered[idx]
+
+
 def summary(paths):
     rows = [json.loads(l) for p in paths for l in open(p) if l.strip()]
     keys = sorted({(r["label"], r["repo"]) for r in rows})
-    print("| label | repo | turn | prompts | chars mean | code blocks | gold inlined | gold named | "
-          "test gold named (turn 2) | tasks with gold inlined | hook s p50 | rank modes |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    print("| label | repo | turn | prompts | chars mean | code blocks | gold inlined | gold in top 2 | "
+          "gold named | test gold named (turn 2) | tasks with gold inlined | hook s p50 | hook s p95 | "
+          "rank modes |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for label, repo in keys:
         for turn in (1, 2):
             rs = [r for r in rows if r["label"] == label and r["repo"] == repo and r["turn"] == turn]
@@ -109,19 +124,22 @@ def summary(paths):
             chars = sum(r["chars"] for r in rs) / n
             blocks = sum(len(r["inlined"]) for r in rs) / n
             g_in = sum(len(r["gold_inlined"]) for r in rs)
+            g_top2 = sum(len(r.get("gold_top2") or []) for r in rs)  # older replays lack this field
             g_named = sum(len(r["gold_named"]) for r in rs)
             g_total = sum(len(r["gold"]) for r in rs)
             tests = sum(len([g for g in r["gold_named"] if is_test_path(g)]) for r in rs)
             tests_total = sum(len([g for g in r["gold"] if is_test_path(g)]) for r in rs)
             tasks_in = sum(1 for r in rs if r["gold_inlined"])
-            hook = sorted(r["hook_s"] for r in rs)[n // 2]
+            hook_times = [r["hook_s"] for r in rs]
+            p50, p95 = percentile(hook_times, 0.50), percentile(hook_times, 0.95)
             modes = {}
             for r in rs:
-                modes[r["rank_mode"] or r["action"] or "?"] = modes.get(r["rank_mode"] or r["action"] or "?", 0) + 1
+                k = r["rank_mode"] or r["action"] or "?"
+                modes[k] = modes.get(k, 0) + 1
             test_cell = f"{tests}/{tests_total}" if turn == 2 else "–"
             print(f"| {label} | {repo} | {turn} | {n} | {chars:,.0f} | {blocks:.2f} | {g_in}/{g_total} | "
-                  f"{g_named}/{g_total} | {test_cell} | {tasks_in}/{n} | {hook:.2f} | "
-                  + ", ".join(f"{k} {v}" for k, v in sorted(modes.items())) + " |")
+                  f"{g_top2}/{g_total} | {g_named}/{g_total} | {test_cell} | {tasks_in}/{n} | {p50:.2f} | "
+                  f"{p95:.2f} | " + ", ".join(f"{k} {v}" for k, v in sorted(modes.items())) + " |")
 
 
 def main():

@@ -22,19 +22,23 @@ B = 10000
 
 
 def reading(r):
-    return (r["reading_tokens"] or 0) + (r["injected_tokens"] or 0)
+    return (r.get("reading_tokens") or 0) + (r.get("injected_tokens") or 0)
 
 
+# `reading+injected tokens` -- tokens Claude reads plus tokens laya-codex injects -- is the
+# VISION.md token target and the primary token metric; it leads the table. `code-reading tokens`
+# stays right beside it, so a smaller-reads/bigger-injection trade shows as a loss up top, not
+# just as a win further down.
 METRICS = {
-    "code-reading tokens": lambda r: r["reading_tokens"] or 0,
     "reading+injected tokens": reading,
-    "total input tokens": lambda r: r["total_input_tokens"] or 0,
-    "wall seconds": lambda r: r["wall_s"],
-    "turns": lambda r: r["num_turns"] or 0,
-    "cost usd": lambda r: r["cost_usd"] or 0,
+    "code-reading tokens": lambda r: r.get("reading_tokens") or 0,
+    "total input tokens": lambda r: r.get("total_input_tokens") or 0,
+    "wall seconds": lambda r: r.get("wall_s") or 0,
+    "turns": lambda r: r.get("num_turns") or 0,
+    "cost usd": lambda r: r.get("cost_usd") or 0,
     # Output tokens drive wall time (wall ~ 5.2 + 10.8*output_ktok): a time proxy that is cheap to
     # read off the API usage, unlike wall_s which also carries CLI startup and network noise.
-    "output tokens": lambda r: r["output_tokens"] or 0,
+    "output tokens": lambda r: r.get("output_tokens") or 0,
 }
 QUALITY = {
     "answer recall (turn 1)": lambda r: r["recall"],
