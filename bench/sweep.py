@@ -30,7 +30,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--budget-ms", default="5000")
     ap.add_argument("--only", default="")
-    ap.add_argument("--dump-dir", default="", help="save per-task query results (for bench/size_sweep.py)")
+    ap.add_argument("--dump-dir", default="", help="save per-task query results")
     args = ap.parse_args()
     for tag, env in CONFIGS:
         if args.only and args.only not in tag:
