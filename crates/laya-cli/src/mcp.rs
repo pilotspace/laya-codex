@@ -12,12 +12,22 @@ use crate::trace::{self, Recording, Tracer};
 
 const DEFAULT_PROTOCOL: &str = "2025-06-18";
 
+/// Server instructions, which Claude Code adds to the system prompt. Benchmark v3 (v9): with code
+/// already injected, agents still grepped ~2.9 times a session, mostly for callers and tests of
+/// that code, and called this server's search 0.02 times.
+const INSTRUCTIONS: &str = "laya-codex has indexed this repository. To find where something is \
+implemented, what calls or uses it, or which tests cover it, call the laya-codex `search` tool \
+before Grep or Glob: one call returns the relevant code with file paths and line numbers. Keep \
+Grep for exhaustive exact-text matches.";
+
 pub fn tool_list() -> Value {
     json!({"tools": [{
         "name": "search",
-        "description": "Ranked code search over this repository (tree-sitter chunks + BM25 + the Laya relevance model). \
-    Returns the most relevant 10-50 line code spans with file paths and line ranges. Use it to locate where something \
-    is implemented before reading files; then Read only the returned ranges (offset/limit).",
+        "description": "Find code in this repository by meaning or by name: where something is implemented, \
+    its callers and uses, and the tests that cover it. Prefer this over Grep and Glob for those questions: it \
+    returns the code itself (ranked 10-50 line spans with file paths and line numbers) plus definition and use \
+    lines, so you usually need no Read or further search afterwards. Use Grep only for exact text that must be \
+    matched everywhere (every occurrence of a string) or for non-code files.",
         "inputSchema": {"type": "object", "properties": {
             "query": {"type": "string", "description": "What you are looking for, in natural language and/or identifiers"},
             "top_n": {"type": "integer", "description": "Number of spans (default 10, max 20)"}
@@ -38,7 +48,8 @@ pub fn handle_message(
         "initialize" => Ok(json!({
             "protocolVersion": msg["params"]["protocolVersion"].as_str().unwrap_or(DEFAULT_PROTOCOL),
             "capabilities": {"tools": {"listChanged": false}},
-            "serverInfo": {"name": "laya-codex", "version": env!("CARGO_PKG_VERSION")}
+            "serverInfo": {"name": "laya-codex", "version": env!("CARGO_PKG_VERSION")},
+            "instructions": INSTRUCTIONS
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(tool_list()),
@@ -170,6 +181,8 @@ mod tests {
                     mode: RankMode::Laya,
                     elapsed_ms: 3,
                     candidates: 5,
+                    scored: 0,
+                    offered: 0,
                     related: vec![],
                 },
                 rendered: None,
@@ -213,6 +226,39 @@ mod tests {
         );
         let down = call(msg, false).unwrap();
         assert_eq!(down["result"]["isError"], true);
+    }
+
+    #[test]
+    fn search_description_steers_code_lookups_away_from_grep() {
+        let t = call(
+            json!({"jsonrpc": "2.0", "id": 5, "method": "tools/list"}),
+            true,
+        )
+        .unwrap();
+        let d = t["result"]["tools"][0]["description"].as_str().unwrap();
+        // v9: agents still made ~2.9 Grep calls a session and 0.02 laya-codex searches, mostly
+        // to find callers and tests of code they had been given.
+        for needle in [
+            "Prefer this over Grep",
+            "callers",
+            "tests",
+            "returns the code",
+        ] {
+            assert!(d.contains(needle), "description lacks {needle:?}: {d}");
+        }
+        assert!(d.contains("exact"), "Grep keeps exact-text matches: {d}");
+    }
+
+    #[test]
+    fn initialize_tells_claude_to_search_before_grep() {
+        let r = call(
+            json!({"jsonrpc": "2.0", "id": 6, "method": "initialize", "params": {}}),
+            true,
+        )
+        .unwrap();
+        let i = r["result"]["instructions"].as_str().unwrap_or_default();
+        assert!(i.contains("before Grep"), "instructions: {i:?}");
+        assert!(i.contains("`search`"), "instructions name the tool: {i:?}");
     }
 
     #[test]

@@ -14,7 +14,7 @@ from xml.sax.saxutils import escape
 
 THEMES = {
     "light": {"bg": "#ffffff", "fg": "#1f2328", "muted": "#59636e", "grid": "#d1d9e0",
-              "laya": "#2da44e", "base": "#afb8c1", "ci": "#1f2328"},
+              "laya": "#2da44e", "base": "#818b98", "ci": "#1f2328"},
     "dark": {"bg": "#0d1117", "fg": "#e6edf3", "muted": "#9198a1", "grid": "#3d444d",
              "laya": "#3fb950", "base": "#6e7681", "ci": "#e6edf3"},
 }
@@ -94,8 +94,8 @@ def reads(d, t):
         for j, (key, color, name) in enumerate((("baseline", t["base"], "stock"), ("laya", t["laya"], "laya-codex"))):
             v = it[key]
             bh = bar_max * 0.72 * v / top
-            bx = x0 + pw / 2 - 46 + j * 50
-            body.append(f'<rect x="{bx:.1f}" y="{base_y - bh:.1f}" width="42" height="{bh:.1f}" rx="4" fill="{color}"/>')
+            bx = x0 + pw / 2 - 40 + j * 56
+            body.append(f'<rect x="{bx + 9:.1f}" y="{base_y - bh:.1f}" width="24" height="{bh:.1f}" rx="4" fill="{color}"/>')
             body.append(text(bx + 21, base_y - bh - 6, it["fmt"].format(v), 12, t["fg"], "middle", "600"))
             body.append(text(bx + 21, base_y + 18, name, 11, t["muted"], "middle"))
     return svg(w, h, body, t, "laya-codex benchmark: read behaviour")

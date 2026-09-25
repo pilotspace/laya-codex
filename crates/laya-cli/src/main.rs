@@ -505,7 +505,9 @@ fn hook_inner(cfg: &Config) {
     if let Some(log) = &cfg.hook_log {
         let line = json!({"ts_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
             "session_id": input["session_id"], "event": input["hook_event_name"], "tool": input["tool_name"],
-            "action": outcome.action, "injected_chars": outcome.injected_chars, "elapsed_ms": t0.elapsed().as_millis() as u64});
+            "action": outcome.action, "injected_chars": outcome.injected_chars, "elapsed_ms": t0.elapsed().as_millis() as u64,
+            "rank_mode": outcome.rank.map(|r| r.mode), "scored": outcome.rank.map(|r| r.scored), "offered": outcome.rank.map(|r| r.offered),
+            "candidates": outcome.rank.map(|r| r.candidates)});
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

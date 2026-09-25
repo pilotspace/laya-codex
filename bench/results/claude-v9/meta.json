@@ -1,0 +1,29 @@
+{
+ "version": "v9 (benchmark v3)",
+ "date": "2026-09-24",
+ "laya": {"version": "0.3.0 + feat/benchmark-limits-followups (reports 0.3.0)", "commit": "6d1040e (crates unchanged through the docs commits that follow)",
+          "binary_sha1": "1d208f6965aca684554b5357b6e4d7358b4d1885",
+          "build": "cargo build --release --locked -p laya-cli",
+          "defaults": "Laya model on (laya-code, Metal), score_top 16, follow-up policy on, LAYA_CODEX_SIZE_BY_REPO off"},
+ "moon_sidecar": {"binary_sha1": "53735c0842bf5fea417985d8b708ea6178381bf9", "source": "release moon from the laya installer (same binary as v8)"},
+ "agent": {"claude_code": "2.1.281", "model": "sonnet", "effort": "medium (CLAUDE_EFFORT, pinned by --effort)",
+           "turns_per_session": 2, "max_budget_usd_per_prompt": 2.0, "timeout_s": 900, "tools": "Read,Grep,Glob",
+           "flags": "--setting-sources project --strict-mcp-config"},
+ "arms": {"baseline": "stock Claude Code",
+          "branch": "this build, laya-adaptive template (bench/config/laya-settings.laya-adaptive.json)",
+          "branch-lex": "the same build and hooks with LAYA_BUDGET_MS=0: lexical-only ranking, no Laya model"},
+ "arm_isolation": "each laya arm has its own LAYA_CODEX_HOME and Moon port; each arm is warmed (index, then query until rank_mode is laya) before its first session",
+ "scoring": "LAYA_MEMO=0; arms interleaved per task in random order (seed 7); one repeat per task",
+ "rank_modes": {"branch": {"laya": 120}, "branch-lex": {"lexical": 120}},
+ "repos": {
+  "moon": {"commit": "8bba3ced49abc43e656a62cbf142b3cb99a48d62", "tasks": "bench/tasks-v8/moon.jsonl"},
+  "httpx": {"commit": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254", "tasks": "bench/tasks-v8/httpx.jsonl"},
+  "hono": {"commit": "6cadf7537385c6e3df9cbd6d05c9b84c82ae0361", "tasks": "bench/tasks-v8/hono.jsonl"}
+ },
+ "sessions": {"valid": 180, "failed_nonzero_exit": 0, "unhealthy_injection": 0, "dropped_and_rerun": 0},
+ "spend": {"total_usd": 28.18, "per_repo_usd": {"moon": 14.37, "httpx": 6.61, "hono": 7.20},
+           "caps_usd": {"moon": 32, "httpx": 15, "hono": 16}, "prompt_wall_min": 92.2,
+           "pilot": "5 tasks x 3 arms on httpx ($2.58) before the run; it found cold daemons at run start (fixed by the warm-up), and its rows are not part of these 180"},
+ "not_paired_with_v8": "different day, Claude Code 2.1.281 instead of 2.1.280, effort pinned; baseline sessions averaged about 33 s here and 49 s in v8, so compare each run with its own baseline, not across runs. No v0.3.0 arm ran, so the gains are this build against stock Claude Code, not against v0.3.0.",
+ "raw_transcripts": "not committed (they hold local paths); archived outside the repository"
+}

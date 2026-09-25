@@ -1,0 +1,583 @@
+{
+ "version": "v9",
+ "n_tasks": 60,
+ "repos": [
+  "moon",
+  "httpx",
+  "hono"
+ ],
+ "model": "sonnet",
+ "arm": "branch",
+ "metrics": {
+  "reading_tokens": {
+   "label": "Code-reading tokens",
+   "pct": -35.7,
+   "lo": -44.0,
+   "hi": -26.8
+  },
+  "reading_plus_injected": {
+   "label": "Reading + injected",
+   "pct": 4.6,
+   "lo": -5.3,
+   "hi": 16.1
+  },
+  "total_input": {
+   "label": "Total input tokens",
+   "pct": -23.5,
+   "lo": -30.1,
+   "hi": -17.2
+  },
+  "wall_clock": {
+   "label": "Wall-clock time",
+   "pct": -11.4,
+   "lo": -15.0,
+   "hi": -7.9
+  },
+  "turns": {
+   "label": "Turns",
+   "pct": -32.1,
+   "lo": -37.1,
+   "hi": -27.1
+  },
+  "cost": {
+   "label": "Cost",
+   "pct": -10.1,
+   "lo": -14.0,
+   "hi": -6.1
+  },
+  "output_tokens": {
+   "label": "Output tokens",
+   "pct": -16.3,
+   "lo": -20.3,
+   "hi": -12.3
+  }
+ },
+ "chart_metrics": [
+  "reading_tokens",
+  "turns",
+  "cost",
+  "total_input",
+  "output_tokens",
+  "wall_clock"
+ ],
+ "chart_title": "With laya-codex, Claude reads less, writes less and finishes sooner",
+ "per_repo": {
+  "moon": {
+   "reading_tokens": {
+    "pct": -44.0,
+    "lo": -56.0,
+    "hi": -29.9
+   },
+   "reading_plus_injected": {
+    "pct": -16.3,
+    "lo": -29.8,
+    "hi": 1.3
+   },
+   "total_input": {
+    "pct": -31.4,
+    "lo": -41.3,
+    "hi": -21.4
+   },
+   "wall_clock": {
+    "pct": -17.1,
+    "lo": -23.7,
+    "hi": -10.5
+   },
+   "turns": {
+    "pct": -39.8,
+    "lo": -48.7,
+    "hi": -31.1
+   },
+   "cost": {
+    "pct": -17.1,
+    "lo": -22.3,
+    "hi": -11.2
+   },
+   "output_tokens": {
+    "pct": -21.7,
+    "lo": -28.4,
+    "hi": -14.8
+   }
+  },
+  "httpx": {
+   "reading_tokens": {
+    "pct": -24.4,
+    "lo": -35.2,
+    "hi": -10.3
+   },
+   "reading_plus_injected": {
+    "pct": 33.5,
+    "lo": 18.4,
+    "hi": 53.2
+   },
+   "total_input": {
+    "pct": -11.5,
+    "lo": -19.8,
+    "hi": -3.3
+   },
+   "wall_clock": {
+    "pct": -2.9,
+    "lo": -7.9,
+    "hi": 2.2
+   },
+   "turns": {
+    "pct": -23.1,
+    "lo": -31.2,
+    "hi": -14.3
+   },
+   "cost": {
+    "pct": 0.1,
+    "lo": -6.6,
+    "hi": 7.3
+   },
+   "output_tokens": {
+    "pct": -7.9,
+    "lo": -13.9,
+    "hi": -1.7
+   }
+  },
+  "hono": {
+   "reading_tokens": {
+    "pct": -27.4,
+    "lo": -43.5,
+    "hi": -10.1
+   },
+   "reading_plus_injected": {
+    "pct": 25.3,
+    "lo": 8.0,
+    "hi": 47.0
+   },
+   "total_input": {
+    "pct": -17.2,
+    "lo": -29.2,
+    "hi": -5.8
+   },
+   "wall_clock": {
+    "pct": -12.1,
+    "lo": -17.9,
+    "hi": -6.0
+   },
+   "turns": {
+    "pct": -30.7,
+    "lo": -38.9,
+    "hi": -22.8
+   },
+   "cost": {
+    "pct": -4.1,
+    "lo": -12.2,
+    "hi": 3.9
+   },
+   "output_tokens": {
+    "pct": -16.5,
+    "lo": -23.0,
+    "hi": -9.3
+   }
+  }
+ },
+ "answer_recall": {
+  "baseline": 0.774,
+  "laya": 0.91,
+  "diff": 0.136,
+  "lo": 0.067,
+  "hi": 0.204
+ },
+ "answer_recall_both_turns": {
+  "baseline": 0.968,
+  "laya": 0.951,
+  "diff": -0.017,
+  "lo": -0.056,
+  "hi": 0.011
+ },
+ "laya_vs_lex": {
+  "note": "branch vs branch-lex (same hooks, LAYA_BUDGET_MS=0: lexical-only ranking)",
+  "pooled": {
+   "reading_tokens": {
+    "pct": -3.8,
+    "lo": -14.4,
+    "hi": 7.9
+   },
+   "total_input": {
+    "pct": -8.1,
+    "lo": -14.5,
+    "hi": -1.0
+   },
+   "wall_clock": {
+    "pct": 1.1,
+    "lo": -2.6,
+    "hi": 4.9
+   },
+   "cost": {
+    "pct": -2.0,
+    "lo": -5.8,
+    "hi": 2.1
+   }
+  },
+  "per_repo": {
+   "moon": {
+    "reading_tokens": {
+     "pct": -7.1,
+     "lo": -25.0,
+     "hi": 14.3
+    },
+    "wall_clock": {
+     "pct": -1.0,
+     "lo": -8.0,
+     "hi": 6.1
+    }
+   },
+   "httpx": {
+    "reading_tokens": {
+     "pct": 7.4,
+     "lo": -9.2,
+     "hi": 31.1
+    },
+    "wall_clock": {
+     "pct": 5.8,
+     "lo": 0.6,
+     "hi": 10.7
+    }
+   },
+   "hono": {
+    "reading_tokens": {
+     "pct": -7.7,
+     "lo": -19.6,
+     "hi": 5.4
+    },
+    "wall_clock": {
+     "pct": -0.8,
+     "lo": -7.2,
+     "hi": 6.4
+    }
+   }
+  },
+  "answer_recall": {
+   "branch-lex": 0.914,
+   "branch": 0.91,
+   "diff": -0.004,
+   "lo": -0.057,
+   "hi": 0.044
+  }
+ },
+ "lex_vs_baseline": {
+  "pooled": {
+   "reading_tokens": {
+    "pct": -33.1,
+    "lo": -41.0,
+    "hi": -24.6
+   },
+   "total_input": {
+    "pct": -16.8,
+    "lo": -23.1,
+    "hi": -10.6
+   },
+   "wall_clock": {
+    "pct": -12.4,
+    "lo": -15.5,
+    "hi": -9.3
+   },
+   "cost": {
+    "pct": -8.3,
+    "lo": -12.1,
+    "hi": -4.5
+   }
+  },
+  "answer_recall": {
+   "baseline": 0.774,
+   "branch-lex": 0.914,
+   "diff": 0.14,
+   "lo": 0.085,
+   "hi": 0.2
+  }
+ },
+ "read_precision": {
+  "baseline": 0.703,
+  "laya": 0.593,
+  "lex": 0.614
+ },
+ "first_gold_read_turn": {
+  "baseline": 4.28,
+  "laya": 3.16,
+  "lex": 3.14
+ },
+ "reads": {
+  "read_precision": {
+   "label": "Read precision",
+   "baseline": 0.703,
+   "laya": 0.593,
+   "better": "higher",
+   "fmt": "{:.2f}"
+  },
+  "gold_seen": {
+   "label": "Relevant code found",
+   "baseline": 0.768,
+   "laya": 0.754,
+   "better": "higher",
+   "fmt": "{:.0%}"
+  },
+  "first_gold_turn": {
+   "label": "Turn of first relevant Read",
+   "baseline": 4.278,
+   "laya": 3.159,
+   "better": "lower",
+   "fmt": "{:.1f}"
+  },
+  "wasted_read_tokens": {
+   "label": "Wasted read tokens",
+   "baseline": 585,
+   "laya": 490,
+   "better": "lower",
+   "fmt": "{:,.0f}"
+  }
+ },
+ "journey": {
+  "note": "Assistant turn at which a gold (correct) file first entered Claude's context; 0 = before Claude's first turn (laya-codex injected its code with the prompt); null = never.",
+  "baseline": [
+   2,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   5,
+   5,
+   5,
+   5,
+   6,
+   6,
+   6,
+   6,
+   6,
+   6,
+   6,
+   7,
+   7,
+   7,
+   7,
+   8,
+   9,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "laya_seen": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   3,
+   3,
+   3,
+   6,
+   6,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "laya_read": [
+   1,
+   1,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   4,
+   4,
+   4,
+   5,
+   5,
+   5,
+   5,
+   6,
+   6,
+   6,
+   8,
+   10,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "lex_seen": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   3,
+   3,
+   3,
+   5,
+   5,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ }
+}

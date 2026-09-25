@@ -8,11 +8,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use laya_core::QueryResult;
 use laya_core::{Chunk, Scorer, Store};
-use laya_rank::{Retriever, RetrieverConfig, Scope, SizingPolicy, SpanKey};
+use laya_rank::{
+    FollowUpIntent, Retriever, RetrieverConfig, Scope, SizeOpts, SizingPolicy, SpanKey,
+};
 
 use crate::config::{Config, rel_path, repo_root};
 use crate::indexer;
@@ -252,18 +254,39 @@ pub struct Daemon {
     pub sessions: Mutex<Sessions>,
     pub indexing: Mutex<HashSet<String>>,
     pub base_cfg: RetrieverConfig,
+    /// Opt-in (`LAYA_CODEX_SIZE_BY_REPO`): repositories with fewer indexed files than this get
+    /// [`laya_rank::small_repo_caps`]. `None` = off.
+    pub small_repo_files: Option<usize>,
+    /// Indexed file count per repo id, with when it was read (see [`Daemon::is_small_repo`]).
+    file_counts: Mutex<HashMap<String, (usize, Instant)>>,
 }
+
+/// Whether `prompt` names identifiers or file paths.
+fn names_code(prompt: &str) -> bool {
+    let sig = laya_rank::extract_signals(prompt);
+    !sig.identifiers.is_empty() || !sig.paths.is_empty()
+}
+
+/// How long an indexed file count is reused before it is read again.
+const FILE_COUNT_TTL: Duration = Duration::from_secs(300);
+
+/// Extra usage lines for a follow-up that asks for callers, and test pointers for one that asks
+/// for tests.
+const FOLLOW_UP_USAGE_LINES: usize = 16;
+const FOLLOW_UP_USAGE_PER_IDENT: usize = 6;
+const FOLLOW_UP_TEST_REFS: usize = 4;
 
 impl Daemon {
     #[cfg(test)]
     pub fn new(store: Arc<dyn Store>, base_cfg: RetrieverConfig) -> Arc<Self> {
-        Self::with_sizing(store, base_cfg, SizingPolicy::default())
+        Self::with_options(store, base_cfg, SizingPolicy::default(), None)
     }
 
-    pub fn with_sizing(
+    pub fn with_options(
         store: Arc<dyn Store>,
         base_cfg: RetrieverConfig,
         sizing: SizingPolicy,
+        small_repo_files: Option<usize>,
     ) -> Arc<Self> {
         Arc::new(Daemon {
             store,
@@ -273,7 +296,37 @@ impl Daemon {
             sessions: Mutex::new(Sessions::default()),
             indexing: Mutex::new(HashSet::new()),
             base_cfg,
+            small_repo_files,
+            file_counts: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Whether repo `id` has fewer indexed files than the opt-in threshold. The count is cached
+    /// for [`FILE_COUNT_TTL`]; a store error counts as "not small" (today's sizing).
+    fn is_small_repo(&self, id: &str) -> bool {
+        let Some(limit) = self.small_repo_files else {
+            return false;
+        };
+        // Files are added to the index one by one: a count taken mid-index is too small.
+        if lock(&self.indexing).contains(id) {
+            return false;
+        }
+        let mut counts = lock(&self.file_counts);
+        let fresh = counts
+            .get(id)
+            .filter(|(_, at)| at.elapsed() < FILE_COUNT_TTL)
+            .map(|(n, _)| *n);
+        let n = match fresh {
+            Some(n) => n,
+            None => match self.store.list_files(id) {
+                Ok(files) => {
+                    counts.insert(id.to_string(), (files.len(), Instant::now()));
+                    files.len()
+                }
+                Err(_) => return false,
+            },
+        };
+        n > 0 && n < limit
     }
 
     /// Render `result` for injection. Adaptive: classify scope, size by scope and calibrated P,
@@ -286,6 +339,7 @@ impl Daemon {
         prompt: &str,
         result: &QueryResult,
         req: &RenderReq,
+        follow_up: Option<FollowUpIntent>,
     ) -> (String, Option<Scope>) {
         if !req.adaptive {
             return (
@@ -299,6 +353,8 @@ impl Daemon {
             .ok()
             .and_then(|c| c.clone())
             .and_then(|c| c.classify(prompt));
+        // Read before taking the session lock: it can go to the store.
+        let small_repo = self.is_small_repo(id);
         let mut sessions = self.sessions();
         let already: Vec<SpanKey> = session
             .map(|s| sessions.already(s))
@@ -310,7 +366,18 @@ impl Daemon {
                 end_line,
             })
             .collect();
-        let mut ctx = laya_rank::size_context(result, scope, &self.sizing, &already);
+        let mut caps = Scope::caps(scope);
+        if let Some(intent) = follow_up {
+            caps = caps.min(laya_rank::follow_up_caps(intent));
+        }
+        if small_repo {
+            caps = caps.min(laya_rank::small_repo_caps());
+        }
+        let opts = SizeOpts {
+            caps,
+            inline_prose: laya_rank::asks_for_non_code(prompt),
+        };
+        let mut ctx = laya_rank::size_context_opts(result, &opts, &self.sizing, &already);
         self.keep_only_current_code(root, id, &mut ctx);
         if !req.related {
             ctx.related.clear();
@@ -405,6 +472,32 @@ impl Daemon {
                 if let Some(n) = top_n {
                     cfg.top_n = n.clamp(1, MAX_TOP_N);
                 }
+                // A follow-up is retrieved as the session's topic (see `effective_query`); what it
+                // asks for on top of that (tests, callers) shapes the lists that answer it.
+                // Only a follow-up that names no code is retrieved as the bare topic; one that
+                // names identifiers or paths ranks them first and keeps the normal caps.
+                let adaptive = render.as_ref().is_some_and(|r| r.adaptive);
+                let follow_up = session
+                    .as_deref()
+                    .filter(|s| adaptive && self.sessions().has_topic(s))
+                    .filter(|_| laya_rank::is_follow_up(&prompt) && !names_code(&prompt))
+                    .map(|_| laya_rank::follow_up_intent(&prompt));
+                // A search without a session (the MCP `search` tool) is Claude asking directly:
+                // when it asks for tests or callers, answer with the same lists a follow-up gets.
+                let asked = follow_up.or_else(|| {
+                    session
+                        .is_none()
+                        .then(|| laya_rank::follow_up_intent(&prompt))
+                });
+                if let Some(intent) = asked {
+                    if intent.callers {
+                        cfg.usage_lines = cfg.usage_lines.max(FOLLOW_UP_USAGE_LINES);
+                        cfg.usage_per_ident = cfg.usage_per_ident.max(FOLLOW_UP_USAGE_PER_IDENT);
+                    }
+                    if intent.tests {
+                        cfg.test_refs = cfg.test_refs.max(FOLLOW_UP_TEST_REFS);
+                    }
+                }
                 let scorer = self.scorer.read().ok().and_then(|s| s.clone());
                 let retriever = Retriever::new(self.store.as_ref(), scorer, cfg);
                 let query = match &session {
@@ -428,6 +521,7 @@ impl Daemon {
                                     &prompt,
                                     &result,
                                     &r,
+                                    follow_up,
                                 );
                                 (Some(text), scope.map(scope_name))
                             }
@@ -885,6 +979,9 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     if let Some(m) = env_num::<usize>("LAYA_CODEX_MIN_KEEP") {
         base.min_keep = m;
     }
+    if let Some(n) = env_num::<usize>("LAYA_CODEX_SCORE_TOP") {
+        base.score_top = n;
+    }
     let state_tokens = env_num::<usize>("LAYA_CODEX_STATE_TOKENS").unwrap_or(128);
     eprintln!("[laya-codex] retriever config {base:?} state_tokens={state_tokens}");
     // Rank-based by default (thresholds 0 = full code for the top spans by fused rank, capped by
@@ -903,7 +1000,14 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
         .map(|v| v == "1")
         .unwrap_or(false);
     eprintln!("[laya-codex] sizing {sizing:?} scope={use_scope} scope_p={scope_p}");
-    let daemon = Daemon::with_sizing(Arc::clone(&store), base, sizing);
+    // Opt-in: `1` = repositories under 200 indexed files, a number = that threshold.
+    let small_repo_files = match std::env::var("LAYA_CODEX_SIZE_BY_REPO").as_deref() {
+        Ok("1") => Some(200),
+        Ok(v) => v.parse::<usize>().ok().filter(|&n| n > 1),
+        Err(_) => None,
+    };
+    eprintln!("[laya-codex] small_repo_files={small_repo_files:?}");
+    let daemon = Daemon::with_options(Arc::clone(&store), base, sizing, small_repo_files);
 
     if let (true, Some(dir)) = (cfg.use_model, cfg.model_dir.clone()) {
         let d = Arc::clone(&daemon);
@@ -1086,6 +1190,20 @@ mod tests {
         ) -> laya_core::Result<Vec<String>> {
             self.inner.chunks_defining(r, i, l)
         }
+        fn chunks_referencing(
+            &self,
+            _: &str,
+            idents: &[String],
+            limit: usize,
+        ) -> laya_core::Result<Vec<String>> {
+            let chunks = self.chunks.lock().unwrap();
+            Ok(chunks
+                .iter()
+                .filter(|c| c.refs.iter().any(|r| idents.contains(r)))
+                .map(|c| c.id())
+                .take(limit)
+                .collect())
+        }
         fn get_chunks(&self, _: &str, ids: &[String]) -> laya_core::Result<Vec<Chunk>> {
             let chunks = self.chunks.lock().unwrap();
             Ok(ids
@@ -1221,6 +1339,350 @@ mod tests {
                 .unwrap();
         }
         (d, repo)
+    }
+
+    /// A repo on disk with the given one-line files (path, text, defines, refs), indexed with
+    /// their real hashes.
+    fn daemon_with_files(files: &[(&str, &str, &[&str], &[&str])]) -> (Arc<Daemon>, String) {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "laya-files-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let d = Daemon::new(Arc::new(MemoStore::default()), RetrieverConfig::default());
+        let repo = root.to_string_lossy().into_owned();
+        let (_, id) = d.repo(&repo);
+        for (path, text, defines, refs) in files {
+            let full = root.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(&full, format!("{text}\n")).unwrap();
+            let lang = if path.ends_with(".md") {
+                Lang::Text
+            } else {
+                Lang::Rust
+            };
+            let c = Chunk {
+                path: path.to_string(),
+                start_line: 1,
+                end_line: 1,
+                lang,
+                symbol: String::new(),
+                kind: "function_item".into(),
+                defines: defines.iter().map(|s| s.to_string()).collect(),
+                refs: refs.iter().map(|s| s.to_string()).collect(),
+                text: text.to_string(),
+            };
+            let hash = laya_parse::file_hash(format!("{text}\n").as_bytes());
+            d.store.put_file(&id, path, &hash, &[c]).unwrap();
+        }
+        (d, repo)
+    }
+
+    fn ask(d: &Arc<Daemon>, repo: &str, session: &str, prompt: &str) -> String {
+        match d.handle(Request::Query {
+            repo: repo.into(),
+            session: Some(session.into()),
+            prompt: prompt.into(),
+            budget_ms: Some(0),
+            top_n: None,
+            render: Some(RenderReq {
+                budget_tokens: 3000,
+                related: true,
+                adaptive: true,
+            }),
+        }) {
+            Response::Query {
+                rendered: Some(r), ..
+            } => r,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn blocks(rendered: &str) -> usize {
+        rendered.matches("\n### ").count()
+    }
+
+    const WAL_FILES: &[(&str, &str, &[&str], &[&str])] = &[
+        (
+            "src/wal0.rs",
+            "fn replay_wal0() { replay wal segment }",
+            &["replay_wal0"],
+            &[],
+        ),
+        (
+            "src/wal1.rs",
+            "fn replay_wal1() { replay wal segment }",
+            &["replay_wal1"],
+            &[],
+        ),
+        (
+            "src/wal2.rs",
+            "fn replay_wal2() { replay wal segment }",
+            &["replay_wal2"],
+            &[],
+        ),
+        (
+            "src/wal3.rs",
+            "fn replay_wal3() { replay wal segment }",
+            &["replay_wal3"],
+            &[],
+        ),
+        (
+            "tests/recovery_test.rs",
+            "fn recovers() { check }",
+            &["recovers"],
+            &["replay_wal0", "replay_wal1", "replay_wal2"],
+        ),
+    ];
+
+    #[test]
+    fn a_follow_up_asking_for_tests_gets_test_pointers_not_more_code() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        let first = ask(&d, &repo, "s", "where is the wal segment replayed");
+        assert_eq!(blocks(&first), 2, "{first}");
+        let second = ask(
+            &d,
+            &repo,
+            "s",
+            "Now, for the same change, identify the tests that cover this code and the main \
+             call sites that invoke it.",
+        );
+        assert_eq!(blocks(&second), 0, "{second}");
+        assert!(second.contains("tests/recovery_test.rs"), "{second}");
+        assert!(second.contains("test using `replay_wal"), "{second}");
+    }
+
+    #[test]
+    fn a_short_follow_up_that_names_code_keeps_the_normal_caps() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        ask(&d, &repo, "s", "where is the wal segment replayed");
+        let prompt = "and replay_wal3?";
+        assert!(
+            laya_rank::is_follow_up(prompt),
+            "precondition: a short follow-up"
+        );
+        let second = ask(&d, &repo, "s", prompt);
+        assert_eq!(blocks(&second), 2, "the two files not sent yet: {second}");
+    }
+
+    #[test]
+    fn follow_up_lists_are_only_for_adaptive_renders() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        ask(&d, &repo, "s", "where is the wal segment replayed");
+        let Response::Query { result, .. } = d.handle(Request::Query {
+            repo: repo.clone(),
+            session: Some("s".into()),
+            prompt: "Now identify the tests that cover this code.".into(),
+            budget_ms: Some(0),
+            top_n: None,
+            render: None,
+        }) else {
+            panic!("no result")
+        };
+        assert!(
+            !result
+                .related
+                .iter()
+                .any(|r| r.relation.starts_with("test using")),
+            "{:?}",
+            result.related
+        );
+    }
+
+    fn search(d: &Arc<Daemon>, repo: &str, prompt: &str) -> QueryResult {
+        match d.handle(Request::Query {
+            repo: repo.into(),
+            session: None,
+            prompt: prompt.into(),
+            budget_ms: Some(0),
+            top_n: None,
+            render: None,
+        }) {
+            Response::Query { result, .. } => result,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn has_test_pointers(result: &QueryResult) -> bool {
+        result
+            .related
+            .iter()
+            .any(|r| r.relation.starts_with("test using"))
+    }
+
+    #[test]
+    fn a_search_asking_for_tests_lists_the_tests_that_use_the_code() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        let r = search(&d, &repo, "which tests cover replaying the wal segment");
+        assert!(has_test_pointers(&r), "{:?}", r.related);
+    }
+
+    #[test]
+    fn a_plain_search_lists_no_test_pointers() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        let r = search(&d, &repo, "where is the wal segment replayed");
+        assert!(!has_test_pointers(&r), "{:?}", r.related);
+    }
+
+    #[test]
+    fn test_pointers_take_at_most_two_ranges_of_one_file() {
+        let (d, repo) = daemon_with_files(&WAL_FILES[..4]);
+        let (root, id) = d.repo(&repo);
+        // One test file with four chunks that use the topic's identifiers (by reference only, so
+        // keyword search does not list the file itself).
+        let lines = [
+            ("fn a() { check(0) }", "replay_wal0"),
+            ("fn b() { check(1) }", "replay_wal1"),
+            ("fn c() { check(2) }", "replay_wal2"),
+            ("fn d() { check(3) }", "replay_wal0"),
+        ];
+        let text: String = lines.iter().map(|(l, _)| format!("{l}\n")).collect();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(root.join("tests/all_test.rs"), &text).unwrap();
+        let chunks: Vec<Chunk> = lines
+            .iter()
+            .enumerate()
+            .map(|(i, (l, r))| Chunk {
+                path: "tests/all_test.rs".into(),
+                start_line: i as u32 + 1,
+                end_line: i as u32 + 1,
+                lang: Lang::Rust,
+                symbol: String::new(),
+                kind: "function_item".into(),
+                defines: vec![],
+                refs: vec![r.to_string()],
+                text: l.to_string(),
+            })
+            .collect();
+        let hash = laya_parse::file_hash(text.as_bytes());
+        d.store
+            .put_file(&id, "tests/all_test.rs", &hash, &chunks)
+            .unwrap();
+        ask(&d, &repo, "s", "where is the wal segment replayed");
+        let second = ask(
+            &d,
+            &repo,
+            "s",
+            "Now identify the tests that cover this code.",
+        );
+        let pointers = second
+            .lines()
+            .filter(|l| l.contains("tests/all_test.rs:") && l.contains("test using"))
+            .count();
+        assert_eq!(pointers, 2, "{second}");
+    }
+
+    #[test]
+    fn a_repo_being_indexed_is_not_sized_as_small() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        let small = Daemon::with_options(
+            d.store.clone(),
+            RetrieverConfig::default(),
+            SizingPolicy::default(),
+            Some(200),
+        );
+        let (_, id) = small.repo(&repo);
+        small.indexing.lock().unwrap().insert(id.clone());
+        assert_eq!(
+            blocks(&ask(
+                &small,
+                &repo,
+                "s1",
+                "where is the wal segment replayed"
+            )),
+            2,
+            "a partial file count must not shrink the injection"
+        );
+        small.indexing.lock().unwrap().remove(&id);
+        assert_eq!(
+            blocks(&ask(
+                &small,
+                &repo,
+                "s2",
+                "where is the wal segment replayed"
+            )),
+            1,
+            "and it was not cached while indexing"
+        );
+    }
+
+    #[test]
+    fn a_follow_up_without_a_named_intent_inlines_at_most_one_block() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        ask(&d, &repo, "s", "where is the wal segment replayed");
+        let second = ask(&d, &repo, "s", "and the same for the rest?");
+        assert!(blocks(&second) <= 1, "{second}");
+    }
+
+    #[test]
+    fn documentation_is_listed_not_inlined_unless_the_task_asks_for_it() {
+        let files: &[(&str, &str, &[&str], &[&str])] = &[
+            (
+                "src/wal0.rs",
+                "fn replay_wal0() { replay wal segment }",
+                &["replay_wal0"],
+                &[],
+            ),
+            (
+                "CHANGELOG.md",
+                "replay wal segment fixed replay wal segment",
+                &[],
+                &[],
+            ),
+        ];
+        let (d, repo) = daemon_with_files(files);
+        let code = ask(&d, &repo, "s1", "where is the wal segment replayed");
+        assert!(!code.contains("### CHANGELOG.md"), "{code}");
+        assert!(code.contains("CHANGELOG.md"), "still listed: {code}");
+        let docs = ask(
+            &d,
+            &repo,
+            "s2",
+            "what does the changelog say about wal segment replay",
+        );
+        assert!(docs.contains("### CHANGELOG.md"), "{docs}");
+    }
+
+    #[test]
+    fn repo_size_caps_are_opt_in_and_apply_only_to_small_repos() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        assert_eq!(
+            blocks(&ask(&d, &repo, "s1", "where is the wal segment replayed")),
+            2
+        );
+        let small = Daemon::with_options(
+            d.store.clone(),
+            RetrieverConfig::default(),
+            SizingPolicy::default(),
+            Some(200),
+        );
+        assert_eq!(
+            blocks(&ask(
+                &small,
+                &repo,
+                "s2",
+                "where is the wal segment replayed"
+            )),
+            1
+        );
+        let large = Daemon::with_options(
+            d.store.clone(),
+            RetrieverConfig::default(),
+            SizingPolicy::default(),
+            Some(3),
+        );
+        assert_eq!(
+            blocks(&ask(
+                &large,
+                &repo,
+                "s3",
+                "where is the wal segment replayed"
+            )),
+            2,
+            "5 files is not under a 3-file threshold"
+        );
     }
 
     fn query(d: &Arc<Daemon>, repo: &str, adaptive: bool) -> Response {
@@ -1555,6 +2017,8 @@ mod tests {
                 mode: laya_core::RankMode::Laya,
                 elapsed_ms: 1,
                 candidates: 1,
+                scored: 0,
+                offered: 0,
                 related: vec![],
             },
         );
@@ -1585,6 +2049,8 @@ mod tests {
                 mode: laya_core::RankMode::Lexical,
                 elapsed_ms: 1,
                 candidates: 3,
+                scored: 0,
+                offered: 0,
                 related: vec![],
             },
         );

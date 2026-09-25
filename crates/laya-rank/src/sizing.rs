@@ -14,9 +14,10 @@ use laya_core::{QueryResult, RankMode, RankedSpan, Related};
 use serde::{Deserialize, Serialize};
 
 use crate::render::{
-    COMPACT_FOOTER, COMPACT_HEADER, TRUST_LINE, append_ranked_locations, append_related,
-    estimate_tokens, render_span,
+    COMPACT_FOOTER, COMPACT_HEADER, NO_CODE_FOOTER, TRUST_LINE, append_ranked_locations,
+    append_related, estimate_tokens, render_span,
 };
+use crate::signals::FollowUpIntent;
 
 /// How much of the codebase a prompt's task spans, used to pick [`SizingCaps`]. `serde` uses
 /// `snake_case` (`"function"`, `"file"`, `"module"`, `"cross"`).
@@ -41,6 +42,75 @@ pub struct SizingCaps {
     pub map_spans: usize,
     pub full_spans: usize,
     pub related: usize,
+}
+
+impl SizingCaps {
+    /// The smaller of each cap, to combine two reasons for a smaller injection.
+    pub fn min(self, other: SizingCaps) -> SizingCaps {
+        SizingCaps {
+            map_spans: self.map_spans.min(other.map_spans),
+            full_spans: self.full_spans.min(other.full_spans),
+            related: self.related.min(other.related),
+        }
+    }
+}
+
+/// Caps for a follow-up prompt ("now find the tests and call sites"). Its query is the session's
+/// topic, so the spans not sent yet are the topic's lower-ranked ones: replaying the benchmark v2
+/// sessions, the second prompt injected as much as the first but added 5 new correct files of 35
+/// (httpx) and 5 of 46 (hono). A follow-up that asks for tests or callers gets no code blocks;
+/// its answer is the test pointers and the definitions-and-uses lines. Any other follow-up gets
+/// one block.
+pub fn follow_up_caps(intent: FollowUpIntent) -> SizingCaps {
+    SizingCaps {
+        map_spans: 6,
+        full_spans: if intent.any() { 0 } else { 1 },
+        related: 8,
+    }
+}
+
+/// Caps for a small repository (opt-in, `LAYA_CODEX_SIZE_BY_REPO=1`): there Claude reads little
+/// code on its own (3.3k tokens per two-prompt session on the 92-file httpx), so a second inlined
+/// block mostly replaces reading it would not have done.
+pub fn small_repo_caps() -> SizingCaps {
+    SizingCaps {
+        map_spans: 6,
+        full_spans: 1,
+        related: 6,
+    }
+}
+
+/// Options for [`size_context_opts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SizeOpts {
+    pub caps: SizingCaps,
+    /// Inline documentation files (README, CHANGELOG, `.md`, `.rst`, …). Off unless the task asks
+    /// about documentation: a changelog line shares the task's words but is rarely the code to
+    /// change. Such files stay in the location list.
+    pub inline_prose: bool,
+}
+
+const PROSE_EXT: &[&str] = &["md", "markdown", "mdx", "rst", "adoc", "org"];
+const PROSE_NAMES: &[&str] = &[
+    "readme",
+    "changelog",
+    "changes",
+    "history",
+    "license",
+    "copying",
+    "authors",
+    "contributing",
+    "notice",
+];
+
+/// A documentation file, by name: prose extensions, or a README/CHANGELOG-style name with no
+/// extension. Configuration and scripts are not prose (a change can be to them).
+pub fn is_prose_path(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    match name.rsplit_once('.') {
+        Some((_, ext)) => PROSE_EXT.contains(&ext),
+        None => PROSE_NAMES.contains(&name.as_str()),
+    }
 }
 
 /// Caps used when [`Scope`] is unknown (`None`) or a module. At most two spans get full code:
@@ -199,7 +269,23 @@ pub fn size_context(
     policy: &SizingPolicy,
     already: &[SpanKey],
 ) -> SizedContext {
-    let caps = Scope::caps(scope);
+    let opts = SizeOpts {
+        caps: Scope::caps(scope),
+        inline_prose: true,
+    };
+    size_context_opts(result, &opts, policy, already)
+}
+
+/// [`size_context`] with explicit caps, and documentation files kept out of `full` unless
+/// `opts.inline_prose` (a skipped file stays in `map`; the next file takes its place in `full`).
+pub fn size_context_opts(
+    result: &QueryResult,
+    opts: &SizeOpts,
+    policy: &SizingPolicy,
+    already: &[SpanKey],
+) -> SizedContext {
+    let caps = opts.caps;
+    let inlinable = |s: &RankedSpan| opts.inline_prose || !is_prose_path(&s.path);
 
     let mut already_spans: Vec<RankedSpan> = Vec::new();
     let mut candidates: Vec<RankedSpan> = Vec::new();
@@ -213,9 +299,9 @@ pub fn size_context(
 
     let has_p = result.mode == RankMode::Laya && candidates.iter().all(|s| s.p_relevant.is_some());
     let (full, map) = if has_p {
-        select_by_threshold(&candidates, &caps, policy)
+        select_by_threshold(&candidates, &caps, policy, &inlinable)
     } else {
-        select_lexical(&candidates, &caps)
+        select_lexical(&candidates, &caps, &inlinable)
     };
 
     let covered: Vec<&RankedSpan> = full
@@ -229,9 +315,12 @@ pub fn size_context(
         .related
         .iter()
         .partition(|r| crate::render::is_usage(r));
+    // One line per range: a test chunk can be both a test pointer and a caller.
+    let mut seen: HashSet<(&str, u32, u32)> = HashSet::new();
     let related: Vec<Related> = neighbours
         .into_iter()
         .filter(|r| !covered.iter().any(|s| related_overlaps_span(r, s)))
+        .filter(|r| seen.insert((r.path.as_str(), r.start_line, r.end_line)))
         .take(caps.related)
         .chain(usages)
         .cloned()
@@ -255,16 +344,18 @@ fn select_by_threshold(
     candidates: &[RankedSpan],
     caps: &SizingCaps,
     policy: &SizingPolicy,
+    inlinable: &dyn Fn(&RankedSpan) -> bool,
 ) -> (Vec<RankedSpan>, Vec<RankedSpan>) {
     let passing = candidates
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.p_relevant.is_some_and(|p| p >= policy.tau_full))
+        .filter(|(_, s)| inlinable(s) && s.p_relevant.is_some_and(|p| p >= policy.tau_full))
         .map(|(i, _)| i);
     let mut full_idx = distinct_files(candidates, passing, caps.full_spans);
     if full_idx.len() < policy.min_full {
         let need = policy.min_full.min(caps.full_spans);
-        full_idx = distinct_files(candidates, 0..candidates.len(), need);
+        let any = (0..candidates.len()).filter(|&i| inlinable(&candidates[i]));
+        full_idx = distinct_files(candidates, any, need);
     }
     let full_set: HashSet<usize> = full_idx.iter().copied().collect();
 
@@ -303,8 +394,10 @@ fn select_by_threshold(
 fn select_lexical(
     candidates: &[RankedSpan],
     caps: &SizingCaps,
+    inlinable: &dyn Fn(&RankedSpan) -> bool,
 ) -> (Vec<RankedSpan>, Vec<RankedSpan>) {
-    let full_idx = distinct_files(candidates, 0..candidates.len(), caps.full_spans);
+    let eligible = (0..candidates.len()).filter(|&i| inlinable(&candidates[i]));
+    let full_idx = distinct_files(candidates, eligible, caps.full_spans);
     let map_budget = caps.map_spans.saturating_sub(full_idx.len());
     let map: Vec<RankedSpan> = (0..candidates.len())
         .filter(|i| !full_idx.contains(i))
@@ -391,7 +484,11 @@ pub fn render_sized_with_keys(ctx: &SizedContext, budget_tokens: usize) -> (Stri
         out.push_str(trust);
     }
     out.push_str(&code);
-    out.push_str(COMPACT_FOOTER);
+    out.push_str(if code.is_empty() {
+        NO_CODE_FOOTER
+    } else {
+        COMPACT_FOOTER
+    });
 
     if !ctx.already.is_empty() {
         let mut line = String::from(ALREADY_PREFIX);
@@ -464,12 +561,196 @@ mod tests {
             mode,
             elapsed_ms: 1,
             candidates,
+            scored: 0,
+            offered: 0,
             related,
         }
     }
 
     fn key(s: &RankedSpan) -> SpanKey {
         SpanKey::of(s)
+    }
+
+    fn opts(caps: SizingCaps, inline_prose: bool) -> SizeOpts {
+        SizeOpts { caps, inline_prose }
+    }
+
+    fn zero_taus() -> SizingPolicy {
+        SizingPolicy {
+            tau_full: 0.0,
+            tau_map: 0.0,
+            ..SizingPolicy::default()
+        }
+    }
+
+    #[test]
+    fn a_follow_up_that_asks_for_tests_or_callers_inlines_no_code() {
+        let spans: Vec<RankedSpan> = (0..10)
+            .map(|i| {
+                span(
+                    &format!("f{i}.rs"),
+                    1,
+                    50,
+                    "",
+                    Some(0.9),
+                    1.0 - i as f32 / 20.0,
+                )
+            })
+            .collect();
+        let r = result(RankMode::Laya, spans, vec![]);
+        let caps = follow_up_caps(FollowUpIntent {
+            tests: true,
+            callers: false,
+        });
+        let ctx = size_context_opts(&r, &opts(caps, false), &zero_taus(), &[]);
+        assert!(ctx.full.is_empty());
+        assert_eq!(ctx.map.len(), 6);
+        let plain = follow_up_caps(FollowUpIntent::default());
+        let ctx = size_context_opts(&r, &opts(plain, false), &zero_taus(), &[]);
+        assert_eq!(
+            ctx.full.len(),
+            1,
+            "a follow-up with no named intent gets one block"
+        );
+    }
+
+    #[test]
+    fn prose_is_listed_not_inlined_and_the_next_code_file_takes_its_place() {
+        let spans = vec![
+            span("CHANGELOG.md", 1, 20, "", Some(0.9), 1.0),
+            span("src/a.rs", 1, 20, "", Some(0.9), 0.9),
+            span("docs/guide.rst", 1, 20, "", Some(0.9), 0.8),
+            span("src/b.rs", 1, 20, "", Some(0.9), 0.7),
+        ];
+        for mode in [RankMode::Laya, RankMode::Lexical] {
+            let r = result(mode, spans.clone(), vec![]);
+            let ctx = size_context_opts(&r, &opts(Scope::caps(None), false), &zero_taus(), &[]);
+            let full: Vec<&str> = ctx.full.iter().map(|s| s.path.as_str()).collect();
+            assert_eq!(full, ["src/a.rs", "src/b.rs"]);
+            assert!(
+                ctx.map.iter().any(|s| s.path == "CHANGELOG.md"),
+                "still listed"
+            );
+            let asked = size_context_opts(&r, &opts(Scope::caps(None), true), &zero_taus(), &[]);
+            assert_eq!(
+                asked.full[0].path, "CHANGELOG.md",
+                "inlined when the task asks for docs"
+            );
+        }
+    }
+
+    #[test]
+    fn size_context_keeps_its_behaviour() {
+        let spans = vec![
+            span("README.md", 1, 20, "", Some(0.9), 1.0),
+            span("src/a.rs", 1, 20, "", Some(0.9), 0.9),
+        ];
+        let r = result(RankMode::Laya, spans, vec![]);
+        let ctx = size_context(&r, None, &zero_taus(), &[]);
+        assert_eq!(ctx.full.len(), 2);
+    }
+
+    #[test]
+    fn an_unscored_tail_still_sizes_by_rank_and_never_inlines_a_tail_span() {
+        // The budget stopped the model after two candidates: the tail has no p, so selection is
+        // by rank, and with the default thresholds a tail span must not jump into `full`.
+        let spans = vec![
+            span("a.rs", 1, 20, "", Some(0.9), 1.0),
+            span("b.rs", 1, 20, "", Some(0.1), 0.9),
+            span("c.rs", 1, 20, "", None, 0.0),
+            span("d.rs", 1, 20, "", None, 0.0),
+        ];
+        let r = result(RankMode::Laya, spans, vec![]);
+        for policy in [SizingPolicy::default(), zero_taus()] {
+            let ctx = size_context(&r, None, &policy, &[]);
+            let full: Vec<&str> = ctx.full.iter().map(|s| s.path.as_str()).collect();
+            assert_eq!(full, ["a.rs", "b.rs"]);
+        }
+    }
+
+    #[test]
+    fn smaller_caps_take_the_minimum_of_each() {
+        let a = SizingCaps {
+            map_spans: 6,
+            full_spans: 1,
+            related: 8,
+        };
+        let b = SizingCaps {
+            map_spans: 8,
+            full_spans: 0,
+            related: 6,
+        };
+        assert_eq!(
+            a.min(b),
+            SizingCaps {
+                map_spans: 6,
+                full_spans: 0,
+                related: 6
+            }
+        );
+    }
+
+    #[test]
+    fn a_render_without_code_blocks_does_not_point_at_code_above() {
+        let spans: Vec<RankedSpan> = (0..3)
+            .map(|i| span(&format!("f{i}.rs"), 1, 20, "", Some(0.9), 1.0))
+            .collect();
+        let r = result(RankMode::Laya, spans, vec![]);
+        let caps = follow_up_caps(FollowUpIntent {
+            tests: true,
+            callers: true,
+        });
+        let ctx = size_context_opts(&r, &opts(caps, false), &zero_taus(), &[]);
+        let (text, keys) = render_sized_with_keys(&ctx, 3000);
+        assert!(keys.is_empty());
+        assert!(!text.contains("code above"), "{text}");
+        assert!(text.contains(NO_CODE_FOOTER), "{text}");
+        let with_code = size_context(&r, None, &zero_taus(), &[]);
+        assert!(render_sized(&with_code, 3000).contains(COMPACT_FOOTER));
+    }
+
+    #[test]
+    fn a_related_range_listed_twice_is_shown_once_with_its_first_relation() {
+        let spans = vec![span("src/a.rs", 1, 20, "", Some(0.9), 1.0)];
+        let r = result(
+            RankMode::Laya,
+            spans,
+            vec![
+                related("tests/t.rs", 5, 30, "test using `a`"),
+                related("src/b.rs", 1, 9, "calls `a` (#1)"),
+                related("tests/t.rs", 5, 30, "calls `a` (#1)"),
+            ],
+        );
+        let ctx = size_context(&r, None, &zero_taus(), &[]);
+        let rel: Vec<&str> = ctx.related.iter().map(|r| r.relation.as_str()).collect();
+        assert_eq!(rel, ["test using `a`", "calls `a` (#1)"]);
+        assert_eq!(ctx.related[1].path, "src/b.rs");
+    }
+
+    #[test]
+    fn prose_paths() {
+        for p in [
+            "README.md",
+            "docs/a.rst",
+            "CHANGELOG",
+            "notes.adoc",
+            "x/LICENSE",
+            "a.mdx",
+        ] {
+            assert!(is_prose_path(p), "{p}");
+        }
+        for p in [
+            "src/a.rs",
+            "package.json",
+            "build.sh",
+            "q.sql",
+            "Makefile",
+            "readme.rs",
+            "CMakeLists.txt",
+            "requirements.txt",
+        ] {
+            assert!(!is_prose_path(p), "{p}");
+        }
     }
 
     #[test]
