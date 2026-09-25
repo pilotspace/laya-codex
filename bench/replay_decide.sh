@@ -1,8 +1,15 @@
 #!/bin/sh
-# Offline replay gate: who decides what loads -- keywords (lexical only), blend (lexical + Laya,
-# w=0.5, the default), model-only (Laya alone, w=1), and an optional candidate model checkpoint,
-# each replayed through the real `laya-codex hook` (bench/replay_hooks.py) across every repo.
+# Offline replay gate: who decides what loads -- keywords (lexical only), blend (the production
+# configuration: lexical + Laya, w=0.5, default score_top), model-only (Laya alone, w=1, a
+# diagnostic, not the shipped mode), and -- when --candidate-model-dir is given -- candidate (the
+# retrained model in the same production blend as `blend`, only the model swapped) and
+# candidate-model-only (that model alone, the model-only diagnostic for it), each replayed through
+# the real `laya-codex hook` (bench/replay_hooks.py) across every repo.
 # No Claude Code session runs; this is free and safe to run before spending on a paid benchmark.
+#
+# The gate: `candidate` must beat `keywords` and match or beat `blend` -- Laya ships as a reranker
+# blended with lexical (owner decision 2026-09-25), never as a model deciding alone, so a candidate
+# is judged in that production configuration, not model-only.
 #
 # Every path and port is a required argument: nothing here is specific to one machine or one job.
 #
@@ -74,12 +81,20 @@ one blend
 one keywords LAYA_CODEX_BUDGET_MS=0
 one model-only LAYA_CODEX_WEIGHT=1 LAYA_CODEX_SCORE_TOP=0 LAYA_CODEX_BUDGET_MS=3000
 if [ -n "$CANDIDATE_MODEL_DIR" ]; then
-    one candidate LAYA_CODEX_MODEL_DIR="$CANDIDATE_MODEL_DIR" LAYA_CODEX_WEIGHT=1 LAYA_CODEX_SCORE_TOP=0 LAYA_CODEX_BUDGET_MS=3000
+    # candidate: the production blend (default weight, score_top and budget) with only the model
+    # swapped -- this is what the gate compares with keywords and blend.
+    one candidate LAYA_CODEX_MODEL_DIR="$CANDIDATE_MODEL_DIR"
+    # candidate-model-only: the same candidate model alone (w=1), a diagnostic only -- never the
+    # gate's comparison, since Laya ships blended, not deciding alone.
+    one candidate-model-only LAYA_CODEX_MODEL_DIR="$CANDIDATE_MODEL_DIR" LAYA_CODEX_WEIGHT=1 LAYA_CODEX_SCORE_TOP=0 LAYA_CODEX_BUDGET_MS=3000
 fi
 
 # Moon is a sidecar the daemon starts under this home; `stop` above does not kill it (see
 # CLAUDE.md), so match its --dir path explicitly and only touch what this run started.
 pkill -f "moon.*--dir $HOME_DIR/moon" 2>/dev/null || true
 
+# The table below carries every arm run above; read it as: does `candidate` (the production
+# blend with the retrained model) beat `keywords` and match or beat `blend`? model-only and
+# candidate-model-only are diagnostics only, not the comparison the gate is judged on.
 python3 "$HERE/replay_hooks.py" summary "$OUT"
 echo "REPLAY-DECIDE-DONE"
