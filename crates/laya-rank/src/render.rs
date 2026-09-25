@@ -66,12 +66,27 @@ or grep to re-check them.\n\n";
 /// the size cap cuts one of the identifier's lines.
 pub(crate) const COMPLETE_USES: &str = " (all indexed uses shown)";
 
-pub(crate) const COMPACT_FOOTER: &str = "Use the code above directly. Search or Read further only for what is \
-still missing, and prefer Read with offset/limit around the listed lines.\n";
+/// Ends the footer of every injection: which lookups the MCP `search` tool answers. Benchmark v3: 72%
+/// of the remaining Greps came with the tests-and-callers follow-up, mostly for identifiers the
+/// agent already knew; the tool description alone moved none of them (pilot, 0 calls).
+macro_rules! search_hint {
+    () => {
+        "For the definition, callers or tests of a name, the laya-codex `search` tool with the \
+name (e.g. `foo|Bar`) lists every matching line with its enclosing function or test, in one call.\n"
+    };
+}
+
+pub(crate) const COMPACT_FOOTER: &str = concat!(
+    "Use the code above directly. Search or Read further only for what is \
+still missing, and prefer Read with offset/limit around the listed lines.\n",
+    search_hint!()
+);
 
 /// The footer of an injection that inlines no code (a follow-up answered by lists).
-pub(crate) const NO_CODE_FOOTER: &str =
-    "For code you still need, Read with offset/limit around the listed lines.\n";
+pub(crate) const NO_CODE_FOOTER: &str = concat!(
+    "For code you still need, Read with offset/limit around the listed lines.\n",
+    search_hint!()
+);
 
 /// Compact injection: a ranked file map (every span as `path:lines — symbol`, grouped per file)
 /// plus the full code of only the first `full_spans` spans, then (when non-empty) a
@@ -695,6 +710,19 @@ mod match_tests {
         let tail = out.split("Not shown").nth(1).unwrap();
         assert!(tail.contains("(1), and "), "{tail}");
         assert!(tail.trim_end().ends_with("more files."), "{tail}");
+    }
+
+    #[test]
+    fn every_injection_footer_says_which_lookups_search_answers() {
+        // Benchmark v3: 72% of the Greps left came with the tests-and-callers follow-up, 76% of
+        // them for identifiers the agent already knew. The footer is the last thing it reads.
+        for footer in [COMPACT_FOOTER, NO_CODE_FOOTER] {
+            assert!(footer.contains("`search`"), "{footer}");
+            for needle in ["callers", "tests", "every matching line"] {
+                assert!(footer.contains(needle), "{needle:?} missing: {footer}");
+            }
+            assert!(footer.len() < 400, "kept short: {} chars", footer.len());
+        }
     }
 
     #[test]
