@@ -337,6 +337,8 @@ struct Hit {
 
 struct Scan {
     files_read: usize,
+    /// Files in scope that were not searched: over 1 MiB, unreadable or not UTF-8.
+    files_skipped: usize,
     complete: bool,
     hits: Vec<Hit>,
 }
@@ -363,6 +365,7 @@ fn scan(
     };
     let mut out = Scan {
         files_read: 0,
+        files_skipped: walked.too_big,
         complete: walked.complete,
         hits: Vec::new(),
     };
@@ -372,6 +375,7 @@ fn scan(
             break;
         }
         let Ok(source) = std::fs::read_to_string(&path) else {
+            out.files_skipped += 1;
             continue;
         };
         out.files_read += 1;
@@ -732,7 +736,7 @@ fn counted_only(hit: &Hit) -> FileMatches {
     }
 }
 
-/// Exact lookup: every line naming one of `idents` in the indexed files under `scope`, ranked
+/// Exact lookup: every line naming one of `idents` in the files on disk under `scope`, ranked
 /// and rendered (see [`laya_rank::render_matches`]), within [`LOOKUP_DEADLINE`]. Fails only for
 /// a named file the indexer would not admit; the daemon only orders files.
 fn lookup(
@@ -774,7 +778,8 @@ fn lookup(
     Ok(render_matches(&IdentMatches {
         idents: idents.to_vec(),
         scope: scope.map(str::to_string),
-        files_searched: s.files_read,
+        files_read: s.files_read,
+        files_skipped: s.files_skipped,
         scan_complete: s.complete,
         files,
         definition,
@@ -1117,6 +1122,24 @@ mod tests {
         assert!(
             pkg.contains("pkg/etag.py") && !pkg.contains("tests/"),
             "{pkg}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn files_not_searched_are_counted_and_rule_out_complete() {
+        // Review: unreadable and non-UTF-8 files were counted as searched, and files over 1 MiB
+        // went unmentioned, so "Complete" could be false.
+        let root = repo("skipped");
+        let p = root.join("pkg/latin.py");
+        std::fs::write(&p, b"x = generate_digest(1)  # caf\xe9\n").unwrap();
+        add(&root, "pkg/huge.py", &"# generate_digest\n".repeat(70_000));
+        let (out, _) = search_text(&Fake(true), &root, json!({"query": "generate_digest"}));
+        assert!(!out.contains("Complete"), "{out}");
+        assert!(out.contains("2 files not searched"), "{out}");
+        assert!(
+            out.contains("in the 5 files read"),
+            "the header counts files read: {out}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

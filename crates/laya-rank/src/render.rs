@@ -334,14 +334,17 @@ impl FileMatches {
     }
 }
 
-/// An exact identifier lookup: every line naming one of `idents` in the indexed files under
+/// An exact identifier lookup: every line naming one of `idents` in the files on disk under
 /// `scope`, files in relevance order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentMatches {
     pub idents: Vec<String>,
     /// Repo-relative file or directory the lookup was restricted to.
     pub scope: Option<String>,
-    pub files_searched: usize,
+    /// Files read and searched.
+    pub files_read: usize,
+    /// Files in scope that were not searched (over 1 MiB, unreadable or not UTF-8).
+    pub files_skipped: usize,
     /// Every file in scope was read (no time limit hit), so the lines found are all there are.
     pub scan_complete: bool,
     pub files: Vec<FileMatches>,
@@ -366,20 +369,17 @@ pub fn render_matches(m: &IdentMatches) -> String {
         .as_deref()
         .map(|s| format!(" under {s}"))
         .unwrap_or_default();
-    let n = m.files_searched;
+    let n = m.files_read;
     let mut out = format!(
         "<!-- laya-codex search: lines naming {names} (whole or inside a longer name) in the {n} \
-indexed files{under}, by file and enclosing function or test, most relevant first. -->\n"
+files read{under} (code, docs and config on disk, .gitignore respected), by file and enclosing \
+function or test, most relevant first. -->\n"
     );
     if m.files.is_empty() {
-        out.push_str(&if m.scan_complete {
-            format!("No match for {names} in the {n} indexed files{under}.\n")
-        } else {
-            format!(
-                "No match for {names} in the {n} files read{under} before the time \
-limit; the search may be incomplete.\n"
-            )
-        });
+        out.push_str(&format!(
+            "No match for {names} in the {n} files read{under}.\n"
+        ));
+        out.push_str(&coverage_notes(m));
         return out;
     }
 
@@ -469,7 +469,7 @@ fn match_summary(m: &IdentMatches, total: usize, shown_per_file: &[usize]) -> St
         .zip(shown_per_file)
         .filter(|(f, n)| **n > 0 && !f.grouped)
         .count();
-    if shown == total && m.scan_complete && flat == 0 {
+    if shown == total && m.scan_complete && m.files_skipped == 0 && flat == 0 {
         s.push_str("Complete: every matching line is listed below.\n");
     } else if shown < total {
         s.push_str(&format!(
@@ -478,15 +478,28 @@ fn match_summary(m: &IdentMatches, total: usize, shown_per_file: &[usize]) -> St
     } else {
         s.push('\n');
     }
-    if !m.scan_complete {
-        s.push_str(&format!(
-            "Stopped at the time limit after reading {} files: the list may be incomplete.\n",
-            m.files_searched
-        ));
-    }
+    s.push_str(&coverage_notes(m));
     if flat > 0 {
         s.push_str(&format!(
             "Time limit: {flat} files are listed without their enclosing functions.\n"
+        ));
+    }
+    s
+}
+
+/// What the search did not cover: files skipped, and a scan cut by the time limit.
+fn coverage_notes(m: &IdentMatches) -> String {
+    let mut s = String::new();
+    if m.files_skipped > 0 {
+        s.push_str(&format!(
+            "{} files not searched (over 1 MiB, unreadable or not UTF-8).\n",
+            m.files_skipped
+        ));
+    }
+    if !m.scan_complete {
+        s.push_str(&format!(
+            "Stopped at the time limit after reading {} files: the list may be incomplete.\n",
+            m.files_read
         ));
     }
     s
@@ -579,7 +592,8 @@ mod match_tests {
         IdentMatches {
             idents: vec!["generateDigest".into()],
             scope: None,
-            files_searched: 812,
+            files_read: 812,
+            files_skipped: 0,
             scan_complete: true,
             files,
             definition: None,
@@ -626,7 +640,7 @@ mod match_tests {
     fn lists_every_match_grep_style_grouped_by_file_and_enclosing_symbol() {
         let out = render_matches(&lookup(digest_files()));
         assert!(out.contains("`generateDigest`"), "{out}");
-        assert!(out.contains("812 indexed files"), "{out}");
+        assert!(out.contains("812 files read"), "{out}");
         assert!(
             out.contains("4 matching lines in 3 files"),
             "counts are stated: {out}"
@@ -667,7 +681,7 @@ mod match_tests {
         m.scope = Some("src/client".into());
         let out = render_matches(&m);
         assert!(
-            out.contains("No match for `generateDigest` in the 812 indexed files under src/client"),
+            out.contains("No match for `generateDigest` in the 812 files read under src/client"),
             "{out}"
         );
     }
