@@ -6,6 +6,8 @@ total input tokens, cost, wall-clock, turns, and answer accuracy (gold files fro
     python3 bench/run_bench.py tasks --repo <clone> --skip 40 --n 20 --out bench/tasks.jsonl
     python3 bench/run_bench.py run --repo <clone> --tasks bench/tasks.jsonl --arms baseline,laya \
         --out bench/results/<name> [--model sonnet] [--limit N]
+    python3 bench/run_bench.py run --repo <clone> --tasks bench/tasks.jsonl --arms baseline,laya \
+        --out bench/results/<name> --pilot --max-total-usd 2.0   # cheap go/no-go: 3 tasks, hard cap
     python3 bench/run_bench.py report --out bench/results/<name>
 """
 import argparse
@@ -16,6 +18,8 @@ import re
 import subprocess
 import sys
 import time
+
+import ledger
 
 SRC_EXT = (".rs", ".py", ".ts", ".tsx", ".js", ".go", ".java", ".c", ".h", ".cc", ".cpp", ".hpp", ".rb", ".php", ".kt", ".swift", ".cs")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -222,14 +226,46 @@ def run_one(arm, task, args, cfg_dir):
     return row, all_lines
 
 
+def pilot_subset(tasks, n=3):
+    """A fixed, deterministic subset for a cheap go/no-go run: `n` tasks evenly spread across the
+    task file's order (first, last and evenly between), so even 3 tasks span the range of changes
+    the full file covers rather than clustering at one end. `tasks` is one repo's task file, so
+    `run --pilot` invoked once per repo (the harness's normal per-repo shape) gives 3 tasks per
+    repository, as the plan calls for. Pure and index-based: same input, same output, every time."""
+    if len(tasks) <= n:
+        return list(tasks)
+    if n <= 1:
+        return tasks[:1]
+    idx = sorted({round(i * (len(tasks) - 1) / (n - 1)) for i in range(n)})
+    return [tasks[i] for i in idx]
+
+
+def check_pilot_args(args):
+    """`--pilot` runs real (billed) Claude Code sessions, so it always needs an explicit, hard
+    spending cap -- it is a cheap go/no-go check, not a way to skip setting a budget."""
+    if args.pilot and not args.max_total_usd:
+        sys.exit("--pilot requires --max-total-usd (a hard spending cap for the whole run)")
+
+
+def budget_reached(spent, cap):
+    """No cap (0 or unset) means uncapped, matching --max-total-usd's default."""
+    return bool(cap) and spent >= cap
+
+
 def run(args):
+    check_pilot_args(args)
     tasks = [json.loads(l) for l in open(args.tasks)][: args.limit or None]
+    if args.pilot:
+        tasks = pilot_subset(tasks)
     arms = args.arms.split(",")
     os.makedirs(os.path.join(args.out, "raw"), exist_ok=True)
     res_path = os.path.join(args.out, "runs.jsonl")
     done = set()
+    spent = 0.0
     if os.path.exists(res_path):
-        done = {(r["arm"], r["task_id"]) for r in map(json.loads, open(res_path))}
+        prior = [json.loads(l) for l in open(res_path)]
+        done = {(r["arm"], r["task_id"]) for r in prior}
+        spent = sum(r.get("cost_usd") or 0 for r in prior)
     cfg_dir = render_configs(args.out)
     # Restart the daemon so the first hook starts it with this run's environment (LAYA_CODEX_MEMO etc.).
     laya_bin = os.environ.get("LAYA_CODEX_BIN") or os.path.abspath(os.path.join(HERE, "..", "target", "release", "laya-codex"))
@@ -239,7 +275,11 @@ def run(args):
     for i, (arm, task) in enumerate(plan):
         if (arm, task["id"]) in done:
             continue
+        if budget_reached(spent, args.max_total_usd):
+            print("stopping: budget cap $%.2f reached (spent $%.2f)" % (args.max_total_usd, spent), flush=True)
+            break
         row, lines = run_one(arm, task, args, cfg_dir)
+        spent += row["cost_usd"] or 0
         with open(os.path.join(args.out, "raw", "%s_%s.jsonl" % (task["id"], arm)), "w") as f:
             f.write("\n".join(lines))
         with open(res_path, "a") as f:
@@ -286,7 +326,8 @@ def report(args):
             lines.append("| **%s vs baseline** | reading+injected %+.1f%% · wall %+.1f%% · median wall ratio %.2f · median total-input ratio %.2f |" % (
                 a, summary["arms"][a]["reading_cost_change_pct"], summary["arms"][a]["wall_change_pct"],
                 summary["arms"][a]["median_wall_ratio"], summary["arms"][a]["median_total_input_ratio"]))
-    md = "\n".join(lines)
+    ledger_md = ledger.render(rows)
+    md = "\n".join(lines) + "\n\n" + ledger_md
     print(md)
     json.dump(summary, open(os.path.join(args.out, "summary.json"), "w"), indent=1)
     open(os.path.join(args.out, "summary.md"), "w").write(md + "\n")
@@ -311,6 +352,9 @@ def main():
     r.add_argument("--timeout", type=int, default=900)
     r.add_argument("--max-usd", type=float, default=2.0)
     r.add_argument("--turns", type=int, default=1, help="prompts per session (2 = localisation + follow-up)")
+    r.add_argument("--pilot", action="store_true",
+                    help="deterministic 3-task subset of --tasks (run once per repo for 3/repo); requires --max-total-usd")
+    r.add_argument("--max-total-usd", type=float, default=0.0, help="stop the run once total cost reaches this cap")
     p = sub.add_parser("report")
     p.add_argument("--out", required=True)
     args = ap.parse_args()

@@ -16,17 +16,26 @@ from collections import defaultdict
 import read_accuracy
 import stats_pooled as sp
 
+# reading_plus_injected (tokens Claude reads plus tokens laya-codex injects) is the VISION.md
+# token target and leads every report; reading_tokens stays right beside it for context, never
+# reported alone -- a smaller-reads/bigger-injection trade must show as the loss it is.
 METRICS = {
-    "reading_tokens": sp.METRICS["code-reading tokens"],
     "reading_plus_injected": sp.METRICS["reading+injected tokens"],
+    "reading_tokens": sp.METRICS["code-reading tokens"],
     "total_input": sp.METRICS["total input tokens"],
     "wall_clock": sp.METRICS["wall seconds"],
     "turns": sp.METRICS["turns"],
     "cost": sp.METRICS["cost usd"],
 }
 
-LABELS = {"reading_tokens": "Code-reading tokens", "reading_plus_injected": "Reading + injected",
+LABELS = {"reading_plus_injected": "Reading + injected", "reading_tokens": "Code-reading tokens",
           "total_input": "Total input tokens", "wall_clock": "Wall-clock time", "turns": "Turns", "cost": "Cost"}
+
+# Chart headline: reading_plus_injected first (the target), reading_tokens right beside it.
+CHART_METRICS = ["reading_plus_injected", "reading_tokens", "turns", "cost", "total_input", "wall_clock"]
+# Neutral by design: v9 shows reading+injected *up* 4.6% against stock even though reading_tokens
+# is down -- a title that always claims "reads less" would misstate a run where the target regresses.
+CHART_TITLE = "laya-codex vs stock Claude Code: code tokens reaching Claude, turns and cost"
 
 
 def compare(runs, arm, base, keys, B=10000):
@@ -68,8 +77,8 @@ def main():
     lexb, _, lexb_q, _ = compare(runs, "laya-lex", "baseline", keys)
     out = {"version": "v8", "n_tasks": n, "repos": [r for r, _ in runs], "model": "sonnet", "arm": "laya-adaptive",
            "metrics": {k: {"label": LABELS[k], **v} for k, v in pooled.items()},
-           "chart_metrics": ["reading_tokens", "turns", "cost", "total_input", "wall_clock"],
-           "chart_title": "With laya-codex, Claude reads less code and takes fewer turns",
+           "chart_metrics": CHART_METRICS,
+           "chart_title": CHART_TITLE,
            "per_repo": per_repo,
            "answer_recall": {"baseline": q["answer_recall"]["baseline"], "laya": q["answer_recall"]["laya-adaptive"],
                              "diff": q["answer_recall"]["diff"], "lo": q["answer_recall"]["lo"], "hi": q["answer_recall"]["hi"]},
