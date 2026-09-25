@@ -1,6 +1,5 @@
-//! Adaptive context sizing: stop injecting a fixed amount (map 10 / full 3 / related 8
-//! regardless of the task) and instead size per scope and skip anything already sent this
-//! session.
+//! Adaptive context sizing: full code for the top-ranked files, location pointers for the rest,
+//! smaller caps for follow-up prompts, and nothing that was already sent this session.
 //!
 //! [`size_context`] turns a [`QueryResult`] into a [`SizedContext`] — which spans get their full
 //! code inlined, which are map-only (a location pointer), which are already-sent (dropped
@@ -18,21 +17,6 @@ use crate::render::{
     append_related, estimate_tokens, render_span,
 };
 use crate::signals::FollowUpIntent;
-
-/// How much of the codebase a prompt's task spans, used to pick [`SizingCaps`]. `serde` uses
-/// `snake_case` (`"function"`, `"file"`, `"module"`, `"cross"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Scope {
-    /// The task is about one function/method.
-    Function,
-    /// The task is about one file.
-    File,
-    /// The task spans a module (a handful of related files).
-    Module,
-    /// The task cuts across the codebase (e.g. a rename, a cross-cutting refactor).
-    Cross,
-}
 
 /// How many spans get full code (`full_spans`), how many spans total get at least a location
 /// pointer (`map_spans`, i.e. `full_spans` is a subset of this), and how many reference
@@ -113,41 +97,16 @@ pub fn is_prose_path(path: &str) -> bool {
     }
 }
 
-/// Caps used when [`Scope`] is unknown (`None`) or a module. At most two spans get full code:
-/// in benchmark v2 (60 tasks) the third inlined block was the largest (~2.5k chars) and the least
-/// often a correct file (22%, vs 52% and 33% for the first two). Dropping it cut the injection by
-/// a quarter and lost an inlined correct file on 3 of 60 tasks; the span stays in the location
-/// listing, so the agent can still Read it.
-const DEFAULT_CAPS: SizingCaps = SizingCaps {
+/// The caps every first prompt is sized with. At most two spans get full code: in benchmark v2
+/// (60 tasks) the third inlined block was the largest (~2.5k chars) and the least often a correct
+/// file (22%, vs 52% and 33% for the first two). Dropping it cut the injection by a quarter and
+/// lost an inlined correct file on 3 of 60 tasks; the span stays in the location listing, so the
+/// agent can still Read it.
+pub const DEFAULT_CAPS: SizingCaps = SizingCaps {
     map_spans: 10,
     full_spans: 2,
     related: 8,
 };
-
-impl Scope {
-    /// Sizing caps for `scope`, or [`DEFAULT_CAPS`] when `scope` is `None`.
-    pub fn caps(scope: Option<Scope>) -> SizingCaps {
-        match scope {
-            None => DEFAULT_CAPS,
-            Some(Scope::Function) => SizingCaps {
-                map_spans: 5,
-                full_spans: 1,
-                related: 4,
-            },
-            Some(Scope::File) => SizingCaps {
-                map_spans: 8,
-                full_spans: 2,
-                related: 6,
-            },
-            Some(Scope::Module) => DEFAULT_CAPS,
-            Some(Scope::Cross) => SizingCaps {
-                map_spans: 12,
-                full_spans: 2,
-                related: 10,
-            },
-        }
-    }
-}
 
 fn default_tau_full() -> f32 {
     0.40
@@ -259,18 +218,16 @@ fn related_overlaps_span(r: &Related, s: &RankedSpan) -> bool {
     )
 }
 
-/// Size `result` into a [`SizedContext`] for `scope` (`None` = today's fixed defaults) under
-/// `policy`, treating anything overlapping `already` as already sent (dropped from `full`/`map`,
-/// reported in `.already`, and never counted against the caps — the next-ranked spans are
-/// promoted into their place).
+/// Size `result` into a [`SizedContext`] with [`DEFAULT_CAPS`] under `policy`, treating anything
+/// overlapping `already` as already sent (dropped from `full`/`map`, reported in `.already`, and
+/// never counted against the caps — the next-ranked spans are promoted into their place).
 pub fn size_context(
     result: &QueryResult,
-    scope: Option<Scope>,
     policy: &SizingPolicy,
     already: &[SpanKey],
 ) -> SizedContext {
     let opts = SizeOpts {
-        caps: Scope::caps(scope),
+        caps: DEFAULT_CAPS,
         inline_prose: true,
     };
     size_context_opts(result, &opts, policy, already)
@@ -607,7 +564,7 @@ mod tests {
             .collect();
         spans.insert(1, span("f0.rs", 40, 60, "", Some(0.95), 0.99)); // same file as the top span
         let laya = result(RankMode::Laya, spans.clone(), vec![]);
-        let ctx = size_context_opts(&laya, &opts(Scope::caps(None), false), &zero_taus(), &[]);
+        let ctx = size_context_opts(&laya, &opts(DEFAULT_CAPS, false), &zero_taus(), &[]);
         let paths = |v: &[RankedSpan]| -> Vec<String> {
             v.iter()
                 .map(|s| format!("{}:{}", s.path, s.start_line))
@@ -622,7 +579,7 @@ mod tests {
             ]
         );
         let lexical = result(RankMode::Lexical, spans, vec![]);
-        let lex = size_context_opts(&lexical, &opts(Scope::caps(None), false), &zero_taus(), &[]);
+        let lex = size_context_opts(&lexical, &opts(DEFAULT_CAPS, false), &zero_taus(), &[]);
         assert_eq!(
             (paths(&lex.full), paths(&lex.map)),
             (paths(&ctx.full), paths(&ctx.map))
@@ -670,14 +627,14 @@ mod tests {
         ];
         for mode in [RankMode::Laya, RankMode::Lexical] {
             let r = result(mode, spans.clone(), vec![]);
-            let ctx = size_context_opts(&r, &opts(Scope::caps(None), false), &zero_taus(), &[]);
+            let ctx = size_context_opts(&r, &opts(DEFAULT_CAPS, false), &zero_taus(), &[]);
             let full: Vec<&str> = ctx.full.iter().map(|s| s.path.as_str()).collect();
             assert_eq!(full, ["src/a.rs", "src/b.rs"]);
             assert!(
                 ctx.map.iter().any(|s| s.path == "CHANGELOG.md"),
                 "still listed"
             );
-            let asked = size_context_opts(&r, &opts(Scope::caps(None), true), &zero_taus(), &[]);
+            let asked = size_context_opts(&r, &opts(DEFAULT_CAPS, true), &zero_taus(), &[]);
             assert_eq!(
                 asked.full[0].path, "CHANGELOG.md",
                 "inlined when the task asks for docs"
@@ -692,7 +649,7 @@ mod tests {
             span("src/a.rs", 1, 20, "", Some(0.9), 0.9),
         ];
         let r = result(RankMode::Laya, spans, vec![]);
-        let ctx = size_context(&r, None, &zero_taus(), &[]);
+        let ctx = size_context(&r, &zero_taus(), &[]);
         assert_eq!(ctx.full.len(), 2);
     }
 
@@ -708,7 +665,7 @@ mod tests {
         ];
         let r = result(RankMode::Laya, spans, vec![]);
         for policy in [SizingPolicy::default(), zero_taus()] {
-            let ctx = size_context(&r, None, &policy, &[]);
+            let ctx = size_context(&r, &policy, &[]);
             let full: Vec<&str> = ctx.full.iter().map(|s| s.path.as_str()).collect();
             assert_eq!(full, ["a.rs", "b.rs"]);
         }
@@ -751,7 +708,7 @@ mod tests {
         assert!(keys.is_empty());
         assert!(!text.contains("code above"), "{text}");
         assert!(text.contains(NO_CODE_FOOTER), "{text}");
-        let with_code = size_context(&r, None, &zero_taus(), &[]);
+        let with_code = size_context(&r, &zero_taus(), &[]);
         assert!(render_sized(&with_code, 3000).contains(COMPACT_FOOTER));
     }
 
@@ -767,7 +724,7 @@ mod tests {
                 related("tests/t.rs", 5, 30, "calls `a` (#1)"),
             ],
         );
-        let ctx = size_context(&r, None, &zero_taus(), &[]);
+        let ctx = size_context(&r, &zero_taus(), &[]);
         let rel: Vec<&str> = ctx.related.iter().map(|r| r.relation.as_str()).collect();
         assert_eq!(rel, ["test using `a`", "calls `a` (#1)"]);
         assert_eq!(ctx.related[1].path, "src/b.rs");
@@ -823,7 +780,7 @@ mod tests {
             result(RankMode::Laya, spans, vec![]),
             result(RankMode::Lexical, lexical, vec![]),
         ] {
-            let ctx = size_context(&r, None, &policy, &[]);
+            let ctx = size_context(&r, &policy, &[]);
             let full: Vec<(&str, u32)> = ctx
                 .full
                 .iter()
@@ -853,7 +810,6 @@ mod tests {
         });
         let ctx = size_context(
             &result(RankMode::Laya, spans, rel),
-            None,
             &SizingPolicy {
                 tau_full: 0.0,
                 tau_map: 0.0,
@@ -893,7 +849,6 @@ mod tests {
             .collect();
         let ctx = size_context(
             &result(RankMode::Laya, spans, related),
-            None,
             &SizingPolicy::default(),
             &[],
         );
@@ -916,7 +871,6 @@ mod tests {
         let spans = vec![span("a.rs", 1, 20, "fn a", Some(0.9), 1.0)];
         let mut ctx = size_context(
             &result(RankMode::Laya, spans, vec![]),
-            None,
             &SizingPolicy::default(),
             &[],
         );
@@ -949,60 +903,28 @@ mod tests {
         );
     }
 
-    // ---- Scope::caps ----
+    // ---- caps ----
+
+    /// Tighter caps than the default, to exercise the caps themselves.
+    const SMALL_CAPS: SizingCaps = SizingCaps {
+        map_spans: 5,
+        full_spans: 1,
+        related: 4,
+    };
 
     #[test]
-    fn caps_match_spec_per_scope_and_default() {
-        assert_eq!(
-            Scope::caps(Some(Scope::Function)),
-            SizingCaps {
-                map_spans: 5,
-                full_spans: 1,
-                related: 4
-            }
-        );
-        assert_eq!(
-            Scope::caps(Some(Scope::File)),
-            SizingCaps {
-                map_spans: 8,
-                full_spans: 2,
-                related: 6
-            }
-        );
-        assert_eq!(
-            Scope::caps(Some(Scope::Module)),
-            SizingCaps {
-                map_spans: 10,
-                full_spans: 2,
-                related: 8
-            }
-        );
-        assert_eq!(
-            Scope::caps(Some(Scope::Cross)),
-            SizingCaps {
-                map_spans: 12,
-                full_spans: 2,
-                related: 10
-            }
-        );
-        assert_eq!(
-            Scope::caps(None),
-            SizingCaps {
-                map_spans: 10,
-                full_spans: 2,
-                related: 8
-            }
-        );
-    }
-
-    #[test]
-    fn no_scope_inlines_at_most_two_blocks() {
+    fn default_caps_inline_at_most_two_blocks() {
         // Benchmark v2: the third inlined block was the largest (~2.5k chars) and the least
         // often a correct file (22%); dropping it cut the injection by 25% and lost the
         // inlined correct file on 3 of 60 tasks, which still list it as a location.
-        for scope in [None, Some(Scope::Module), Some(Scope::Cross)] {
-            assert!(Scope::caps(scope).full_spans <= 2, "{scope:?}");
-        }
+        assert_eq!(
+            DEFAULT_CAPS,
+            SizingCaps {
+                map_spans: 10,
+                full_spans: 2,
+                related: 8
+            }
+        );
     }
 
     #[test]
@@ -1032,7 +954,7 @@ mod tests {
             span("d.rs", 1, 5, "", Some(0.05), 0.05), // below tau_map -> dropped
         ];
         let r = result(RankMode::Laya, spans, vec![]);
-        let ctx = size_context(&r, None, &SizingPolicy::default(), &[]);
+        let ctx = size_context(&r, &SizingPolicy::default(), &[]);
         assert_eq!(
             ctx.full.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
             vec!["a.rs", "b.rs"]
@@ -1065,7 +987,7 @@ mod tests {
             .collect();
         let r = result(RankMode::Laya, spans, vec![]);
         let caps_policy = SizingPolicy::default();
-        let ctx = size_context(&r, Some(Scope::Function), &caps_policy, &[]); // full_spans cap = 1
+        let ctx = size_context_opts(&r, &opts(SMALL_CAPS, true), &caps_policy, &[]); // full_spans cap = 1
         assert_eq!(ctx.full.len(), 1);
         assert_eq!(ctx.full[0].path, "f0.rs");
     }
@@ -1085,7 +1007,7 @@ mod tests {
             min_full: 2,
             ..SizingPolicy::default()
         };
-        let ctx = size_context(&r, None, &policy, &[]);
+        let ctx = size_context(&r, &policy, &[]);
         assert_eq!(
             ctx.full.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
             vec!["a.rs", "b.rs"]
@@ -1100,7 +1022,7 @@ mod tests {
             min_full: 5,
             ..SizingPolicy::default()
         };
-        let ctx = size_context(&r, None, &policy, &[]);
+        let ctx = size_context(&r, &policy, &[]);
         assert_eq!(ctx.full.len(), 1);
     }
 
@@ -1121,7 +1043,7 @@ mod tests {
             })
             .collect();
         let r = result(RankMode::Laya, spans, vec![]);
-        let ctx = size_context(&r, None, &SizingPolicy::default(), &[]);
+        let ctx = size_context(&r, &SizingPolicy::default(), &[]);
         assert_eq!(
             ctx.full.len(),
             1,
@@ -1150,7 +1072,7 @@ mod tests {
             .collect();
         let r = result(RankMode::Laya, spans, vec![]);
         // Function scope: full_spans=1, map_spans=5 (total cap), min_map default 3 — fine within cap.
-        let ctx = size_context(&r, Some(Scope::Function), &SizingPolicy::default(), &[]);
+        let ctx = size_context_opts(&r, &opts(SMALL_CAPS, true), &SizingPolicy::default(), &[]);
         assert_eq!(ctx.full.len() + ctx.map.len(), 3);
     }
 
@@ -1171,9 +1093,8 @@ mod tests {
             })
             .collect();
         let r = result(RankMode::Laya, spans, vec![]);
-        for scope in [Scope::Function, Scope::File, Scope::Module, Scope::Cross] {
-            let caps = Scope::caps(Some(scope));
-            let ctx = size_context(&r, Some(scope), &SizingPolicy::default(), &[]);
+        for caps in [SMALL_CAPS, DEFAULT_CAPS] {
+            let ctx = size_context_opts(&r, &opts(caps, true), &SizingPolicy::default(), &[]);
             assert!(ctx.full.len() <= caps.full_spans);
             assert!(ctx.full.len() + ctx.map.len() <= caps.map_spans);
         }
@@ -1189,9 +1110,9 @@ mod tests {
         ];
         let r = result(RankMode::Laya, spans.clone(), vec![]);
         let already = vec![key(&spans[0])];
-        let ctx = size_context(
+        let ctx = size_context_opts(
             &r,
-            Some(Scope::Function),
+            &opts(SMALL_CAPS, true),
             &SizingPolicy::default(),
             &already,
         ); // full cap=1
@@ -1214,7 +1135,7 @@ mod tests {
             start_line: 15,
             end_line: 25,
         }];
-        let ctx = size_context(&r, None, &SizingPolicy::default(), &already);
+        let ctx = size_context(&r, &SizingPolicy::default(), &already);
         assert!(ctx.full.is_empty());
         assert_eq!(ctx.already.len(), 1);
     }
@@ -1229,7 +1150,7 @@ mod tests {
             span("c.rs", 1, 5, "", None, 0.7),
         ];
         let r = result(RankMode::Lexical, spans, vec![]);
-        let ctx = size_context(&r, Some(Scope::Function), &SizingPolicy::default(), &[]); // full=1, map total=5
+        let ctx = size_context_opts(&r, &opts(SMALL_CAPS, true), &SizingPolicy::default(), &[]); // full=1, map total=5
         assert_eq!(
             ctx.full.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
             vec!["a.rs"]
@@ -1247,7 +1168,7 @@ mod tests {
             span("b.rs", 1, 5, "", None, 0.8), // merged span that lost its p, say
         ];
         let r = result(RankMode::Laya, spans, vec![]);
-        let ctx = size_context(&r, Some(Scope::Function), &SizingPolicy::default(), &[]);
+        let ctx = size_context_opts(&r, &opts(SMALL_CAPS, true), &SizingPolicy::default(), &[]);
         // lexical fallback: top 1 by input order goes to full, not threshold-filtered.
         assert_eq!(
             ctx.full.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
@@ -1277,7 +1198,7 @@ mod tests {
             ],
         );
         let already = vec![key(&spans[1])];
-        let ctx = size_context(&r, None, &SizingPolicy::default(), &already);
+        let ctx = size_context(&r, &SizingPolicy::default(), &already);
         assert_eq!(
             ctx.related
                 .iter()
@@ -1293,7 +1214,7 @@ mod tests {
             .map(|i| related(&format!("r{i}.rs"), 1, 5, "x"))
             .collect();
         let r = result(RankMode::Laya, vec![], related_items);
-        let ctx = size_context(&r, Some(Scope::Function), &SizingPolicy::default(), &[]); // related cap 4
+        let ctx = size_context_opts(&r, &opts(SMALL_CAPS, true), &SizingPolicy::default(), &[]); // related cap 4
         assert_eq!(ctx.related.len(), 4);
     }
 

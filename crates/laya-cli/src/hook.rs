@@ -30,7 +30,7 @@ pub struct HookCtx<'a> {
     pub compact: bool,
     /// Append the "Related by references" section (one-hop callers/callees of the top spans).
     pub related: bool,
-    /// Let the daemon size the injection (scope + calibrated P) and skip spans already sent.
+    /// Let the daemon size the injection and skip spans already sent.
     pub adaptive: bool,
 }
 

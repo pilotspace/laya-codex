@@ -19,8 +19,8 @@ pub const MAX_RENDER_TOKENS: usize = 32_000;
 pub enum Request {
     Ping,
     /// Rank spans for a prompt. `session` scopes the working set; `budget_ms` bounds Laya time.
-    /// With `render`, the daemon also sizes and renders the context (scope, calibrated P, and the
-    /// session's already-sent spans) and records what it rendered as sent.
+    /// With `render`, the daemon also sizes and renders the context (top-ranked files in full,
+    /// minus the session's already-sent spans) and records what it rendered as sent.
     Query {
         repo: String,
         session: Option<String>,
@@ -86,8 +86,8 @@ pub struct RenderReq {
     pub budget_tokens: usize,
     /// Append the "Related by references" section.
     pub related: bool,
-    /// Size adaptively (scope + calibrated P) and skip spans already sent in this session;
-    /// `false` = the fixed compact format.
+    /// Size adaptively (by rank, smaller for follow-ups) and skip spans already sent in this
+    /// session; `false` = the fixed compact format.
     pub adaptive: bool,
 }
 
@@ -109,7 +109,8 @@ pub enum Response {
         result: QueryResult,
         #[serde(default)]
         rendered: Option<String>,
-        /// Task scope predicted by the Laya classifier (`function`, `file`, `module`, `cross`).
+        /// Always `None`: the task-scope classifier that set it was removed. The field stays so
+        /// replies keep the shape older clients and logs expect.
         #[serde(default)]
         scope: Option<String>,
     },

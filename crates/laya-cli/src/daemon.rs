@@ -12,9 +12,7 @@ use std::time::{Duration, Instant};
 
 use laya_core::QueryResult;
 use laya_core::{Chunk, Scorer, Store};
-use laya_rank::{
-    FollowUpIntent, Retriever, RetrieverConfig, Scope, SizeOpts, SizingPolicy, SpanKey,
-};
+use laya_rank::{FollowUpIntent, Retriever, RetrieverConfig, SizeOpts, SizingPolicy, SpanKey};
 
 use crate::config::{Config, rel_path, repo_root};
 use crate::indexer;
@@ -59,11 +57,6 @@ impl MemoScorer {
     pub fn without_cache_reads(mut self) -> Self {
         self.read_cache = false;
         self
-    }
-
-    /// The model's busy flag, shared with other users of the same model (the scope classifier).
-    pub fn busy_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
-        Arc::clone(&self.busy)
     }
 
     fn key(&self, task: &str, chunk: &Chunk) -> String {
@@ -156,100 +149,9 @@ impl Scorer for MemoScorer {
     }
 }
 
-/// Predicts how much code a prompt needs (function / file / module / cross-module), which sets
-/// the adaptive sizing caps. `None` = unknown; sizing then uses the default caps.
-pub trait ScopeClassifier: Send + Sync {
-    fn classify(&self, prompt: &str) -> Option<Scope>;
-}
-
-const SCOPES: [Scope; 4] = [Scope::Function, Scope::File, Scope::Module, Scope::Cross];
-
-/// Laya `choice` wording for the scope question; the criteria order matches `SCOPES`.
-pub const SCOPE_QUESTION: &str = "What is the scope of the code change needed for: \"{task}\"?";
-pub const SCOPE_CRITERIA: [(&str, &str); 4] = [
-    ("function", "the edit stays inside one function or method"),
-    ("file", "the edit is confined to one file"),
-    ("module", "a few related files in one module"),
-    ("cross", "many files across several modules"),
-];
-
-/// Argmax scope if its probability reaches `min_p`, else `None` (not confident enough to shrink
-/// or grow the context).
-pub fn scope_from_probs(probs: &[f32], min_p: f32) -> Option<Scope> {
-    if probs.len() != SCOPES.len() {
-        return None;
-    }
-    let (i, &p) = probs.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1))?;
-    (p >= min_p).then_some(SCOPES[i])
-}
-
-/// Scope classifier on the resident Laya model. Memoized per prompt in the store; skipped (→
-/// `None`) while the model is busy so a prompt never queues behind an abandoned scoring run.
-pub struct LayaScope {
-    pub scorer: Arc<laya_model::LayaScorer>,
-    pub store: Arc<dyn Store>,
-    pub busy: Arc<std::sync::atomic::AtomicBool>,
-    pub model_tag: String,
-    pub min_p: f32,
-}
-
-impl LayaScope {
-    fn probs(&self, prompt: &str) -> Option<Vec<f32>> {
-        let key = format!(
-            "scope:{}",
-            &blake3::hash(format!("{}\0{prompt}", self.model_tag).as_bytes()).to_hex()[..32]
-        );
-        if let Some(v) = self.store.memo_get(&key).ok().flatten() {
-            return v.split(',').map(|x| x.parse().ok()).collect();
-        }
-        use std::sync::atomic::Ordering;
-        if self
-            .busy
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return None;
-        }
-        let _guard = BusyGuard(&self.busy);
-        let criteria: Vec<(&str, Option<&str>)> =
-            SCOPE_CRITERIA.iter().map(|(n, d)| (*n, Some(*d))).collect();
-        let question = SCOPE_QUESTION.replace("{task}", prompt);
-        let probs = self
-            .scorer
-            .model
-            .choice(&question, &criteria, &[prompt.to_string()])
-            .ok()?
-            .pop()?;
-        let v: Vec<String> = probs.iter().map(|p| format!("{p:.4}")).collect();
-        let _ = self.store.memo_put(&key, &v.join(","), 86_400);
-        Some(probs)
-    }
-}
-
-impl ScopeClassifier for LayaScope {
-    fn classify(&self, prompt: &str) -> Option<Scope> {
-        let t0 = std::time::Instant::now();
-        let probs = self.probs(prompt)?;
-        let scope = scope_from_probs(&probs, self.min_p);
-        eprintln!(
-            "[laya-codex] scope {scope:?} p={probs:?} in {:?}",
-            t0.elapsed()
-        );
-        scope
-    }
-}
-
-fn scope_name(s: Scope) -> String {
-    serde_json::to_value(s)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_default()
-}
-
 pub struct Daemon {
     pub store: Arc<dyn Store>,
     pub scorer: RwLock<Option<Arc<dyn Scorer>>>,
-    pub scope: RwLock<Option<Arc<dyn ScopeClassifier>>>,
     pub sizing: SizingPolicy,
     pub sessions: Mutex<Sessions>,
     pub indexing: Mutex<HashSet<String>>,
@@ -291,7 +193,6 @@ impl Daemon {
         Arc::new(Daemon {
             store,
             scorer: RwLock::new(None),
-            scope: RwLock::new(None),
             sizing,
             sessions: Mutex::new(Sessions::default()),
             indexing: Mutex::new(HashSet::new()),
@@ -329,9 +230,9 @@ impl Daemon {
         n > 0 && n < limit
     }
 
-    /// Render `result` for injection. Adaptive: classify scope, size by scope and calibrated P,
-    /// skip what the session already has, and record what was inlined — under one session lock
-    /// so concurrent prompts cannot both send the same span.
+    /// Render `result` for injection. Adaptive: size by rank, skip what the session already has,
+    /// and record what was inlined — under one session lock so concurrent prompts cannot both
+    /// send the same span.
     fn render(
         &self,
         (root, id): (&Path, &str),
@@ -340,19 +241,10 @@ impl Daemon {
         result: &QueryResult,
         req: &RenderReq,
         follow_up: Option<FollowUpIntent>,
-    ) -> (String, Option<Scope>) {
+    ) -> String {
         if !req.adaptive {
-            return (
-                laya_rank::render_compact_opts(result, 3, req.budget_tokens, req.related),
-                None,
-            );
+            return laya_rank::render_compact_opts(result, 3, req.budget_tokens, req.related);
         }
-        let scope = self
-            .scope
-            .read()
-            .ok()
-            .and_then(|c| c.clone())
-            .and_then(|c| c.classify(prompt));
         // Read before taking the session lock: it can go to the store.
         let small_repo = self.is_small_repo(id);
         let mut sessions = self.sessions();
@@ -366,7 +258,7 @@ impl Daemon {
                 end_line,
             })
             .collect();
-        let mut caps = Scope::caps(scope);
+        let mut caps = laya_rank::DEFAULT_CAPS;
         if let Some(intent) = follow_up {
             caps = caps.min(laya_rank::follow_up_caps(intent));
         }
@@ -383,7 +275,7 @@ impl Daemon {
             ctx.related.clear();
         }
         if ctx.full.is_empty() && ctx.map.is_empty() && ctx.related.is_empty() {
-            return (String::new(), scope); // everything relevant is already in context
+            return String::new(); // everything relevant is already in context
         }
         let (text, keys) = laya_rank::render_sized_with_keys(&ctx, req.budget_tokens);
         if let Some(s) = session {
@@ -393,7 +285,7 @@ impl Daemon {
                 .collect();
             sessions.mark_sent(s, &keys);
         }
-        (text, scope)
+        text
     }
 
     /// Inline code only from files whose bytes still match the index, so the render can vouch
@@ -509,28 +401,24 @@ impl Daemon {
                         if let Some(s) = &session {
                             self.sessions().record_query(s, &result);
                         }
-                        let (rendered, scope) = match &render {
-                            Some(r) => {
-                                let r = RenderReq {
-                                    budget_tokens: r.budget_tokens.min(MAX_RENDER_TOKENS),
-                                    ..r.clone()
-                                };
-                                let (text, scope) = self.render(
-                                    (&root, &id),
-                                    session.as_deref(),
-                                    &prompt,
-                                    &result,
-                                    &r,
-                                    follow_up,
-                                );
-                                (Some(text), scope.map(scope_name))
-                            }
-                            None => (None, None),
-                        };
+                        let rendered = render.as_ref().map(|r| {
+                            let r = RenderReq {
+                                budget_tokens: r.budget_tokens.min(MAX_RENDER_TOKENS),
+                                ..r.clone()
+                            };
+                            self.render(
+                                (&root, &id),
+                                session.as_deref(),
+                                &prompt,
+                                &result,
+                                &r,
+                                follow_up,
+                            )
+                        });
                         Response::Query {
                             result,
                             rendered,
-                            scope,
+                            scope: None,
                         }
                     }
                     Err(e) => Response::Error {
@@ -993,13 +881,7 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
         tau_map: env_num::<f32>("LAYA_CODEX_TAU_MAP").unwrap_or(0.0),
         ..SizingPolicy::default()
     };
-    let scope_p = env_num::<f32>("LAYA_CODEX_SCOPE_P").unwrap_or(0.4);
-    // Off by default: zero-shot scope is near-uniform (macro-F1 <= 0.28) and even oracle scope
-    // barely changes what loads, so it would only cost a model call per prompt.
-    let use_scope = std::env::var("LAYA_CODEX_SCOPE")
-        .map(|v| v == "1")
-        .unwrap_or(false);
-    eprintln!("[laya-codex] sizing {sizing:?} scope={use_scope} scope_p={scope_p}");
+    eprintln!("[laya-codex] sizing {sizing:?}");
     // Opt-in: `1` = repositories under 200 indexed files, a number = that threshold.
     let small_repo_files = match std::env::var("LAYA_CODEX_SIZE_BY_REPO").as_deref() {
         Ok("1") => Some(200),
@@ -1040,23 +922,10 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
                     let batch: Vec<&Chunk> = std::iter::repeat_n(&warm, 24).collect();
                     let _ = scorer.score("warm up the relevance model", &batch);
                     eprintln!("[laya-codex] model warm-up in {:?}", t_warm.elapsed());
-                    let scorer = Arc::new(scorer);
-                    let inner: Arc<dyn Scorer> = scorer.clone();
+                    let inner: Arc<dyn Scorer> = Arc::new(scorer);
                     let mut memo = MemoScorer::new(inner, Arc::clone(&d.store), &tag);
                     if std::env::var("LAYA_CODEX_MEMO").is_ok_and(|v| v == "0") {
                         memo = memo.without_cache_reads();
-                    }
-                    if use_scope {
-                        let scope = LayaScope {
-                            scorer,
-                            store: Arc::clone(&d.store),
-                            busy: memo.busy_flag(),
-                            model_tag: name.clone(),
-                            min_p: scope_p,
-                        };
-                        if let Ok(mut s) = d.scope.write() {
-                            *s = Some(Arc::new(scope));
-                        }
                     }
                     if let Ok(mut s) = d.scorer.write() {
                         *s = Some(Arc::new(memo));
@@ -1295,13 +1164,6 @@ mod tests {
             2,
             "every prompt is scored cold"
         );
-    }
-
-    struct FixedScope(Option<Scope>);
-    impl ScopeClassifier for FixedScope {
-        fn classify(&self, _prompt: &str) -> Option<Scope> {
-            self.0
-        }
     }
 
     /// A repo on disk with four one-function files, indexed with their real hashes (the
@@ -1942,20 +1804,18 @@ mod tests {
     }
 
     #[test]
-    fn scope_is_classified_and_reported_only_for_adaptive_renders() {
+    fn a_query_reports_no_scope_and_renders_only_when_asked() {
         let (d, repo) = daemon_with_code();
-        *d.scope.write().unwrap() = Some(Arc::new(FixedScope(Some(Scope::Function))));
-        assert!(
-            matches!(query(&d, &repo, true), Response::Query { scope: Some(ref s), .. } if s == "function")
-        );
-        assert!(matches!(
-            query(&d, &repo, false),
-            Response::Query {
-                scope: None,
-                rendered: Some(_),
-                ..
-            }
-        ));
+        for adaptive in [true, false] {
+            assert!(matches!(
+                query(&d, &repo, adaptive),
+                Response::Query {
+                    scope: None,
+                    rendered: Some(_),
+                    ..
+                }
+            ));
+        }
         let plain = d.handle(Request::Query {
             repo,
             session: None,
@@ -1965,16 +1825,6 @@ mod tests {
             render: None,
         });
         assert!(matches!(plain, Response::Query { rendered: None, .. }));
-    }
-
-    #[test]
-    fn scope_from_probs_needs_confidence() {
-        assert_eq!(
-            scope_from_probs(&[0.1, 0.7, 0.1, 0.1], 0.4),
-            Some(Scope::File)
-        );
-        assert_eq!(scope_from_probs(&[0.3, 0.3, 0.2, 0.2], 0.4), None);
-        assert_eq!(scope_from_probs(&[0.5], 0.4), None);
     }
 
     #[test]
