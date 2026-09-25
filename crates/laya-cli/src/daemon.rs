@@ -1608,6 +1608,102 @@ mod tests {
         );
     }
 
+    /// Every chunk gets the same low probability: far below any probability threshold.
+    struct LowScorer;
+    impl Scorer for LowScorer {
+        fn score(&self, _task: &str, chunks: &[&Chunk]) -> laya_core::Result<Vec<f32>> {
+            Ok(vec![0.05; chunks.len()])
+        }
+    }
+
+    /// The production daemon's ranking and sizing, with `LowScorer` as the model.
+    fn production_daemon(store: Arc<dyn Store>) -> Arc<Daemon> {
+        let cfg = RetrieverConfig {
+            laya_weight: Some(0.5),
+            p_threshold: 0.0,
+            ..RetrieverConfig::default()
+        };
+        let sizing = SizingPolicy {
+            tau_full: 0.0,
+            tau_map: 0.0,
+            ..SizingPolicy::default()
+        };
+        let d = Daemon::with_options(store, cfg, sizing, None);
+        *d.scorer.write().unwrap() = Some(Arc::new(LowScorer));
+        d
+    }
+
+    fn ask_ranked(
+        d: &Arc<Daemon>,
+        repo: &str,
+        session: &str,
+        prompt: &str,
+    ) -> (QueryResult, String) {
+        match d.handle(Request::Query {
+            repo: repo.into(),
+            session: Some(session.into()),
+            prompt: prompt.into(),
+            budget_ms: Some(10_000),
+            top_n: None,
+            render: Some(RenderReq {
+                budget_tokens: 3000,
+                related: true,
+                adaptive: true,
+            }),
+        }) {
+            Response::Query {
+                result,
+                rendered: Some(r),
+                ..
+            } => (result, r),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_model_ranked_render_inlines_the_top_two_files_by_rank_whatever_their_probability() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        let d = production_daemon(d.store.clone());
+        let (result, text) = ask_ranked(&d, &repo, "s", "where is the wal segment replayed");
+        assert_eq!(
+            result.mode,
+            laya_core::RankMode::Laya,
+            "the model ranked it"
+        );
+        assert!(result.spans.iter().all(|s| s.p_relevant == Some(0.05)));
+        assert_eq!(blocks(&text), 2, "{text}");
+        let inlined: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("### "))
+            .map(|l| l.split(':').next().unwrap_or_default())
+            .collect();
+        let top: Vec<&str> = result
+            .spans
+            .iter()
+            .take(2)
+            .map(|s| s.path.as_str())
+            .collect();
+        assert_eq!(inlined, top, "the first two ranked files: {text}");
+    }
+
+    #[test]
+    fn a_whole_file_read_keeps_that_file_out_of_later_injections() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        let d = production_daemon(d.store.clone());
+        let (result, _) = ask_ranked(&d, &repo, "probe", "where is the wal segment replayed");
+        let top = result.spans[0].path.clone();
+        for (session, full) in [("whole", true), ("ranged", false)] {
+            d.handle(Request::NoteRead {
+                session: session.into(),
+                path: top.clone(),
+                full,
+            });
+            let (_, text) = ask_ranked(&d, &repo, session, "where is the wal segment replayed");
+            let inlined = text.contains(&format!("### {top}:"));
+            assert_eq!(inlined, !full, "{session}: {text}");
+        }
+    }
+
     #[test]
     fn a_follow_up_without_a_named_intent_inlines_at_most_one_block() {
         let (d, repo) = daemon_with_files(WAL_FILES);

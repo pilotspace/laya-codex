@@ -584,6 +584,52 @@ mod tests {
     }
 
     #[test]
+    fn model_probabilities_do_not_change_what_the_default_sizing_selects() {
+        // Laya's probabilities in rank order are low, high, tiny, mid, …: the default sizing
+        // takes full code for the first two files by rank and lists the rest, exactly as it does
+        // for a keyword-only ranking of the same spans.
+        let ps = [
+            0.05, 0.9, 0.01, 0.3, 0.02, 0.6, 0.0, 0.15, 0.4, 0.07, 0.2, 0.03,
+        ];
+        let mut spans: Vec<RankedSpan> = ps
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                span(
+                    &format!("f{i}.rs"),
+                    1,
+                    20,
+                    "",
+                    Some(p),
+                    1.0 - i as f32 / 20.0,
+                )
+            })
+            .collect();
+        spans.insert(1, span("f0.rs", 40, 60, "", Some(0.95), 0.99)); // same file as the top span
+        let laya = result(RankMode::Laya, spans.clone(), vec![]);
+        let ctx = size_context_opts(&laya, &opts(Scope::caps(None), false), &zero_taus(), &[]);
+        let paths = |v: &[RankedSpan]| -> Vec<String> {
+            v.iter()
+                .map(|s| format!("{}:{}", s.path, s.start_line))
+                .collect()
+        };
+        assert_eq!(paths(&ctx.full), ["f0.rs:1", "f1.rs:1"]);
+        assert_eq!(
+            paths(&ctx.map),
+            [
+                "f0.rs:40", "f2.rs:1", "f3.rs:1", "f4.rs:1", "f5.rs:1", "f6.rs:1", "f7.rs:1",
+                "f8.rs:1"
+            ]
+        );
+        let lexical = result(RankMode::Lexical, spans, vec![]);
+        let lex = size_context_opts(&lexical, &opts(Scope::caps(None), false), &zero_taus(), &[]);
+        assert_eq!(
+            (paths(&lex.full), paths(&lex.map)),
+            (paths(&ctx.full), paths(&ctx.map))
+        );
+    }
+
+    #[test]
     fn a_follow_up_that_asks_for_tests_or_callers_inlines_no_code() {
         let spans: Vec<RankedSpan> = (0..10)
             .map(|i| {
