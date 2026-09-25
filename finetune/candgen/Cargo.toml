@@ -1,0 +1,21 @@
+[package]
+name = "laya-candgen"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Training-data helper: the production candidate lists (task focus, lexical top 24) for a task"
+
+# Not a member of the laya-codex workspace: a training tool, built on its own.
+[workspace]
+
+[dependencies]
+laya-core = { path = "../../crates/laya-core" }
+laya-parse = { path = "../../crates/laya-parse" }
+laya-rank = { path = "../../crates/laya-rank" }
+laya-store = { path = "../../crates/laya-store" }
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
