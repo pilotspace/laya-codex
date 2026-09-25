@@ -331,20 +331,31 @@ def parse_search(text):
 
 
 class Mcp:
-    """`laya-codex mcp` over stdio (newline-delimited JSON-RPC)."""
+    """`laya-codex mcp` over stdio (newline-delimited JSON-RPC). Every reply is awaited at most
+    `timeout` seconds; past that the server is killed and TimeoutError raised."""
 
-    def __init__(self, bin_, repo, env):
+    def __init__(self, bin_, repo, env, timeout=30.0):
         import subprocess
+        self.timeout = timeout
         self.p = subprocess.Popen([bin_, "mcp", "--repo", repo], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   text=True, cwd=repo, env=env)
         self.n = 0
         self.rpc("initialize", {"protocolVersion": "2025-06-18"})
 
     def rpc(self, method, params):
+        import select
         self.n += 1
         self.p.stdin.write(json.dumps({"jsonrpc": "2.0", "id": self.n, "method": method, "params": params}) + "\n")
         self.p.stdin.flush()
-        return json.loads(self.p.stdout.readline())
+        ready, _, _ = select.select([self.p.stdout], [], [], self.timeout)
+        if not ready:
+            self.p.kill()
+            self.p.wait()
+            raise TimeoutError("%s: no reply in %.1f s" % (method, self.timeout))
+        line = self.p.stdout.readline()
+        if not line:
+            raise TimeoutError("%s: the server exited" % method)
+        return json.loads(line)
 
     def search(self, query, path=None):
         args = {"query": query}
@@ -354,8 +365,9 @@ class Mcp:
         return (res.get("content") or [{}])[0].get("text", ""), bool(res.get("isError"))
 
     def close(self):
-        self.p.stdin.close()
-        self.p.wait(timeout=30)
+        if self.p.poll() is None:
+            self.p.stdin.close()
+            self.p.wait(timeout=30)
 
 
 def coverage(g, text):
@@ -389,7 +401,13 @@ def replay(records, bin_, repos_dir, env):
                 r.update(answered=False)
             else:
                 t0 = time.time()
-                text, err = m.search(q, g["path"] or None)
+                try:
+                    text, err = m.search(q, g["path"] or None)
+                except TimeoutError as e:
+                    r.update(answered=False, is_error=True, error=str(e), search_s=round(time.time() - t0, 3))
+                    out.append(r)
+                    m = Mcp(bin_, os.path.join(repos_dir, repo), env)
+                    continue
                 r.update(answered=not err and "matching lines in" in text, is_error=err,
                          search_s=round(time.time() - t0, 3), **coverage(g, text))
             out.append(r)
