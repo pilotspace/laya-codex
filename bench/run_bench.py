@@ -6,6 +6,8 @@ total input tokens, cost, wall-clock, turns, and answer accuracy (gold files fro
     python3 bench/run_bench.py tasks --repo <clone> --skip 40 --n 20 --out bench/tasks.jsonl
     python3 bench/run_bench.py run --repo <clone> --tasks bench/tasks.jsonl --arms baseline,laya \
         --out bench/results/<name> [--model sonnet] [--limit N] [--effort medium] [--rerun-unhealthy]
+    python3 bench/run_bench.py run --repo <clone> --tasks bench/tasks.jsonl --arms baseline,laya \
+        --out bench/results/<name> --pilot --max-total-usd 2.0   # cheap go/no-go: 3 tasks, hard cap
     python3 bench/run_bench.py report --out bench/results/<name>
 
 Arms are `name[:template][@binary]` (bench/runs.py): `baseline`, `laya-adaptive`, or e.g.
@@ -22,6 +24,10 @@ Each row of a laya arm records `injection_ok`: whether every prompt of the sessi
 laya-codex injection (see `injection_health` / `DAEMON_FAILURE_ACTIONS`). `--rerun-unhealthy` treats
 rows with `injection_ok: false` as not done, so the next `run` retries just those sessions; the old,
 unhealthy row is left in runs.jsonl (bench/runs.py's `load_runs` prefers the healthy rerun over it).
+
+`--pilot` is a cheap go/no-go: it replaces --tasks with a fixed, deterministic 3-task subset
+(`pilot_subset`) and refuses to start without `--max-total-usd`, the same hard spending cap
+described above -- a pilot is still a real (billed) run, just a small, bounded one.
 """
 import argparse
 import json
@@ -32,6 +38,7 @@ import subprocess
 import sys
 import time
 
+import ledger
 from runs import load_runs, parse_arm, read_hook_log
 
 SRC_EXT = (".rs", ".py", ".ts", ".tsx", ".js", ".go", ".java", ".c", ".h", ".cc", ".cpp", ".hpp", ".rb", ".php", ".kt", ".swift", ".cs")
@@ -84,6 +91,32 @@ def make_tasks(args):
         for t in tasks:
             f.write(json.dumps(t) + "\n")
     print("wrote %d tasks to %s" % (len(tasks), args.out))
+
+
+def pilot_subset(tasks, n=3):
+    """A fixed, deterministic subset for a cheap go/no-go run: `n` tasks evenly spread across the
+    task file's order (first, last and evenly between), so even 3 tasks span the range of changes
+    the full file covers rather than clustering at one end. `tasks` is one repo's task file, so
+    `run --pilot` invoked once per repo (the harness's normal per-repo shape) gives 3 tasks per
+    repository, as the plan calls for. Pure and index-based: same input, same output, every time."""
+    if len(tasks) <= n:
+        return list(tasks)
+    if n <= 1:
+        return tasks[:1]
+    idx = sorted({round(i * (len(tasks) - 1) / (n - 1)) for i in range(n)})
+    return [tasks[i] for i in idx]
+
+
+def check_pilot_args(args):
+    """`--pilot` runs real (billed) Claude Code sessions, so it always needs an explicit, hard
+    spending cap -- it is a cheap go/no-go check, not a way to skip setting a budget."""
+    if args.pilot and not args.max_total_usd:
+        sys.exit("--pilot requires --max-total-usd (a hard spending cap for the whole run)")
+
+
+def budget_reached(spent, cap):
+    """No cap (0 or unset) means uncapped, matching --max-total-usd's default."""
+    return bool(cap) and spent >= cap
 
 
 MOON_PORT_BASE = 16500
@@ -370,7 +403,10 @@ def make_plan(tasks, arms, repeat, seed=7):
 
 
 def run(args):
+    check_pilot_args(args)
     tasks = [json.loads(l) for l in open(args.tasks)][: args.limit or None]
+    if args.pilot:
+        tasks = pilot_subset(tasks)
     specs = [parse_arm(a) for a in args.arms.split(",")]
     arms = [name for name, _, _ in specs]
     if len(set(arms)) != len(arms):
@@ -394,7 +430,7 @@ def run(args):
     for i, (arm, task, rep) in enumerate(plan):
         if (arm, task["id"], rep) in done:
             continue
-        if args.max_total_usd and spent >= args.max_total_usd:
+        if budget_reached(spent, args.max_total_usd):
             print("stopping: spent $%.2f of the $%.2f cap (--max-total-usd); rerun to resume" % (spent, args.max_total_usd))
             break
         row, lines = run_one(arm, task, args, cfg_dir, rep, envs[arm], versions, claude_version)
@@ -454,7 +490,9 @@ def report(args):
             lines.append("| **%s vs %s** | reading+injected %+.1f%% · wall %+.1f%% · median wall ratio %.2f · median total-input ratio %.2f |" % (
                 a, ref, summary["arms"][a]["reading_cost_change_pct"], summary["arms"][a]["wall_change_pct"],
                 summary["arms"][a]["median_wall_ratio"], summary["arms"][a]["median_total_input_ratio"]))
-    md = "\n".join(lines)
+    # Per-arm tool-call ledger (Grep/Read/Glob/search/other) and hook actions per session, next to
+    # the token/wall/cost means above -- the plan asks summaries to carry this, not just a separate tool.
+    md = "\n".join(lines) + "\n\n" + ledger.render(rows)
     print(md)
     json.dump(summary, open(os.path.join(args.out, "summary.json"), "w"), indent=1)
     open(os.path.join(args.out, "summary.md"), "w").write(md + "\n")
@@ -485,6 +523,8 @@ def main():
     r.add_argument("--effort", default="medium", help="CLAUDE_EFFORT, set explicitly for every session (not inherited)")
     r.add_argument("--rerun-unhealthy", action="store_true",
                    help="rows whose laya-codex injection failed (injection_ok: false) do not count as done")
+    r.add_argument("--pilot", action="store_true",
+                   help="deterministic 3-task subset of --tasks (run once per repo for 3/repo); requires --max-total-usd")
     p = sub.add_parser("report")
     p.add_argument("--out", required=True)
     args = ap.parse_args()
