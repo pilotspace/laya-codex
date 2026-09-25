@@ -303,37 +303,52 @@ fn resolve_scope(root: &Path, path: &str) -> Result<Option<String>, String> {
     Ok((!rel.is_empty()).then_some(rel))
 }
 
-/// A lookup reads files until this deadline; past it the answer says it may be incomplete.
-const SCAN_DEADLINE: Duration = Duration::from_secs(3);
-/// A file named as the `path` is read only up to this size (the walk skips files over 1 MiB).
-const MAX_SCOPED_FILE_BYTES: u64 = 16 << 20;
+/// Everything a lookup does (walk, reads, parses) happens before this deadline; past it the
+/// answer says what it did not cover and never claims to be complete. `serve` handles one request
+/// at a time, so a lookup must never hold the server longer than this.
+const LOOKUP_DEADLINE: Duration = Duration::from_secs(3);
 /// Matching lines are cut to this many characters.
 const MATCH_LINE_CHARS: usize = 160;
 /// A definition's code is shown only for chunks up to this many lines.
 const DEFINITION_MAX_LINES: u32 = 40;
+/// Chunking for enclosing symbols, one parse per file: one chunk per line, so each chunk's symbol
+/// is the deepest definition containing that line (e.g. `class Client > def stream`) and its
+/// `defines` the names declared on it. Coarser chunks pack small sibling functions (and the
+/// imports above them) into one chunk; per MiB this pass costs 1.0-1.4x a default chunking.
+const SYMBOL_CHUNKS: ChunkConfig = ChunkConfig {
+    min_lines: 1,
+    max_lines: 1,
+    text_window_lines: 1,
+};
+/// Parse cost assumed before any parse was timed: 1 µs per byte, about 1 s per MiB (the worst
+/// case seen). Blended with measured parses, it decides whether a parse still fits the deadline.
+const PRIOR_PARSE_NS_PER_BYTE: u64 = 1_000;
+const PRIOR_PARSE_BYTES: u64 = 256 << 10;
 
-/// One file with at least one matching line.
+/// One file with at least one matching line. Only line numbers are kept: the text of the lines
+/// that are shown is read again when they are rendered, so a lookup over many files holds no
+/// file contents.
 struct Hit {
     rel: String,
-    source: String,
+    abs: PathBuf,
     /// 1-based numbers of the matching lines.
     lines: Vec<u32>,
 }
 
 struct Scan {
-    files_searched: usize,
+    files_read: usize,
     complete: bool,
     hits: Vec<Hit>,
 }
 
 /// Read every indexable file under `scope` (the files laya-codex indexes: code, docs, config;
-/// `.gitignore` respected) and keep the lines containing a name (see [`has_name`]).
-fn scan(root: &Path, scope: Option<&str>, idents: &[String], deadline: Duration) -> Scan {
-    let started = Instant::now();
+/// `.gitignore` respected, at most [`laya_parse::MAX_FILE_BYTES`]) and keep the numbers of the
+/// lines containing a name (see [`has_name`]), until `deadline`.
+fn scan(root: &Path, scope: Option<&str>, idents: &[String], deadline: Instant) -> Scan {
     let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let files: Vec<PathBuf> = match scope {
         Some(s) if base.join(s).is_file() => std::fs::metadata(base.join(s))
-            .is_ok_and(|m| m.len() <= MAX_SCOPED_FILE_BYTES)
+            .is_ok_and(|m| m.len() <= laya_parse::MAX_FILE_BYTES)
             .then(|| base.join(s))
             .into_iter()
             .collect(),
@@ -341,19 +356,19 @@ fn scan(root: &Path, scope: Option<&str>, idents: &[String], deadline: Duration)
         None => laya_parse::walk_repo(&base),
     };
     let mut out = Scan {
-        files_searched: 0,
+        files_read: 0,
         complete: true,
         hits: Vec::new(),
     };
     for path in files {
-        if started.elapsed() > deadline {
+        if Instant::now() > deadline {
             out.complete = false;
             break;
         }
-        out.files_searched += 1;
         let Ok(source) = std::fs::read_to_string(&path) else {
             continue;
         };
+        out.files_read += 1;
         if !idents.iter().any(|i| source.contains(i.as_str())) {
             continue;
         }
@@ -367,7 +382,7 @@ fn scan(root: &Path, scope: Option<&str>, idents: &[String], deadline: Duration)
             let rel = path.strip_prefix(&base).unwrap_or(&path);
             out.hits.push(Hit {
                 rel: rel.to_string_lossy().replace('\\', "/"),
-                source,
+                abs: path,
                 lines,
             });
         }
@@ -409,34 +424,98 @@ fn rank_hits(
     });
 }
 
-/// One chunk per line: each chunk's symbol is then the deepest definition containing that line
-/// (e.g. `class Client > def stream`) and its `defines` the names declared on it.
-const LINE_CHUNKS: ChunkConfig = ChunkConfig {
-    min_lines: 1,
-    max_lines: 1,
-    text_window_lines: 1,
-};
+/// Decides whether a parse still fits before the deadline, from the parse speed seen so far
+/// (starting from [`PRIOR_PARSE_NS_PER_BYTE`]).
+struct ParseClock {
+    deadline: Instant,
+    ns: u64,
+    bytes: u64,
+}
 
-/// Group a file's matching lines by their innermost enclosing definition (tree-sitter, as
-/// indexed; JS/TS test blocks `describe('x') > it('y')` by name); a line is a definition when it
-/// declares the name. With `with_code`, also returns the indexed chunk holding the first
-/// definition, when it is short enough to show.
+impl ParseClock {
+    fn new(deadline: Instant) -> Self {
+        ParseClock {
+            deadline,
+            ns: PRIOR_PARSE_NS_PER_BYTE * PRIOR_PARSE_BYTES,
+            bytes: PRIOR_PARSE_BYTES,
+        }
+    }
+
+    fn allows(&self, len: usize) -> bool {
+        let estimate = Duration::from_nanos(self.ns / self.bytes.max(1) * len as u64);
+        Instant::now() + estimate < self.deadline
+    }
+
+    fn record(&mut self, len: usize, took: Duration) {
+        self.ns += took.as_nanos() as u64;
+        self.bytes += len as u64;
+    }
+}
+
+/// First line of `chunk` containing `ident`.
+fn first_line_with(chunk: &laya_core::Chunk, ident: &str) -> Option<u32> {
+    chunk
+        .text
+        .lines()
+        .position(|l| has_name(l, ident))
+        .map(|k| chunk.start_line + k as u32)
+}
+
+/// The matching lines of one file, grouped by innermost enclosing definition (one tree-sitter
+/// parse, as indexed; JS/TS test blocks `describe('x') > it('y')` by name) when the parse fits
+/// the `clock`, else listed flat. A line is a definition when its chunk declares the name there.
+/// With `with_code`, also returns the chunk holding the first definition, when short enough.
 fn file_matches(
     hit: &Hit,
     idents: &[String],
     with_code: bool,
+    clock: &mut ParseClock,
 ) -> (FileMatches, Option<RankedSpan>) {
-    let chunks = laya_parse::chunk_source_with(&LINE_CHUNKS, &hit.rel, &hit.source);
-    let text: Vec<&str> = hit.source.lines().collect();
+    let source = std::fs::read_to_string(&hit.abs).unwrap_or_default();
+    let text: Vec<&str> = source.lines().collect();
+    let line_text = |n: u32| -> String {
+        text.get(n as usize - 1)
+            .map(|l| l.trim().chars().take(MATCH_LINE_CHARS).collect())
+            .unwrap_or_default()
+    };
+    if !clock.allows(source.len()) {
+        let lines = hit
+            .lines
+            .iter()
+            .map(|&n| MatchLine {
+                line: n,
+                text: line_text(n),
+                definition: false,
+            })
+            .collect();
+        return (
+            FileMatches {
+                path: hit.rel.clone(),
+                grouped: false,
+                groups: vec![MatchGroup {
+                    symbol: String::new(),
+                    lines,
+                }],
+            },
+            None,
+        );
+    }
+    let t0 = Instant::now();
+    let chunks = laya_parse::chunk_source_with(&SYMBOL_CHUNKS, &hit.rel, &source);
+    clock.record(source.len(), t0.elapsed());
     let js = is_js(&hit.rel);
     let mut groups: Vec<MatchGroup> = Vec::new();
-    let mut first_def = None;
+    let mut first_def: Option<&laya_core::Chunk> = None;
     for &n in &hit.lines {
         let at = chunks.partition_point(|c| c.end_line < n);
         let chunk = chunks.get(at).filter(|c| c.start_line <= n);
-        let definition = chunk.is_some_and(|c| idents.iter().any(|i| c.defines.contains(i)));
+        let definition = chunk.is_some_and(|c| {
+            idents
+                .iter()
+                .any(|i| c.defines.contains(i) && first_line_with(c, i) == Some(n))
+        });
         if definition && first_def.is_none() {
-            first_def = Some(n);
+            first_def = chunk;
         }
         let mut symbol = chunk.map(|c| c.symbol.clone()).unwrap_or_default();
         if let Some(blocks) = js.then(|| js_test_blocks(&text, n)).flatten() {
@@ -448,10 +527,7 @@ fn file_matches(
         }
         let line = MatchLine {
             line: n,
-            text: text
-                .get(n as usize - 1)
-                .map(|l| l.trim().chars().take(MATCH_LINE_CHARS).collect())
-                .unwrap_or_default(),
+            text: line_text(n),
             definition,
         };
         match groups.last_mut() {
@@ -462,28 +538,52 @@ fn file_matches(
             }),
         }
     }
-    let code = first_def.filter(|_| with_code).and_then(|n| {
-        laya_parse::chunk_source(&hit.rel, &hit.source)
-            .into_iter()
-            .find(|c| c.start_line <= n && n <= c.end_line)
-            .filter(|c| c.end_line - c.start_line < DEFINITION_MAX_LINES)
-            .map(|c| RankedSpan {
-                path: hit.rel.clone(),
-                start_line: c.start_line,
-                end_line: c.end_line,
-                symbol: c.symbol,
-                p_relevant: None,
-                score: 0.0,
-                text: c.text,
-            })
-    });
+    let code = first_def
+        .filter(|_| with_code)
+        .and_then(|c| definition_code(&chunks, &text, c, &hit.rel));
     (
         FileMatches {
             path: hit.rel.clone(),
+            grouped: true,
             groups,
         },
         code,
     )
+}
+
+/// The code of the definition starting at `def` (a line chunk): the following lines whose
+/// symbol is the definition's own or nested in it, if that is at most [`DEFINITION_MAX_LINES`].
+fn definition_code(
+    chunks: &[laya_core::Chunk],
+    text: &[&str],
+    def: &laya_core::Chunk,
+    rel: &str,
+) -> Option<RankedSpan> {
+    if def.symbol.is_empty() {
+        return None;
+    }
+    let nested = format!("{} >", def.symbol);
+    let start = chunks.partition_point(|c| c.start_line < def.start_line);
+    let end = chunks[start..]
+        .iter()
+        .take_while(|c| c.symbol == def.symbol || c.symbol.starts_with(&nested))
+        .last()?
+        .end_line;
+    if end - def.start_line >= DEFINITION_MAX_LINES {
+        return None;
+    }
+    let body = text
+        .get(def.start_line as usize - 1..end as usize)?
+        .join("\n");
+    Some(RankedSpan {
+        path: rel.to_string(),
+        start_line: def.start_line,
+        end_line: end,
+        symbol: def.symbol.clone(),
+        p_relevant: None,
+        score: 0.0,
+        text: body,
+    })
 }
 
 fn is_js(path: &str) -> bool {
@@ -541,10 +641,11 @@ fn test_opener(body: &str) -> Option<String> {
     Some(format!("{kw}('{name}')"))
 }
 
-/// A file past the renderer's cap: its lines are counted, never shown, so it is not parsed.
+/// A file past the renderer's cap: its lines are counted, never shown, so it is not read again.
 fn counted_only(hit: &Hit) -> FileMatches {
     FileMatches {
         path: hit.rel.clone(),
+        grouped: false,
         groups: vec![MatchGroup {
             symbol: String::new(),
             lines: hit
@@ -561,7 +662,8 @@ fn counted_only(hit: &Hit) -> FileMatches {
 }
 
 /// Exact lookup: every line naming one of `idents` in the indexed files under `scope`, ranked
-/// and rendered (see [`laya_rank::render_matches`]). Never fails: the daemon only orders files.
+/// and rendered (see [`laya_rank::render_matches`]), within [`LOOKUP_DEADLINE`]. Never fails:
+/// the daemon only orders files.
 fn lookup(
     api: &dyn DaemonApi,
     root: &Path,
@@ -569,11 +671,13 @@ fn lookup(
     scope: Option<&str>,
     budget_ms: u64,
 ) -> String {
-    let mut s = scan(root, scope, idents, SCAN_DEADLINE);
+    let deadline = Instant::now() + LOOKUP_DEADLINE;
+    let mut s = scan(root, scope, idents, deadline);
     rank_hits(api, root, idents, &mut s.hits, budget_ms);
-    // Enclosing symbols need a parse; only files that can still be shown get one. Every line
-    // renders to at least its text plus a few chars, so once the lines parsed so far exceed the
-    // cap, later files can only be counted.
+    // Only files that can still be shown are read again and parsed. Every line renders to at
+    // least its text plus a few chars, so once the lines taken so far exceed the cap, later
+    // files can only be counted.
+    let mut clock = ParseClock::new(deadline);
     let mut room = laya_rank::MAX_INJECT_CHARS;
     let mut files = Vec::with_capacity(s.hits.len());
     let mut definition = None;
@@ -584,7 +688,8 @@ fn lookup(
         }
         // The code of the definition only for a lookup of one name: alternations (`a|b|c`) hunt
         // callers and tests, and would pay for code they do not read.
-        let (f, def) = file_matches(hit, idents, idents.len() == 1 && definition.is_none());
+        let with_code = idents.len() == 1 && definition.is_none();
+        let (f, def) = file_matches(hit, idents, with_code, &mut clock);
         let shown: usize = f
             .groups
             .iter()
@@ -598,7 +703,7 @@ fn lookup(
     render_matches(&IdentMatches {
         idents: idents.to_vec(),
         scope: scope.map(str::to_string),
-        files_searched: s.files_searched,
+        files_searched: s.files_read,
         scan_complete: s.complete,
         files,
         definition,
@@ -810,6 +915,79 @@ mod tests {
         )
     }
 
+    fn add(root: &Path, rel: &str, text: &str) {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    /// About `bytes` of Python that uses `generate_digest` once, at the end: every such file
+    /// has a line to show, so each one would be parsed for its enclosing function.
+    fn big_python(bytes: usize) -> String {
+        let block = "def handler_{i}(stream, other):\n    value = compute(stream) + compute(other)\n    return [value, stream]\n\n\n";
+        let mut s = String::new();
+        let mut i = 0;
+        while s.len() + 200 < bytes {
+            s.push_str(&block.replace("{i}", &i.to_string()));
+            i += 1;
+        }
+        s.push_str("def last(stream):\n    return generate_digest(stream)\n");
+        s
+    }
+
+    #[test]
+    fn a_lookup_answers_within_its_time_budget_on_large_files() {
+        // Review: parsing sat outside the scan deadline; a 15 MiB file named in `path` took 251 s
+        // and blocked every later request.
+        let root = repo("large");
+        add(&root, "big/huge.py", &big_python(2 << 20));
+        for k in 0..20 {
+            add(&root, &format!("src/part{k}.py"), &big_python(1_000_000));
+        }
+        let t0 = Instant::now();
+        let (out, _) = search_text(
+            &Fake(true),
+            &root,
+            json!({"query": "generate_digest", "path": "big/huge.py"}),
+        );
+        assert!(
+            t0.elapsed() < Duration::from_millis(3_500),
+            "{:?}",
+            t0.elapsed()
+        );
+        assert!(!out.contains("Complete"), "{}", &out[..out.len().min(600)]);
+
+        let t0 = Instant::now();
+        let (out, _) = search_text(&Fake(true), &root, json!({"query": "generate_digest"}));
+        assert!(
+            t0.elapsed() < Duration::from_millis(3_500),
+            "{:?}",
+            t0.elapsed()
+        );
+        assert!(
+            out.contains("src/part0.py"),
+            "{}",
+            &out[..out.len().min(900)]
+        );
+        assert!(out.len() <= laya_rank::MAX_INJECT_CHARS);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_parse_that_would_end_past_the_deadline_is_not_started() {
+        let mut clock = ParseClock::new(Instant::now() + Duration::from_millis(500));
+        assert!(
+            clock.allows(100 << 10),
+            "100 KiB at the 1 µs/byte prior fits"
+        );
+        assert!(!clock.allows(1 << 20), "1 MiB at 1 µs/byte does not");
+        // A measured fast parse raises the estimated speed.
+        clock.record(8 << 20, Duration::from_millis(400));
+        assert!(clock.allows(1 << 20));
+        let late = ParseClock::new(Instant::now());
+        assert!(!late.allows(1));
+    }
+
     #[test]
     fn identifier_queries_are_told_apart_from_descriptions() {
         let ids = |q: &str| identifier_query(q);
@@ -945,8 +1123,8 @@ mod tests {
             "whole names or name parts only: {out}"
         );
         assert!(
-            out.contains("### pkg/digest.py:1-6"),
-            "the definition's code follows: {out}"
+            out.contains("### pkg/digest.py:1-2 — def generate_digest\n```python\ndef generate_digest(stream):\n    return stream\n```"),
+            "the definition's code follows, and only its own lines: {out}"
         );
     }
 

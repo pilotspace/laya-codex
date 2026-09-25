@@ -322,6 +322,9 @@ pub struct MatchGroup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMatches {
     pub path: String,
+    /// The groups carry enclosing symbols. `false`: one flat group (the file could not be parsed
+    /// in time), shown without group headings.
+    pub grouped: bool,
     pub groups: Vec<MatchGroup>,
 }
 
@@ -383,7 +386,7 @@ limit; the search may be incomplete.\n"
     let budget = MAX_INJECT_CHARS.saturating_sub(out.len() + MATCH_SUMMARY_MAX + MATCH_TAIL_MAX);
     let (body, shown) = match_body(&m.files, budget);
     let total: usize = m.files.iter().map(FileMatches::line_count).sum();
-    out.push_str(&match_summary(m, total, shown.iter().sum()));
+    out.push_str(&match_summary(m, total, &shown));
     out.push_str(&body);
     out.push_str(&match_tail(&m.files, &shown));
     if let Some(def) = &m.definition {
@@ -416,7 +419,9 @@ fn match_body(files: &[FileMatches], budget: usize) -> (String, Vec<usize>) {
         }
         body.push_str(&heading);
         for g in &f.groups {
-            let group = if g.symbol.is_empty() {
+            let group = if !f.grouped {
+                String::new()
+            } else if g.symbol.is_empty() {
                 "  top level:\n".to_string()
             } else {
                 format!("  in {}:\n", g.symbol)
@@ -441,7 +446,8 @@ fn match_body(files: &[FileMatches], budget: usize) -> (String, Vec<usize>) {
     (body, shown)
 }
 
-fn match_summary(m: &IdentMatches, total: usize, shown: usize) -> String {
+fn match_summary(m: &IdentMatches, total: usize, shown_per_file: &[usize]) -> String {
+    let shown: usize = shown_per_file.iter().sum();
     let defs = m
         .files
         .iter()
@@ -457,7 +463,13 @@ fn match_summary(m: &IdentMatches, total: usize, shown: usize) -> String {
         "{total} matching lines in {} files (definitions: {defs}, test files: {tests}). ",
         m.files.len()
     );
-    if shown == total && m.scan_complete {
+    let flat = m
+        .files
+        .iter()
+        .zip(shown_per_file)
+        .filter(|(f, n)| **n > 0 && !f.grouped)
+        .count();
+    if shown == total && m.scan_complete && flat == 0 {
         s.push_str("Complete: every matching line is listed below.\n");
     } else if shown < total {
         s.push_str(&format!(
@@ -470,6 +482,11 @@ fn match_summary(m: &IdentMatches, total: usize, shown: usize) -> String {
         s.push_str(&format!(
             "Stopped at the time limit after reading {} files: the list may be incomplete.\n",
             m.files_searched
+        ));
+    }
+    if flat > 0 {
+        s.push_str(&format!(
+            "Time limit: {flat} files are listed without their enclosing functions.\n"
         ));
     }
     s
@@ -547,6 +564,7 @@ mod match_tests {
     fn file(path: &str, groups: Vec<(&str, Vec<MatchLine>)>) -> FileMatches {
         FileMatches {
             path: path.into(),
+            grouped: true,
             groups: groups
                 .into_iter()
                 .map(|(s, lines)| MatchGroup {
@@ -692,6 +710,22 @@ mod match_tests {
         assert!(
             out.contains("src/mod59/file.rs (20)"),
             "the last file is listed with its count: {out}"
+        );
+    }
+
+    #[test]
+    fn a_file_listed_without_its_enclosing_functions_is_never_complete() {
+        let mut files = digest_files();
+        files[1].grouped = false;
+        let out = render_matches(&lookup(files));
+        assert!(!out.contains("Complete"), "{out}");
+        assert!(
+            out.contains("1 files are listed without their enclosing functions"),
+            "{out}"
+        );
+        assert!(
+            out.contains("src/middleware/etag/index.ts\n    7: import"),
+            "flat lines, no group headings: {out}"
         );
     }
 
