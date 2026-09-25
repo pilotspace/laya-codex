@@ -314,20 +314,25 @@ def parse_search(text):
         if l.startswith("```"):
             in_code = not in_code
             continue
-        if in_code or not l.strip() or l.startswith("<!--") or l.startswith("### "):
+        if in_code or not l.strip() or l.startswith("### ") or l.startswith("`"):
             continue
-        m = re.match(r"^    (\d+): ", l)
+        m = re.match(r"^ {1,4}(\d+): ", l)
         if m and cur:
             lines.add((cur, int(m.group(1))))
             continue
-        if l.startswith("Not shown"):
+        if l.startswith("Not shown: ") or l.startswith("Docs: "):
             files.update(re.findall(r"(?:: |, )([^\s,(]+) \(\d+", l))
             continue
-        m = re.match(r"^(\S+?)( \(test file\))?$", l)
+        m = re.match(r"^(\S+?)( \(test\))?$", l)
         if m and ("/" in m.group(1) or "." in m.group(1)) and not m.group(1).endswith(":"):
             cur = m.group(1)
             files.add(cur)
     return lines, files
+
+
+def is_lookup(text):
+    """A `search` answer from the identifier lookup that found something (its summary line)."""
+    return bool(re.match(r"^`[^`]+`: \d+ lines in \d+ files", text))
 
 
 class Mcp:
@@ -408,7 +413,7 @@ def replay(records, bin_, repos_dir, env):
                     out.append(r)
                     m = Mcp(bin_, os.path.join(repos_dir, repo), env)
                     continue
-                r.update(answered=not err and "matching lines in" in text, is_error=err,
+                r.update(answered=not err and is_lookup(text), is_error=err,
                          search_s=round(time.time() - t0, 3), **coverage(g, text))
             out.append(r)
         m.close()
@@ -417,8 +422,8 @@ def replay(records, bin_, repos_dir, env):
 
 def coverage_report(rows):
     print("\n| intent | Greps | searchable | line coverage (used) | cited-line coverage | file coverage | "
-          "fully covered | median chars search / Grep |")
-    print("|---|---|---|---|---|---|---|---|")
+          "fully covered | median chars search / Grep | median ratio |")
+    print("|---|---|---|---|---|---|---|---|---|")
     order = ["callers-uses", "tests", "in-file", "definition", "exact-text", "non-code", "other"]
     for intent in order + ["ALL"]:
         rs = [r for r in rows if intent == "ALL" or r["intent"] == intent]
@@ -429,9 +434,11 @@ def coverage_report(rows):
                           max(1, sum(1 for r in ans if r.get(k) is not None)))
         full = sum(1 for r in ans if (r.get("line_cov") in (None, 1.0)) and (r.get("file_cov") in (None, 1.0)))
         med = lambda xs: sorted(xs)[len(xs) // 2] if xs else 0
-        print("| %s | %d | %d | %.2f | %.2f | %.2f | %d (%.0f%% of Greps) | %d / %d |" % (
+        ratios = [r["search_chars"] / max(1, r["result_chars"]) for r in ans]
+        print("| %s | %d | %d | %.2f | %.2f | %.2f | %d (%.0f%% of Greps) | %d / %d | %.2f |" % (
             intent, len(rs), len(ans), mean("line_cov"), mean("cited_cov"), mean("file_cov"), full,
-            100.0 * full / len(rs), med([r["search_chars"] for r in ans]), med([r["result_chars"] for r in ans])))
+            100.0 * full / len(rs), med([r["search_chars"] for r in ans]), med([r["result_chars"] for r in ans]),
+            med(ratios)))
     ts = sorted(r["search_s"] for r in rows if r.get("search_s") is not None)
     if ts:
         print("\nsearch latency: p50 %.2f s, p90 %.2f s, max %.2f s" % (

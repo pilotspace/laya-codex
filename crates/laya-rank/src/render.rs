@@ -71,8 +71,7 @@ pub(crate) const COMPLETE_USES: &str = " (all indexed uses shown)";
 /// agent already knew; the tool description alone moved none of them (pilot, 0 calls).
 macro_rules! search_hint {
     () => {
-        "For the definition, callers or tests of a name, the laya-codex `search` tool with the \
-name (e.g. `foo|Bar`) lists every matching line with its enclosing function or test, in one call.\n"
+        "For callers or tests of a name, laya-codex `search` with `name|other` lists all.\n"
     };
 }
 
@@ -352,92 +351,172 @@ pub struct IdentMatches {
     pub definition: Option<RankedSpan>,
 }
 
-/// Render an [`IdentMatches`] the way Grep prints matches (`line: text` under each file), grouped
-/// by enclosing symbol, definitions marked, test files flagged, within [`MAX_INJECT_CHARS`].
+/// Cap on a lookup answer (it was the 9,500-char hook cap). Pilot at 8591f05: answers ran
+/// 1.6-7.9k chars, about 2.4x the Greps they replaced, and the extra reading outweighed the Greps
+/// and Reads they saved. v9 replay: 4,000 kept full coverage for 51% of Greps, 6,000 for 56-59%;
+/// with the per-file limit the median answer is about 1.2x its Grep.
+pub const MATCH_MAX_CHARS: usize = 6_000;
+/// Room kept for the summary and for the list of files not shown.
+const MATCH_SUMMARY_MAX: usize = 300;
+const MATCH_TAIL_MAX: usize = 700;
+/// At most this many lines of one file are shown; the rest are counted.
+const MATCH_FILE_LINES: usize = 40;
+/// Enclosing symbols are cut to this many chars (long `it('…')` test names).
+const SYMBOL_MAX_CHARS: usize = 40;
+
+/// Render an [`IdentMatches`] compactly: one summary line, then per file its path and the
+/// matching lines as `line: text`, each marked with its enclosing function or test only where
+/// that adds something (see [`group_lines`]), definitions marked `[def]`, test files `(test)`,
+/// within [`MATCH_MAX_CHARS`]. When code matches, docs (Markdown and the like) are only counted.
 /// Files that do not fit are listed with their match counts, so the file list stays complete;
-/// the summary says "complete" only when every matching line is shown and the scan read every
-/// file in scope.
+/// the summary says "complete" only when every listed line is shown, every file in scope was
+/// read and every shown file has its enclosing functions.
 pub fn render_matches(m: &IdentMatches) -> String {
-    let names = m
-        .idents
-        .iter()
-        .map(|i| format!("`{i}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let names = format!("`{}`", m.idents.join("|"));
     let under = m
         .scope
         .as_deref()
         .map(|s| format!(" under {s}"))
         .unwrap_or_default();
     let n = m.files_read;
-    let mut out = format!(
-        "<!-- laya-codex search: lines naming {names} (whole or inside a longer name) in the {n} \
-files read{under} (code, docs and config on disk, .gitignore respected), by file and enclosing \
-function or test, most relevant first. -->\n"
-    );
     if m.files.is_empty() {
-        out.push_str(&format!(
-            "No match for {names} in the {n} files read{under}.\n"
-        ));
+        let mut out = format!("No match for {names} in the {n} files read{under}.\n");
         out.push_str(&coverage_notes(m));
         return out;
     }
-
-    let budget = MAX_INJECT_CHARS.saturating_sub(out.len() + MATCH_SUMMARY_MAX + MATCH_TAIL_MAX);
-    let (body, shown) = match_body(&m.files, budget);
-    let total: usize = m.files.iter().map(FileMatches::line_count).sum();
-    out.push_str(&match_summary(m, total, &shown));
+    let code_matched = m
+        .files
+        .iter()
+        .any(|f| !crate::sizing::is_prose_path(&f.path));
+    let listed: Vec<bool> = m
+        .files
+        .iter()
+        .map(|f| !code_matched || !crate::sizing::is_prose_path(&f.path))
+        .collect();
+    let budget = MATCH_MAX_CHARS - MATCH_SUMMARY_MAX - MATCH_TAIL_MAX;
+    let (body, shown) = match_body(&m.files, &listed, budget);
+    let mut out = match_summary(m, &names, &under, &listed, &shown);
     out.push_str(&body);
-    out.push_str(&match_tail(&m.files, &shown));
+    out.push_str(&match_tail(&m.files, &listed, &shown));
     if let Some(def) = &m.definition {
-        let block = format!("\nDefinition:\n{}", render_span(def));
-        if fits(&out, &block, 0) {
+        let block = format!("\n{}", render_span(def));
+        if out.len() + block.len() <= MATCH_MAX_CHARS {
             out.push_str(&block);
         }
     }
     out
 }
 
-/// Room kept for the summary line and for the list of files not shown.
-const MATCH_SUMMARY_MAX: usize = 400;
-const MATCH_TAIL_MAX: usize = 1_500;
+/// `symbol`'s last segment without keywords, cut to [`SYMBOL_MAX_CHARS`]:
+/// `class Response > def iter_text` -> `iter_text`.
+pub(crate) fn short_symbol(symbol: &str) -> String {
+    const KEYWORDS: &[&str] = &[
+        "pub(crate) ",
+        "pub ",
+        "export ",
+        "default ",
+        "async ",
+        "static ",
+        "def ",
+        "fn ",
+        "class ",
+        "function ",
+        "struct ",
+        "enum ",
+        "trait ",
+        "impl ",
+        "interface ",
+        "type ",
+        "const ",
+        "let ",
+        "var ",
+        "mod ",
+    ];
+    let mut s = symbol.rsplit(" > ").next().unwrap_or_default().trim();
+    while let Some(rest) = KEYWORDS.iter().find_map(|k| s.strip_prefix(k)) {
+        s = rest.trim_start();
+    }
+    if s.chars().count() <= SYMBOL_MAX_CHARS {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(SYMBOL_MAX_CHARS - 1).collect();
+    let cut = match cut.rfind(' ') {
+        Some(at) if at > 10 => &cut[..at],
+        _ => cut.as_str(),
+    };
+    format!("{cut}…")
+}
 
-/// The grouped lines, file after file, while they fit in `budget` chars; also how many lines of
-/// each file made it in.
-fn match_body(files: &[FileMatches], budget: usize) -> (String, Vec<usize>) {
+/// The group's first line opens the symbol itself (`def test_x():` in `def test_x`, `it('y'` in
+/// `it('y')`), so its other lines can nest under it without a marker.
+fn opens(line: &str, short: &str) -> bool {
+    match short.split_once('(') {
+        Some((call, _)) if !call.is_empty() => line.trim_start().starts_with(&format!("{call}(")),
+        _ => !short.is_empty() && line.contains(short),
+    }
+}
+
+/// The rendered lines of one group. Top level (or a file listed flat): `  n: text`. Otherwise
+/// the enclosing symbol is said once and only when the lines don't already show it: a group
+/// whose first line opens the symbol nests the rest under it; a single line gets `  ‹symbol›`
+/// appended; several lines get a `  ‹symbol›` header and are nested under it.
+fn group_lines(f: &FileMatches, g: &MatchGroup) -> Vec<String> {
+    let line = |l: &MatchLine, indent: &str, tag: &str| {
+        let mark = if l.definition { " [def]" } else { "" };
+        format!("{indent}{}: {}{mark}{tag}\n", l.line, l.text)
+    };
+    let short = short_symbol(&g.symbol);
+    if !f.grouped || short.is_empty() {
+        return g.lines.iter().map(|l| line(l, " ", "")).collect();
+    }
+    let first = &g.lines[0];
+    if opens(&first.text, &short) {
+        let mut out = vec![line(first, " ", "")];
+        out.extend(g.lines[1..].iter().map(|l| line(l, "  ", "")));
+        return out;
+    }
+    if g.lines.len() == 1 {
+        return vec![line(first, " ", &format!(" ‹{short}›"))];
+    }
+    let mut out = vec![format!(" ‹{short}›\n")];
+    out.extend(g.lines.iter().map(|l| line(l, "  ", "")));
+    out
+}
+
+/// The listed files, file after file, while they fit in `budget` chars; also how many lines of
+/// each file made it in. A symbol header is only added together with its first line.
+fn match_body(files: &[FileMatches], listed: &[bool], budget: usize) -> (String, Vec<usize>) {
     let mut body = String::new();
     let mut shown = vec![0; files.len()];
     'files: for (i, f) in files.iter().enumerate() {
+        if !listed[i] {
+            continue;
+        }
         let test = if crate::related::is_test_path(&f.path) {
-            " (test file)"
+            " (test)"
         } else {
             ""
         };
-        let heading = format!("\n{}{test}\n", f.path);
+        let heading = format!("{}{test}\n", f.path);
         if body.len() + heading.len() > budget {
             break;
         }
         body.push_str(&heading);
-        for g in &f.groups {
-            let group = if !f.grouped {
-                String::new()
-            } else if g.symbol.is_empty() {
-                "  top level:\n".to_string()
-            } else {
-                format!("  in {}:\n", g.symbol)
-            };
-            let mut started = false;
-            for l in &g.lines {
-                let mark = if l.definition { "  [definition]" } else { "" };
-                let text = format!("    {}: {}{mark}\n", l.line, l.text);
-                let need = text.len() + if started { 0 } else { group.len() };
-                if body.len() + need > budget {
+        'groups: for g in &f.groups {
+            let mut pending = String::new();
+            for text in group_lines(f, g) {
+                if !text.trim_start().starts_with(|c: char| c.is_ascii_digit()) {
+                    pending = text; // a header: added with the next line
+                    continue;
+                }
+                if shown[i] == MATCH_FILE_LINES {
+                    break 'groups;
+                }
+                if body.len() + pending.len() + text.len() > budget {
                     break 'files;
                 }
-                if !started {
-                    body.push_str(&group);
-                    started = true;
-                }
+                body.push_str(&pending);
+                pending.clear();
                 body.push_str(&text);
                 shown[i] += 1;
             }
@@ -446,42 +525,59 @@ fn match_body(files: &[FileMatches], budget: usize) -> (String, Vec<usize>) {
     (body, shown)
 }
 
-fn match_summary(m: &IdentMatches, total: usize, shown_per_file: &[usize]) -> String {
-    let shown: usize = shown_per_file.iter().sum();
-    let defs = m
+fn match_summary(
+    m: &IdentMatches,
+    names: &str,
+    under: &str,
+    listed: &[bool],
+    shown_per_file: &[usize],
+) -> String {
+    let total: usize = m.files.iter().map(FileMatches::line_count).sum();
+    let listed_total: usize = m
         .files
         .iter()
-        .flat_map(|f| f.groups.iter().flat_map(|g| g.lines.iter()))
-        .filter(|l| l.definition)
-        .count();
+        .zip(listed)
+        .filter(|(_, l)| **l)
+        .map(|(f, _)| f.line_count())
+        .sum();
+    let shown: usize = shown_per_file.iter().sum();
     let tests = m
         .files
         .iter()
         .filter(|f| crate::related::is_test_path(&f.path))
         .count();
-    let mut s = format!(
-        "{total} matching lines in {} files (definitions: {defs}, test files: {tests}). ",
-        m.files.len()
-    );
+    let tests = match tests {
+        0 => String::new(),
+        1 => " (1 test)".to_string(),
+        t => format!(" ({t} tests)"),
+    };
     let flat = m
         .files
         .iter()
         .zip(shown_per_file)
         .filter(|(f, n)| **n > 0 && !f.grouped)
         .count();
-    if shown == total && m.scan_complete && m.files_skipped == 0 && flat == 0 {
-        s.push_str("Complete: every matching line is listed below.\n");
-    } else if shown < total {
-        s.push_str(&format!(
-            "The first {shown} are shown (most relevant files first); the other files are counted at the end.\n"
-        ));
+    let docs_counted = listed.iter().any(|l| !l);
+    let mut s = format!(
+        "{names}: {total} lines in {} files{tests} of {} files read{under}",
+        m.files.len(),
+        m.files_read
+    );
+    if shown == listed_total && m.scan_complete && m.files_skipped == 0 && flat == 0 {
+        s.push_str(if docs_counted {
+            "; complete, docs counted.\n"
+        } else {
+            "; complete.\n"
+        });
+    } else if shown < listed_total {
+        s.push_str(&format!("; first {shown} shown, the rest counted below.\n"));
     } else {
-        s.push('\n');
+        s.push_str(".\n");
     }
     s.push_str(&coverage_notes(m));
     if flat > 0 {
         s.push_str(&format!(
-            "Time limit: {flat} files are listed without their enclosing functions.\n"
+            "Time limit: {flat} files listed without enclosing functions.\n"
         ));
     }
     s
@@ -505,41 +601,60 @@ fn coverage_notes(m: &IdentMatches) -> String {
     s
 }
 
-/// Files not (fully) shown, with their match counts, within [`MATCH_TAIL_MAX`] chars.
-fn match_tail(files: &[FileMatches], shown: &[usize]) -> String {
-    let rest: Vec<(&FileMatches, usize)> = files
+/// Listed files not (fully) shown, then docs that were only counted, with their match counts,
+/// within [`MATCH_TAIL_MAX`] chars.
+fn match_tail(files: &[FileMatches], listed: &[bool], shown: &[usize]) -> String {
+    let not_shown: Vec<String> = files
         .iter()
-        .zip(shown)
-        .filter(|(f, s)| **s < f.line_count())
-        .map(|(f, s)| (f, *s))
-        .collect();
-    if rest.is_empty() {
-        return String::new();
-    }
-    let mut tail = String::from("\nNot shown (matching lines per file): ");
-    for (k, (f, s)) in rest.iter().enumerate() {
-        let item = if *s == 0 {
-            format!("{} ({})", f.path, f.line_count())
-        } else {
-            format!("{} ({} of {} shown)", f.path, s, f.line_count())
-        };
-        let left = rest.len() - k;
-        let more = format!("and {left} more files.");
-        if tail.len() + item.len() + 2 + more.len() + 32 > MATCH_TAIL_MAX {
-            if k > 0 {
-                tail.push_str(", ");
+        .zip(listed.iter().zip(shown))
+        .filter(|(f, (l, s))| **l && **s < f.line_count())
+        .map(|(f, (_, s))| {
+            if *s == 0 {
+                format!("{} ({})", f.path, f.line_count())
+            } else {
+                format!("{} ({} of {} shown)", f.path, s, f.line_count())
             }
-            tail.push_str(&more);
-            tail.push('\n');
-            return tail;
+        })
+        .collect();
+    let docs: Vec<String> = files
+        .iter()
+        .zip(listed)
+        .filter(|(_, l)| !**l)
+        .map(|(f, _)| format!("{} ({})", f.path, f.line_count()))
+        .collect();
+    let mut tail = String::new();
+    let mut room = MATCH_TAIL_MAX;
+    for (label, items) in [("Not shown: ", not_shown), ("Docs: ", docs)] {
+        if items.is_empty() {
+            continue;
+        }
+        let line = list_within(label, &items, room);
+        room = room.saturating_sub(line.len());
+        tail.push_str(&line);
+    }
+    tail
+}
+
+/// `label` + `items` joined by ", " within `room` chars, ending with "and N more files." when cut.
+fn list_within(label: &str, items: &[String], room: usize) -> String {
+    let mut out = String::from(label);
+    for (k, item) in items.iter().enumerate() {
+        let more = format!("and {} more files.", items.len() - k);
+        if out.len() + item.len() + 2 + more.len() + 4 > room {
+            if k > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&more);
+            out.push('\n');
+            return out;
         }
         if k > 0 {
-            tail.push_str(", ");
+            out.push_str(", ");
         }
-        tail.push_str(&item);
+        out.push_str(item);
     }
-    tail.push_str(".\n");
-    tail
+    out.push_str(".\n");
+    out
 }
 
 fn lang_tag(path: &str) -> &'static str {
@@ -637,36 +752,35 @@ mod match_tests {
     }
 
     #[test]
-    fn lists_every_match_grep_style_grouped_by_file_and_enclosing_symbol() {
+    fn lists_matches_compactly_by_file_with_short_enclosing_symbols() {
         let out = render_matches(&lookup(digest_files()));
-        assert!(out.contains("`generateDigest`"), "{out}");
-        assert!(out.contains("812 files read"), "{out}");
+        assert!(!out.contains("<!--"), "no preamble: {out}");
         assert!(
-            out.contains("4 matching lines in 3 files"),
-            "counts are stated: {out}"
-        );
-        assert!(
-            out.contains("Complete"),
-            "every line shown and every file read: {out}"
-        );
-        let index = out.find("src/middleware/etag/index.ts").unwrap();
-        let etag = out.find("in etag:").unwrap();
-        let hit = out.find("104: const hash = await generateDigest").unwrap();
-        assert!(
-            index < etag && etag < hit,
-            "file, then symbol, then line: {out}"
-        );
-        assert!(
-            out.contains("7: import { generateDigest } from './digest'"),
+            out.starts_with(
+                "`generateDigest`: 4 lines in 3 files (1 test) of 812 files read; complete.\n"
+            ),
             "{out}"
         );
-        assert!(out.contains("top level:"), "{out}");
+        // The opener of its own definition carries no marker; one line in another symbol gets
+        // the symbol inline; top-level lines get nothing.
         assert!(
-            out.contains("18: export const generateDigest = async (  [definition]"),
+            out.contains(
+                "src/middleware/etag/digest.ts\n 18: export const generateDigest = async ( [def]\n"
+            ),
             "{out}"
         );
         assert!(
-            out.contains("src/middleware/etag/digest.test.ts (test file)"),
+            out.contains(" 7: import { generateDigest } from './digest'\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                " 104: const hash = await generateDigest(res.clone().body, generator) ‹etag›\n"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("src/middleware/etag/digest.test.ts (test)\n"),
             "{out}"
         );
         assert!(
@@ -676,12 +790,112 @@ mod match_tests {
     }
 
     #[test]
+    fn several_lines_in_one_symbol_share_a_header_and_an_opener_nests_its_lines() {
+        let f = file(
+            "tests/models/test_responses.py",
+            vec![
+                (
+                    "def test_iter_text",
+                    vec![
+                        line(600, "def test_iter_text():", false),
+                        line(607, "for part in response.iter_text():", false),
+                    ],
+                ),
+                (
+                    "class Response > def iter_lines",
+                    vec![
+                        line(929, "for text in self.iter_text():", false),
+                        line(931, "yield self.iter_text()", false),
+                    ],
+                ),
+            ],
+        );
+        let out = render_matches(&lookup(vec![f]));
+        assert!(
+            out.contains(" 600: def test_iter_text():\n  607: for part in response.iter_text():\n"),
+            "an opener's own lines nest under it: {out}"
+        );
+        assert!(
+            out.contains(" ‹iter_lines›\n  929: for text in self.iter_text():\n  931: yield"),
+            "a shared header, short symbol: {out}"
+        );
+    }
+
+    #[test]
+    fn at_most_forty_lines_of_one_file_are_shown_and_the_rest_counted() {
+        // v9 replay: a 25-line limit cost 7 points of full coverage, 40 lines cost none of the
+        // 6,000-char cap's; a file's 41st line is rarely the one used.
+        let f = file(
+            "src/big.rs",
+            vec![(
+                "",
+                (1..=60)
+                    .map(|n| line(n, "generateDigest()", false))
+                    .collect(),
+            )],
+        );
+        let out = render_matches(&lookup(vec![
+            f,
+            file(
+                "src/b.rs",
+                vec![("", vec![line(3, "generateDigest", false)])],
+            ),
+        ]));
+        assert!(out.contains(" 40: generateDigest()\nsrc/b.rs\n"), "{out}");
+        assert!(!out.contains(" 41: "), "{out}");
+        assert!(
+            out.contains("Not shown: src/big.rs (40 of 60 shown)."),
+            "{out}"
+        );
+        assert!(out.contains("first 41 shown"), "{out}");
+    }
+
+    #[test]
+    fn short_symbols_drop_the_outer_path_keywords_and_long_names() {
+        assert_eq!(short_symbol("class Response > def iter_text"), "iter_text");
+        assert_eq!(short_symbol("impl Store for MoonStore > fn get"), "get");
+        assert_eq!(short_symbol("async def aiter_text"), "aiter_text");
+        assert_eq!(short_symbol("mod tests > fn test_replay"), "test_replay");
+        assert_eq!(
+            short_symbol(
+                "describe('CORS') > it('Append \"Origin\" to Vary header on OPTIONS preflight')"
+            ),
+            "it('Append \"Origin\" to Vary header on…"
+        );
+        assert_eq!(short_symbol(""), "");
+    }
+
+    #[test]
+    fn docs_are_counted_not_listed_when_code_matches() {
+        let mut files = digest_files();
+        files.push(file(
+            "CHANGELOG.md",
+            vec![(
+                "Fixed",
+                vec![line(93, "* generateDigest keeps bytes", false)],
+            )],
+        ));
+        let out = render_matches(&lookup(files));
+        assert!(!out.contains("93: "), "{out}");
+        assert!(out.contains("Docs: CHANGELOG.md (1)"), "{out}");
+        assert!(
+            out.contains("5 lines in 4 files (1 test) of 812 files read; complete, docs counted."),
+            "{out}"
+        );
+        let docs_only = render_matches(&lookup(vec![file(
+            "README.md",
+            vec![("", vec![line(3, "generateDigest", false)])],
+        )]));
+        assert!(docs_only.contains(" 3: generateDigest"), "{docs_only}");
+    }
+
+    #[test]
     fn a_lookup_with_no_match_says_so_definitively() {
         let mut m = lookup(vec![]);
         m.scope = Some("src/client".into());
         let out = render_matches(&m);
         assert!(
-            out.contains("No match for `generateDigest` in the 812 files read under src/client"),
+            out.contains("No match for `generateDigest` in the 812 files read under src/client."),
             "{out}"
         );
     }
@@ -691,8 +905,17 @@ mod match_tests {
         let mut m = lookup(digest_files());
         m.scan_complete = false;
         let out = render_matches(&m);
-        assert!(!out.contains("Complete"), "{out}");
+        assert!(!out.contains("; complete"), "{out}");
         assert!(out.contains("may be incomplete"), "{out}");
+    }
+
+    #[test]
+    fn skipped_files_rule_out_complete() {
+        let mut m = lookup(digest_files());
+        m.files_skipped = 2;
+        let out = render_matches(&m);
+        assert!(!out.contains("; complete"), "{out}");
+        assert!(out.contains("2 files not searched"), "{out}");
     }
 
     #[test]
@@ -717,14 +940,15 @@ mod match_tests {
             })
             .collect();
         let out = render_matches(&lookup(files));
-        assert!(out.len() <= MAX_INJECT_CHARS, "{} chars", out.len());
-        assert!(out.contains("1200 matching lines in 60 files"), "{out}");
-        assert!(!out.contains("Complete"), "not every line is shown");
+        assert!(out.len() <= MATCH_MAX_CHARS, "{} chars", out.len());
+        assert!(out.contains("1200 lines in 60 files"), "{out}");
+        assert!(!out.contains("; complete"), "not every line is shown");
         assert!(out.contains("src/mod0/file.rs"), "top file shown");
         assert!(
-            out.contains("src/mod59/file.rs (20)"),
-            "the last file is listed with its count: {out}"
+            out.contains("Not shown: src/mod") && out.contains(" (20), "),
+            "files not shown are listed with their counts: {out}"
         );
+        assert!(out.trim_end().ends_with("more files."), "{out}");
     }
 
     #[test]
@@ -732,15 +956,16 @@ mod match_tests {
         let mut files = digest_files();
         files[1].grouped = false;
         let out = render_matches(&lookup(files));
-        assert!(!out.contains("Complete"), "{out}");
+        assert!(!out.contains("; complete"), "{out}");
         assert!(
-            out.contains("1 files are listed without their enclosing functions"),
+            out.contains("1 files listed without enclosing functions"),
             "{out}"
         );
         assert!(
-            out.contains("src/middleware/etag/index.ts\n    7: import"),
-            "flat lines, no group headings: {out}"
+            out.contains("src/middleware/etag/index.ts\n 7: import"),
+            "flat lines: {out}"
         );
+        assert!(!out.contains("‹etag›"), "{out}");
     }
 
     #[test]
@@ -754,22 +979,25 @@ mod match_tests {
             })
             .collect();
         let out = render_matches(&lookup(files));
-        assert!(out.len() <= MAX_INJECT_CHARS, "{} chars", out.len());
-        let tail = out.split("Not shown").nth(1).unwrap();
+        assert!(out.len() <= MATCH_MAX_CHARS, "{} chars", out.len());
+        let tail = out.split("Not shown: ").nth(1).unwrap();
         assert!(tail.contains("(1), and "), "{tail}");
         assert!(tail.trim_end().ends_with("more files."), "{tail}");
     }
 
     #[test]
-    fn every_injection_footer_says_which_lookups_search_answers() {
-        // Benchmark v3: 72% of the Greps left came with the tests-and-callers follow-up, 76% of
-        // them for identifiers the agent already knew. The footer is the last thing it reads.
+    fn every_injection_footer_says_which_lookups_search_answers_in_one_short_line() {
+        // Pilot at 8591f05: every `search` call opened the tests-and-callers prompt, right after
+        // this line; at 184 chars it was 6% of what the hook injected.
         for footer in [COMPACT_FOOTER, NO_CODE_FOOTER] {
-            assert!(footer.contains("`search`"), "{footer}");
-            for needle in ["callers", "tests", "every matching line"] {
-                assert!(footer.contains(needle), "{needle:?} missing: {footer}");
-            }
-            assert!(footer.len() < 400, "kept short: {} chars", footer.len());
+            let hint = footer.lines().last().unwrap();
+            assert!(hint.contains("`search`"), "{hint}");
+            assert!(hint.contains("callers") && hint.contains("tests"), "{hint}");
+            assert!(
+                hint.chars().count() <= 80,
+                "{} chars: {hint}",
+                hint.chars().count()
+            );
         }
     }
 
@@ -790,12 +1018,12 @@ mod match_tests {
             out.contains("### src/middleware/etag/digest.ts:18-20"),
             "{out}"
         );
-        assert!(out.find("[definition]").unwrap() < out.find("### ").unwrap());
+        assert!(out.find("[def]").unwrap() < out.find("### ").unwrap());
 
-        m.definition.as_mut().unwrap().text = "x\n".repeat(6_000);
+        m.definition.as_mut().unwrap().text = "x\n".repeat(3_000);
         let out = render_matches(&m);
         assert!(!out.contains("### "), "an oversized block is left out");
-        assert!(out.len() <= MAX_INJECT_CHARS);
+        assert!(out.len() <= MATCH_MAX_CHARS);
     }
 }
 

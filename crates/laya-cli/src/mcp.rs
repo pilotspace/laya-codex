@@ -35,7 +35,7 @@ pub fn tool_list() -> Value {
     more identifiers (`generateDigest`, or `iter_text|aiter_text|TextChunker`) and optionally a `path` (a file \
     or directory, as for Grep): you get every line that contains them as a name or as part of a longer name \
     (`raise_for_status` also finds `test_raise_for_status`, `Transport` finds `HTTPTransport`, `quote` does not \
-    find `unquote`), in code, docs and config, as `line: text` under each file, grouped by enclosing function, \
+    find `unquote`), in code and config (docs only counted), as `line: text` under each file, by enclosing function, \
     class or test, with the definition marked, test files flagged and the match count, saying when the list is \
     complete. One call answers where a name is defined, its callers and uses and which tests cover it, without \
     the Read that usually follows a Grep. A description in words instead returns ranked code spans (10-50 lines \
@@ -353,9 +353,9 @@ fn resolve_scope(root: &Path, path: &str) -> Result<Option<String>, String> {
 /// at a time, so a lookup must never hold the server longer than this.
 const LOOKUP_DEADLINE: Duration = Duration::from_secs(3);
 /// Matching lines are cut to this many characters.
-const MATCH_LINE_CHARS: usize = 160;
+const MATCH_LINE_CHARS: usize = 100;
 /// A definition's code is shown only for chunks up to this many lines.
-const DEFINITION_MAX_LINES: u32 = 40;
+const DEFINITION_MAX_LINES: u32 = 12;
 /// Chunking for enclosing symbols, one parse per file: one chunk per line, so each chunk's symbol
 /// is the deepest definition containing that line (e.g. `class Client > def stream`) and its
 /// `defines` the names declared on it. Coarser chunks pack small sibling functions (and the
@@ -832,7 +832,7 @@ fn lookup(
     // least its text plus a few chars, so once the lines taken so far exceed the cap, later
     // files can only be counted.
     let mut clock = ParseClock::new(deadline);
-    let mut room = laya_rank::MAX_INJECT_CHARS;
+    let mut room = laya_rank::MATCH_MAX_CHARS;
     let mut files = Vec::with_capacity(s.hits.len());
     let mut definition = None;
     for hit in &s.hits {
@@ -1132,7 +1132,11 @@ mod tests {
             "{:?}",
             t0.elapsed()
         );
-        assert!(!out.contains("Complete"), "{}", &out[..out.len().min(600)]);
+        assert!(
+            !out.contains("; complete"),
+            "{}",
+            &out[..out.len().min(600)]
+        );
 
         let t0 = Instant::now();
         let (out, _) = search_text(&Fake(true), &root, json!({"query": "generate_digest"}));
@@ -1146,7 +1150,7 @@ mod tests {
             "{}",
             &out[..out.len().min(900)]
         );
-        assert!(out.len() <= laya_rank::MAX_INJECT_CHARS);
+        assert!(out.len() <= laya_rank::MATCH_MAX_CHARS);
     }
 
     #[test]
@@ -1233,10 +1237,10 @@ mod tests {
         std::fs::write(&p, b"x = generate_digest(1)  # caf\xe9\n").unwrap();
         add(&root, "pkg/huge.py", &"# generate_digest\n".repeat(70_000));
         let (out, _) = search_text(&Fake(true), &root, json!({"query": "generate_digest"}));
-        assert!(!out.contains("Complete"), "{out}");
+        assert!(!out.contains("; complete"), "{out}");
         assert!(out.contains("2 files not searched"), "{out}");
         assert!(
-            out.contains("in the 5 files read"),
+            out.contains("of 5 files read"),
             "the header counts files read: {out}"
         );
     }
@@ -1515,31 +1519,32 @@ mod tests {
         let root = repo("lookup");
         let (out, err) = search_text(&Fake(true), &root, json!({"query": "generate_digest"}));
         assert!(!err, "{out}");
-        assert!(out.contains("8 matching lines in 5 files"), "{out}");
-        assert!(out.contains("Complete"), "{out}");
         assert!(
-            out.contains(
-                "in def generate_digest:\n    1: def generate_digest(stream):  [definition]"
-            ),
-            "the innermost definition encloses each line: {out}"
-        );
-        assert!(
-            out.contains("\npkg/etag.py\n  top level:\n    1: from pkg.digest import generate_digest\n  in def etag:\n    5: digest = generate_digest(body)\n"),
+            out.starts_with("`generate_digest`: 8 lines in 5 files (2 tests) of 5 files read; complete, docs counted.\n"),
             "{out}"
         );
         assert!(
-            out.contains(
-                "in describe('etag') > it('hashes a body'):\n    5: const h = generate_digest('a')"
-            ),
+            out.contains("pkg/digest.py\n 1: def generate_digest(stream): [def]\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("pkg/etag.py\n 1: from pkg.digest import generate_digest\n 5: digest = generate_digest(body) ‹etag›\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains(" 5: const h = generate_digest('a') ‹it('hashes a body')›"),
             "JS/TS test blocks are named: {out}"
         );
-        assert!(out.contains("tests/test_digest.py (test file)"), "{out}");
-        assert!(out.contains("in def test_hashes:"), "{out}");
+        assert!(out.contains("tests/test_digest.py (test)"), "{out}");
         assert!(
-            out.contains("docs/notes.md"),
-            "docs are searched too: {out}"
+            out.contains(" 5: assert generate_digest(\"a\") == \"a\" ‹test_hashes›"),
+            "{out}"
         );
-        let list = out.split("Definition:").next().unwrap();
+        assert!(
+            out.contains("Docs: docs/notes.md (1)"),
+            "docs are searched and counted: {out}"
+        );
+        let list = out.split("### ").next().unwrap();
         assert!(
             !list.contains("generate_digests"),
             "whole names or name parts only: {out}"
@@ -1556,17 +1561,35 @@ mod tests {
         // definition's code is what a lookup of one name is for.
         let root = repo("defcode");
         let (one, _) = search_text(&Fake(false), &root, json!({"query": "generate_digest"}));
-        assert!(one.contains("Definition:"), "{one}");
+        assert!(one.contains("### pkg/digest.py"), "{one}");
         let (two, _) = search_text(
             &Fake(false),
             &root,
             json!({"query": "generate_digest|etag"}),
         );
-        assert!(!two.contains("Definition:"), "{two}");
-        assert!(
-            two.contains("[definition]"),
-            "the line is still marked: {two}"
+        assert!(!two.contains("### "), "{two}");
+        assert!(two.contains("[def]"), "the line is still marked: {two}");
+    }
+
+    #[test]
+    fn a_long_definition_is_not_shown() {
+        // Pilot at 8591f05: answers were 2.4x the Greps they replaced; a definition's code only
+        // pays for itself when it is short.
+        let root = repo("longdef");
+        let body: String = (0..20)
+            .map(|i| format!("    x{i} = long_function_name\n"))
+            .collect();
+        add(
+            &root,
+            "pkg/long.py",
+            &format!("def long_function_name():\n{body}"),
         );
+        let (out, _) = search_text(
+            &Fake(false),
+            &root,
+            json!({"query": "long_function_name", "path": "pkg/long.py"}),
+        );
+        assert!(out.contains("[def]") && !out.contains("### "), "{out}");
     }
 
     #[test]

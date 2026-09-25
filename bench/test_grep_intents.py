@@ -69,15 +69,18 @@ class Intents(unittest.TestCase):
 
 class SearchOutput(unittest.TestCase):
     def test_lines_and_files_are_read_back_from_a_lookup_result(self):
-        text = ("<!-- laya-codex search: ... -->\n3 matching lines in 3 files (definitions: 1, test files: 1). "
-                "Complete: every matching line is listed below.\n\n"
-                "src/digest.ts\n  in generateDigest:\n    18: export const generateDigest = 1  [definition]\n\n"
-                "src/digest.test.ts (test file)\n  in describe('d') > it('x'):\n    7: generateDigest()\n\n"
-                "Not shown (matching lines per file): src/other.ts (1), and 2 more files.\n"
-                "\nDefinition:\n### src/digest.ts:18-20\n```ts\n    99: not a hit\n```\n")
+        text = ("`generateDigest`: 5 lines in 4 files (1 test) of 90 files read; first 3 shown, the rest counted below.\n"
+                "src/digest.ts\n 18: export const generateDigest = 1 [def]\n  19: return generateDigest\n"
+                "src/digest.test.ts (test)\n ‹it('x')›\n  7: generateDigest()\n"
+                "Not shown: src/other.ts (1), and 2 more files.\n"
+                "Docs: README.md (2).\n"
+                "\n### src/digest.ts:18-20\n```ts\n    99: not a hit\n```\n")
         lines, files = gi.parse_search(text)
-        self.assertEqual(lines, {("src/digest.ts", 18), ("src/digest.test.ts", 7)})
-        self.assertEqual(files, {"src/digest.ts", "src/digest.test.ts", "src/other.ts"})
+        self.assertEqual(lines, {("src/digest.ts", 18), ("src/digest.ts", 19), ("src/digest.test.ts", 7)})
+        self.assertEqual(files, {"src/digest.ts", "src/digest.test.ts", "src/other.ts", "README.md"})
+        self.assertTrue(gi.is_lookup(text))
+        self.assertFalse(gi.is_lookup("No match for `x` in the 3 files read.\n"))
+        self.assertFalse(gi.is_lookup("### src/a.rs:1-9\n```rust\nfn a() {}\n```\n"))
 
     def test_coverage_counts_lines_in_files_the_answer_named(self):
         g = {"hits": [["a.py", 1], ["a.py", 2], ["b.py", 5]], "files": ["a.py", "b.py"], "used_files": ["a.py"],
