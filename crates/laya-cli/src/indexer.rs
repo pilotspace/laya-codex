@@ -71,7 +71,7 @@ pub fn index_repo(root: &Path, store: &dyn Store, repo: &str) -> laya_core::Resu
 /// not hidden, not gitignored/excluded, a regular file (not a symlink), of a known language and
 /// at most 1 MiB. Walks only the ancestor chain of the file with the walk's exact settings, so
 /// nested `.gitignore`/`.ignore` files apply just as they do for a full index.
-fn walk_admits(root: &Path, rel_path: &str) -> Option<PathBuf> {
+pub(crate) fn walk_admits(root: &Path, rel_path: &str) -> Option<PathBuf> {
     let rel = Path::new(rel_path);
     if !rel
         .components()

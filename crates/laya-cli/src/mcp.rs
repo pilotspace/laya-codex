@@ -104,10 +104,10 @@ fn call_tool(
         Err(e) => return text_result(e, true),
     };
     if let Some(idents) = identifier_query(&query) {
-        return text_result(
-            lookup(api, root, &idents, scope.as_deref(), budget_ms),
-            false,
-        );
+        return match lookup(api, root, &idents, scope.as_deref(), budget_ms) {
+            Ok(text) => text_result(text, false),
+            Err(e) => text_result(e, true),
+        };
     }
     let top_n = params["arguments"]["top_n"]
         .as_u64()
@@ -344,14 +344,19 @@ struct Scan {
 /// Read every indexable file under `scope` (the files laya-codex indexes: code, docs, config;
 /// `.gitignore` respected, at most [`laya_parse::MAX_FILE_BYTES`]) and keep the numbers of the
 /// lines containing a name (see [`has_name`]), until `deadline`.
-fn scan(root: &Path, scope: Option<&str>, idents: &[String], deadline: Instant) -> Scan {
+/// A named file is searched only if the indexer would index it ([`crate::indexer::walk_admits`]:
+/// never secrets such as `.env`, hidden, ignored or unknown-type files, nor over 1 MiB).
+fn scan(
+    root: &Path,
+    scope: Option<&str>,
+    idents: &[String],
+    deadline: Instant,
+) -> Result<Scan, String> {
     let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let files: Vec<PathBuf> = match scope {
-        Some(s) if base.join(s).is_file() => std::fs::metadata(base.join(s))
-            .is_ok_and(|m| m.len() <= laya_parse::MAX_FILE_BYTES)
-            .then(|| base.join(s))
-            .into_iter()
-            .collect(),
+        Some(s) if base.join(s).is_file() => {
+            vec![crate::indexer::walk_admits(&base, s).ok_or_else(|| not_indexed(s))?]
+        }
         Some(s) => laya_parse::walk_repo(&base.join(s)),
         None => laya_parse::walk_repo(&base),
     };
@@ -387,7 +392,14 @@ fn scan(root: &Path, scope: Option<&str>, idents: &[String], deadline: Instant) 
             });
         }
     }
-    out
+    Ok(out)
+}
+
+fn not_indexed(path: &str) -> String {
+    format!(
+        "`{path}` is not an indexed file (secrets such as .env, hidden, ignored, binary or \
+unknown-type files and files over 1 MiB are never read); search does not look inside it."
+    )
 }
 
 /// Order `hits` by the daemon's ranking for the names (lexical candidates + Laya rerank), then
@@ -662,17 +674,17 @@ fn counted_only(hit: &Hit) -> FileMatches {
 }
 
 /// Exact lookup: every line naming one of `idents` in the indexed files under `scope`, ranked
-/// and rendered (see [`laya_rank::render_matches`]), within [`LOOKUP_DEADLINE`]. Never fails:
-/// the daemon only orders files.
+/// and rendered (see [`laya_rank::render_matches`]), within [`LOOKUP_DEADLINE`]. Fails only for
+/// a named file the indexer would not admit; the daemon only orders files.
 fn lookup(
     api: &dyn DaemonApi,
     root: &Path,
     idents: &[String],
     scope: Option<&str>,
     budget_ms: u64,
-) -> String {
+) -> Result<String, String> {
     let deadline = Instant::now() + LOOKUP_DEADLINE;
-    let mut s = scan(root, scope, idents, deadline);
+    let mut s = scan(root, scope, idents, deadline)?;
     rank_hits(api, root, idents, &mut s.hits, budget_ms);
     // Only files that can still be shown are read again and parsed. Every line renders to at
     // least its text plus a few chars, so once the lines taken so far exceed the cap, later
@@ -700,14 +712,14 @@ fn lookup(
         definition = definition.or(def);
         files.push(f);
     }
-    render_matches(&IdentMatches {
+    Ok(render_matches(&IdentMatches {
         idents: idents.to_vec(),
         scope: scope.map(str::to_string),
         files_searched: s.files_read,
         scan_complete: s.complete,
         files,
         definition,
-    })
+    }))
 }
 
 pub fn serve(
@@ -970,6 +982,47 @@ mod tests {
             &out[..out.len().min(900)]
         );
         assert!(out.len() <= laya_rank::MAX_INJECT_CHARS);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_the_indexer_would_not_admit_is_never_read_even_when_named() {
+        // Review: `{"query":"API_KEY","path":".env"}` returned the secret. A named file must pass
+        // the indexer's own admission (secrets, hidden, ignored, unknown type, size).
+        let root = repo("secrets");
+        add(&root, ".env", "API_KEY=sk-live-0123456789\n");
+        add(&root, "config/prod.env", "API_KEY=sk-prod-0123456789\n");
+        add(
+            &root,
+            "certs/server.key",
+            "-----BEGIN PRIVATE KEY-----\nMIIsecretMIIsecret\n",
+        );
+        add(
+            &root,
+            "id_rsa",
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n",
+        );
+        add(&root, ".gitignore", "local.py\n");
+        add(&root, "local.py", "API_KEY = 'sk-local-0123456789'\n");
+        for (query, path) in [
+            ("API_KEY", ".env"),
+            ("API_KEY", "config/prod.env"),
+            ("PRIVATE", "certs/server.key"),
+            ("PRIVATE", "id_rsa"),
+            ("API_KEY", "local.py"),
+        ] {
+            let (out, _) = search_text(&Fake(true), &root, json!({"query": query, "path": path}));
+            assert!(
+                !out.contains("sk-") && !out.contains("MII") && !out.contains("b3Bl"),
+                "{path}: {out}"
+            );
+            assert!(out.contains("not an indexed file"), "{path}: {out}");
+        }
+        let (all, _) = search_text(&Fake(true), &root, json!({"query": "API_KEY|PRIVATE"}));
+        assert!(
+            !all.contains("sk-") && !all.contains("PRIVATE KEY"),
+            "{all}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
