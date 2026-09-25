@@ -37,10 +37,6 @@ open. Replayed offline on the 60 benchmark v2 tasks; not yet measured with Claud
 - **Rank mode in the hook log:** each prompt's line records `rank_mode` (`laya`, `laya-partial`
   when the time budget stopped the model early, or `lexical`), `scored`, `offered` and
   `candidates`. Query results carry `scored` and `offered` (additive fields).
-- **`LAYA_CODEX_SIZE_BY_REPO`** (opt-in, off): repositories under 200 indexed files (`1`) or
-  under a given count get one inlined block and a shorter map. Replay on httpx (92 files): the
-  first prompt's injection fell 31%, but the correct files inlined fell from 19 to 10 of 35, so
-  it stays off.
 
 ### Removed
 Unused options, taken out to keep the ranking path to what the benchmarks measured. The injected
@@ -51,8 +47,6 @@ blended ranking gave byte-identical text for every prompt before and after.
   loaded. Query replies keep a `scope` field, now always null, so older clients still parse them.
 - **Probability-threshold sizing** (`LAYA_CODEX_TAU_FULL`, `LAYA_CODEX_TAU_MAP`). The defaults
   were already zero; full code now always goes to the top-ranked files.
-- **Repository-size caps** (`LAYA_CODEX_SIZE_BY_REPO`, added above in this release). They stayed
-  off because they lost correct inlined files.
 - **Read narrowing.** The first whole-file Read of a large file is no longer cut to one region
   with an outline; in benchmark v3 it narrowed no Read, because Claude reads with offset/limit
   after a Grep. The `PreToolUse` `Read` hook now only records each Read and outputs nothing, so a
