@@ -201,6 +201,18 @@ configured?") or explicitly refers back ("the same", "previous") is not ranked o
 laya-codex ranks the session's **topic** (its last self-contained prompt) instead, plus any
 identifiers or paths the follow-up names.
 
+Since the topic's best code was sent with the first prompt, a follow-up that names no code gets
+less code of its own (unreleased; the capture below is from v0.3.0, which inlined three blocks):
+- **It asks for tests or callers** ("identify the tests that cover this and the call sites"): no
+  code blocks. It gets up to 6 locations not sent yet, the tests that use the task's identifiers
+  (`` - tests/test_decoders.py:331-355 def test_line_decoder_crnl — test using `iter_lines` ``,
+  at most two per file) and a "Definitions and uses" list of up to 16 lines.
+- **It asks for something else**: one code block.
+- **It names code** (`and replay_wal3?`): the normal sizing, since the named code ranks first.
+
+Replaying the benchmark's second prompt on its 60 tasks, this made that injection 60–64% smaller than in v0.3.0
+with the same test files named ([RESULTS](RESULTS.md#since-benchmark-v2-what-the-limits-pointed-at)).
+
 This is the second prompt in the same session (captured):
 
 ```json
@@ -304,6 +316,8 @@ code. Inlining more saved little and cost more.
 | `LAYA_CODEX_RENDER` | compact | `full` inlines every span (bigger, and not what the benchmark measured) |
 | `LAYA_CODEX_NO_MODEL` | unset | `1` gives lexical-only ranking with no model load |
 | `LAYA_CODEX_BUDGET_MS` | 1200 | Laya's time budget per prompt. The model scores as many candidates as fit; the lexical ranking is used only if none do |
+| `LAYA_CODEX_SCORE_TOP` | 16 | Candidates the model scores, best first (of 24); `0` = all |
+| `LAYA_CODEX_SIZE_BY_REPO` | off | `1` = one inlined block and a 6-entry map in repositories under 200 indexed files (a number sets the threshold). Off: in the replay it dropped correct inlined files |
 | `LAYA_CODEX_WEIGHT` | 0.5 | Laya's weight in the fusion; `rrf` switches to rank fusion |
 
 ## 8. Troubleshooting with `laya-codex doctor`

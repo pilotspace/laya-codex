@@ -407,6 +407,8 @@ mod tests {
             mode,
             elapsed_ms: 1,
             candidates,
+            scored: 0,
+            offered: 0,
             related: Vec::new(),
         }
     }

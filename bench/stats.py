@@ -7,10 +7,11 @@ here, not just as a smaller reads number).
 
     python3 bench/stats.py <run dir> <treatment arm> [baseline arm]
 """
-import json
 import os
 import random
 import sys
+
+from runs import load_runs
 
 
 def reading(r):
@@ -24,14 +25,17 @@ METRICS = {
     "wall seconds": lambda r: r.get("wall_s") or 0,
     "turns": lambda r: r.get("num_turns") or 0,
     "cost usd": lambda r: r.get("cost_usd") or 0,
+    # Output tokens drive wall time (wall ~ 5.2 + 10.8*output_ktok): a time proxy.
+    "output tokens": lambda r: r.get("output_tokens") or 0,
 }
 
 
 def main(argv):
     out, arm = argv[1], argv[2]
     base = argv[3] if len(argv) > 3 else "baseline"
-    rows = [json.loads(l) for l in open(os.path.join(out, "runs.jsonl"))]
-    by = {a: {r["task_id"]: r for r in rows if r["arm"] == a} for a in (arm, base)}
+    # Repeated sessions of a task are averaged into one row (bench/runs.py), so tasks stay the unit.
+    by = load_runs(os.path.join(out, "runs.jsonl"), arms=(arm, base))
+    by = {a: by.get(a, {}) for a in (arm, base)}
     tasks = sorted(set(by[arm]) & set(by[base]))
     if not tasks:
         print("paired n=0, %s vs %s: no task finished by both arms" % (arm, base))

@@ -238,12 +238,86 @@ fn overlaps(r: &Related, other_start: u32, other_end: u32, other_path: &str) -> 
     r.path == other_path && r.start_line <= other_end && other_start <= r.end_line
 }
 
-/// Identifiers looked up for the usage list, total lines listed, lines per identifier, and the
-/// referencing-chunk lookup limit. About 10 grep-style lines (~300 tokens).
+/// Identifiers looked up for the usage list and the referencing-chunk lookup limit. The line
+/// caps come from [`crate::RetrieverConfig`] (10 lines, 4 per identifier: ~300 tokens).
 const USAGE_IDENTS: usize = 6;
-const USAGE_LINES: usize = 10;
-const USAGE_PER_IDENT: usize = 4;
 const USAGE_REF_LIMIT: usize = 8;
+/// Referencing chunks looked at to find test files among them, and test ranges per file.
+const TEST_REF_LIMIT: usize = 48;
+const TESTS_PER_FILE: usize = 2;
+
+/// A test file by the usual conventions: a `test`, `tests`, `__tests__` or `spec` directory (any
+/// case); a `tests.*` module file; `test_*.py`; or a name ending `_test`, `_tests`, `_spec`,
+/// `.test`, `.spec` or `Tests` before the extension.
+pub(crate) fn is_test_path(path: &str) -> bool {
+    let mut parts: Vec<&str> = path.split('/').collect();
+    let base = parts.pop().unwrap_or_default();
+    if parts.iter().any(|d| {
+        let d = d.to_ascii_lowercase();
+        matches!(
+            d.as_str(),
+            "test" | "tests" | "__tests__" | "spec" | "specs"
+        )
+    }) {
+        return true;
+    }
+    let Some((stem, ext)) = base.rsplit_once('.') else {
+        return false;
+    };
+    if ext.is_empty() || !ext.chars().all(|c| c.is_ascii_lowercase()) {
+        return false;
+    }
+    stem == "tests"
+        || (ext == "py" && stem.starts_with("test_"))
+        || [
+            "_test", "_tests", "_spec", ".test", ".spec", "Tests", "Test",
+        ]
+        .iter()
+        .any(|s| stem.ends_with(s))
+}
+
+/// Up to `n` test-file chunks that use `idents` (most identifiers used first), as pointers with
+/// the relation "test using `x`". They answer "which tests cover this" without a search.
+pub(crate) fn test_pointers(
+    store: &dyn Store,
+    repo_id: &str,
+    idents: &[String],
+    n: usize,
+) -> Result<Vec<Related>> {
+    let idents: Vec<String> = idents.iter().take(USAGE_IDENTS).cloned().collect();
+    if n == 0 || idents.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids = store.chunks_referencing(repo_id, &idents, TEST_REF_LIMIT)?;
+    let by_id: HashMap<String, Chunk> = store
+        .get_chunks(repo_id, &ids)?
+        .into_iter()
+        .map(|c| (c.id(), c))
+        .collect();
+    let mut out: Vec<Related> = Vec::new();
+    for id in &ids {
+        if out.len() == n {
+            break;
+        }
+        let Some(c) = by_id.get(id).filter(|c| is_test_path(&c.path)) else {
+            continue;
+        };
+        let Some(used) = idents.iter().find(|i| c.refs.contains(i)) else {
+            continue;
+        };
+        if out.iter().filter(|r| r.path == c.path).count() >= TESTS_PER_FILE {
+            continue;
+        }
+        out.push(Related {
+            path: c.path.clone(),
+            start_line: c.start_line,
+            end_line: c.end_line,
+            symbol: c.symbol.clone(),
+            relation: format!("test using `{used}`"),
+        });
+    }
+    Ok(out)
+}
 const USAGE_LINE_CHARS: usize = 120;
 
 /// Grep-style usage list: for each identifier (task-named ones first), the line that defines it
@@ -255,10 +329,12 @@ pub(crate) fn usage_list(
     store: &dyn Store,
     repo_id: &str,
     idents: &[String],
+    max_lines: usize,
+    per_ident: usize,
 ) -> Result<Vec<Related>> {
     let mut out: Vec<Related> = Vec::new();
     for id in idents.iter().take(USAGE_IDENTS) {
-        if out.len() >= USAGE_LINES {
+        if out.len() >= max_lines {
             break;
         }
         let one = std::slice::from_ref(id);
@@ -284,7 +360,7 @@ pub(crate) fn usage_list(
         let mut shown = 0; // defs and uses with a line in `out`, new or already there
         let mut def_lines: Vec<usize> = Vec::new();
         for (cid, kind) in tagged {
-            if listed >= USAGE_PER_IDENT || out.len() >= USAGE_LINES {
+            if listed >= per_ident || out.len() >= max_lines {
                 break;
             }
             let Some(chunk) = by_id.get(cid) else {

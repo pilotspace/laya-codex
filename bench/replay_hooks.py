@@ -14,14 +14,12 @@ This is the reranker gate the plan names: run it before and after a ranking chan
 `summary` table -- gold inlined must not fall, for no more injected chars.
 
     python3 bench/replay_hooks.py --bin target/release/laya-codex --home /tmp/lc-home \\
-        --moon-port 16530 --repo <clone> --tasks bench/tasks-v8/httpx.jsonl --out replay.jsonl \\
-        [--env LAYA_CODEX_WEIGHT=1] [--label model-only]
+        --moon-port 16494 --repo <clone> --tasks bench/tasks-v8/httpx.jsonl --out replay.jsonl \\
+        [--env LAYA_CODEX_SIZE_BY_REPO=0] [--label new]
     python3 bench/replay_hooks.py summary replay-a.jsonl replay-b.jsonl
 
-Use a scratch `--home` and `--moon-port` per binary/config: the daemon and Moon belong to the
-home, and a shared one would serve every binary from whichever started first. Every path here is a
-caller-supplied argument; nothing is specific to one machine or one run (see bench/replay_decide.sh,
-which drives this module across ranking arms and repos with no hard-coded paths of its own).
+Use a scratch `--home` and `--moon-port` per binary: the daemon and Moon belong to the home, and a
+shared one would serve every binary from whichever started first.
 """
 import argparse
 import json

@@ -94,6 +94,11 @@ impl Sessions {
         s.sent.drain(..overflow);
     }
 
+    /// Whether the session has a topic, i.e. a later prompt can be a follow-up of it.
+    pub fn has_topic(&self, id: &str) -> bool {
+        self.map.get(id).is_some_and(|s| s.topic.is_some())
+    }
+
     /// Text to retrieve for `prompt`: the prompt itself if it is self-contained (or the first in
     /// the session, which then becomes the topic). A follow-up ("now find the tests for it") is
     /// retrieved as the topic plus only the identifiers and paths it names: its prose ("tests",
@@ -180,6 +185,8 @@ mod tests {
             mode: RankMode::Lexical,
             elapsed_ms: 1,
             candidates: 3,
+            scored: 0,
+            offered: 0,
             related: vec![],
         }
     }
