@@ -351,10 +351,14 @@ struct Scan {
 /// lines containing a name (see [`has_name`]), until `deadline`.
 /// A named file is searched only if the indexer would index it ([`crate::indexer::walk_admits`]:
 /// never secrets such as `.env`, hidden, ignored or unknown-type files, nor over 1 MiB).
+///
+/// Files the daemon ranked for the names are read first, so when the deadline cuts a large
+/// repository it cuts the unranked tail, not always the same alphabetical one.
 fn scan(
     root: &Path,
     scope: Option<&str>,
     idents: &[String],
+    ranked: &[String],
     deadline: Instant,
 ) -> Result<Scan, String> {
     let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
@@ -372,7 +376,7 @@ fn scan(
         complete: walked.complete,
         hits: Vec::new(),
     };
-    for path in walked.files {
+    for path in ranked_first(walked.files, &base, ranked) {
         if Instant::now() > deadline {
             out.complete = false;
             break;
@@ -468,31 +472,55 @@ unknown-type files and files over 1 MiB are never read); search does not look in
     )
 }
 
-/// Order `hits` by the daemon's ranking for the names (lexical candidates + Laya rerank), then
-/// the unranked files by match count. The ranking is optional: without the daemon the list is
-/// still complete, only its order is plainer.
-fn rank_hits(
+/// Budget of a lookup's ranking query (Laya time in the daemon). It only orders files, so it gets
+/// less than a description search, and it counts against [`LOOKUP_DEADLINE`].
+const RANK_BUDGET_MS: u64 = 400;
+
+/// Repo-relative paths the daemon ranks for the names (lexical candidates + Laya rerank), best
+/// first; empty when the daemon is down or slow to answer. The lookup never needs it to answer.
+fn ranked_paths(
     api: &dyn DaemonApi,
     root: &Path,
     idents: &[String],
-    hits: &mut [Hit],
     budget_ms: u64,
-) {
-    if hits.len() < 2 {
-        return;
-    }
+) -> Vec<String> {
     let req = Request::Query {
         repo: root.to_string_lossy().into_owned(),
         session: None,
         prompt: idents.join(" "),
-        budget_ms: Some(budget_ms),
+        budget_ms: Some(budget_ms.min(RANK_BUDGET_MS)),
         top_n: Some(crate::protocol::MAX_TOP_N),
         render: None,
     };
-    let ranked: Vec<String> = match api.call(req) {
-        Ok(Response::Query { result, .. }) => result.spans.into_iter().map(|s| s.path).collect(),
-        _ => Vec::new(),
+    let mut out: Vec<String> = Vec::new();
+    if let Ok(Response::Query { result, .. }) = api.call(req) {
+        for s in result.spans {
+            if !out.contains(&s.path) {
+                out.push(s.path);
+            }
+        }
+    }
+    out
+}
+
+/// `files` (absolute, under `base`) with the ranked ones first, in rank order; the rest keep
+/// their walk order.
+fn ranked_first(files: Vec<PathBuf>, base: &Path, ranked: &[String]) -> Vec<PathBuf> {
+    let pos = |p: &PathBuf| {
+        let rel = p
+            .strip_prefix(base)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .replace('\\', "/");
+        ranked.iter().position(|r| *r == rel).unwrap_or(usize::MAX)
     };
+    let mut keyed: Vec<(usize, PathBuf)> = files.into_iter().map(|p| (pos(&p), p)).collect();
+    keyed.sort_by_key(|(k, _)| *k);
+    keyed.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Ranked files first (in rank order), then the others by match count.
+fn sort_hits(hits: &mut [Hit], ranked: &[String]) {
     let pos = |rel: &str| ranked.iter().position(|p| p == rel).unwrap_or(usize::MAX);
     hits.sort_by(|a, b| {
         pos(&a.rel)
@@ -750,8 +778,14 @@ fn lookup(
     budget_ms: u64,
 ) -> Result<Lookup, String> {
     let deadline = Instant::now() + LOOKUP_DEADLINE;
-    let mut s = scan(root, scope, idents, deadline)?;
-    rank_hits(api, root, idents, &mut s.hits, budget_ms);
+    let one_file = scope.is_some_and(|s| root.join(s).is_file());
+    let ranked = if one_file {
+        Vec::new()
+    } else {
+        ranked_paths(api, root, idents, budget_ms)
+    };
+    let mut s = scan(root, scope, idents, &ranked, deadline)?;
+    sort_hits(&mut s.hits, &ranked);
     // Only files that can still be shown are read again and parsed. Every line renders to at
     // least its text plus a few chars, so once the lines taken so far exceed the cap, later
     // files can only be counted.
@@ -1193,6 +1227,47 @@ mod tests {
             "a plain word with matches is a lookup: {found}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Records the budget of every daemon request; ranks nothing.
+    struct Budgets(std::cell::RefCell<Vec<Option<u64>>>);
+    impl DaemonApi for Budgets {
+        fn call(&self, req: Request) -> anyhow::Result<Response> {
+            if let Request::Query { budget_ms, .. } = req {
+                self.0.borrow_mut().push(budget_ms);
+            }
+            anyhow::bail!("no ranking")
+        }
+    }
+
+    #[test]
+    fn the_ranking_is_asked_first_with_a_small_budget_and_not_for_one_file() {
+        let root = repo("rankbudget");
+        let api = Budgets(Default::default());
+        let _ = search_text(&api, &root, json!({"query": "generate_digest"}));
+        let asked = api.0.borrow().clone();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert!(asked[0].is_some_and(|b| b <= RANK_BUDGET_MS), "{asked:?}");
+        api.0.borrow_mut().clear();
+        let _ = search_text(
+            &api,
+            &root,
+            json!({"query": "generate_digest", "path": "pkg/etag.py"}),
+        );
+        assert!(api.0.borrow().is_empty(), "one file needs no ranking");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ranked_files_are_scanned_first_so_the_deadline_cuts_the_rest() {
+        let files: Vec<PathBuf> = ["/r/a.py", "/r/b.py", "/r/c.py", "/r/d.py"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let ranked = vec!["d.py".to_string(), "x.py".to_string(), "b.py".to_string()];
+        let order = ranked_first(files, Path::new("/r"), &ranked);
+        let names: Vec<&str> = order.iter().map(|p| p.to_str().unwrap()).collect();
+        assert_eq!(names, ["/r/d.py", "/r/b.py", "/r/a.py", "/r/c.py"]);
     }
 
     #[test]
