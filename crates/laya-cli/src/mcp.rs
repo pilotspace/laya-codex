@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use laya_core::RankedSpan;
 use laya_parse::ChunkConfig;
-use laya_rank::{FileMatches, IdentMatches, MatchGroup, MatchLine, render_matches};
+use laya_rank::{FileMatches, IdentMatches, Listing, MatchGroup, MatchLine, render_matches};
 use serde_json::{Value, json};
 
 use crate::hook::DaemonApi;
@@ -639,7 +639,7 @@ fn file_matches(
         return (
             FileMatches {
                 path: hit.rel.clone(),
-                grouped: false,
+                listing: Listing::Flat,
                 groups: vec![MatchGroup {
                     symbol: String::new(),
                     lines,
@@ -692,7 +692,7 @@ fn file_matches(
     (
         FileMatches {
             path: hit.rel.clone(),
-            grouped: true,
+            listing: Listing::Grouped,
             groups,
         },
         code,
@@ -793,7 +793,7 @@ fn test_opener(body: &str) -> Option<String> {
 fn counted_only(hit: &Hit) -> FileMatches {
     FileMatches {
         path: hit.rel.clone(),
-        grouped: false,
+        listing: Listing::Counted,
         groups: vec![MatchGroup {
             symbol: String::new(),
             lines: hit
@@ -828,9 +828,9 @@ fn lookup(
     };
     let mut s = scan(root, scope, idents, &ranked, deadline)?;
     sort_hits(&mut s.hits, &ranked);
-    // Only files that can still be shown are read again and parsed. Every line renders to at
-    // least its text plus a few chars, so once the lines taken so far exceed the cap, later
-    // files can only be counted.
+    // Only files that can still be shown are read again and parsed: once the files taken so far
+    // fill the cap (as rendered, so a file's lines past the per-file limit take no room, and docs,
+    // only counted when code matches, take none), later files can only be counted.
     let mut clock = ParseClock::new(deadline);
     let mut room = laya_rank::MATCH_MAX_CHARS;
     let mut files = Vec::with_capacity(s.hits.len());
@@ -844,13 +844,9 @@ fn lookup(
         // callers and tests, and would pay for code they do not read.
         let with_code = idents.len() == 1 && definition.is_none();
         let (f, def) = file_matches(hit, idents, with_code, &mut clock);
-        let shown: usize = f
-            .groups
-            .iter()
-            .flat_map(|g| g.lines.iter())
-            .map(|l| l.text.len() + 4)
-            .sum();
-        room = room.saturating_sub(shown + f.path.len());
+        if !laya_rank::is_prose_path(&f.path) {
+            room = room.saturating_sub(laya_rank::rendered_chars(&f));
+        }
         definition = definition.or(def);
         files.push(f);
     }
@@ -1553,6 +1549,69 @@ mod tests {
             out.contains("### pkg/digest.py:1-2 — def generate_digest\n```python\ndef generate_digest(stream):\n    return stream\n```"),
             "the definition's code follows, and only its own lines: {out}"
         );
+    }
+
+    #[test]
+    fn files_past_the_cap_are_only_counted_never_listed_empty() {
+        // Pilot 2: `etag` over src/ charged all 120 lines of the etag test file against the cap
+        // (40 are shown), so the next files were only counted, then listed as ` 213: ` and
+        // reported as "listed without enclosing functions".
+        let root = repo("capped");
+        let many: String = (0..300)
+            .map(|i| format!("value_{i} = generate_digest(part_{i})\n"))
+            .collect();
+        add(&root, "pkg/a_many.py", &many);
+        let long: String = (0..40)
+            .map(|i| {
+                format!("result_{i} = generate_digest(first_argument_{i}, second_argument_{i})\n")
+            })
+            .collect();
+        for k in 0..5 {
+            add(&root, &format!("pkg/b{k}.py"), &long);
+        }
+        add(&root, "pkg/z_last.py", "generate_digest(1)\n");
+        let ranked = Ranked(vec![
+            "pkg/a_many.py",
+            "pkg/b0.py",
+            "pkg/b1.py",
+            "pkg/b2.py",
+            "pkg/b3.py",
+            "pkg/b4.py",
+            "pkg/z_last.py",
+        ]);
+        let (out, _) = search_text(&ranked, &root, json!({"query": "generate_digest"}));
+        assert!(!out.contains(": \n"), "no line without its text: {out}");
+        assert!(
+            !out.contains("without enclosing functions"),
+            "counted files are not flat listings: {out}"
+        );
+        assert!(
+            out.contains("pkg/b0.py\n 1: result_0 = generate_digest("),
+            "files that fit are shown: {out}"
+        );
+        assert!(
+            out.contains("pkg/z_last.py (1)"),
+            "a file past the cap is counted in the tail: {out}"
+        );
+    }
+
+    #[test]
+    fn docs_take_no_room_from_the_code_they_are_only_counted_beside() {
+        // Replay: two Markdown files charged against the cap pushed three code files into the
+        // "Not shown" tail, though docs are only counted when code matches.
+        let root = repo("docsroom");
+        let doc: String = (0..40)
+            .map(|i| format!("Step {i}: call generate_digest with the stream and check the digest it returns.\n"))
+            .collect();
+        add(&root, "docs/a.md", &doc);
+        add(&root, "docs/b.md", &doc);
+        let ranked = Ranked(vec!["docs/a.md", "docs/b.md", "pkg/etag.py"]);
+        let (out, _) = search_text(&ranked, &root, json!({"query": "generate_digest"}));
+        assert!(
+            out.contains("pkg/etag.py\n 1: from pkg.digest import generate_digest\n"),
+            "{out}"
+        );
+        assert!(out.contains("Docs: docs/a.md (40)"), "{out}");
     }
 
     #[test]

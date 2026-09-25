@@ -31,9 +31,9 @@ pub(crate) mod fakes;
 
 pub use config::RetrieverConfig;
 pub use render::{
-    FileMatches, IdentMatches, MATCH_MAX_CHARS, MAX_INJECT_CHARS, MatchGroup, MatchLine,
+    FileMatches, IdentMatches, Listing, MATCH_MAX_CHARS, MAX_INJECT_CHARS, MatchGroup, MatchLine,
     TRUST_LINE, render_compact, render_compact_opts, render_context, render_context_opts,
-    render_matches,
+    render_matches, rendered_chars,
 };
 pub use retriever::{Retriever, asks_for_non_code};
 pub use signals::{
