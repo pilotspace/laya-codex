@@ -16,6 +16,9 @@ use crate::trace::{self, Recording, Tracer};
 
 const DEFAULT_PROTOCOL: &str = "2025-06-18";
 
+/// Spans a description search returns when `top_n` is not given (the retriever's default).
+const DEFAULT_TOP_N: usize = 10;
+
 /// Server instructions, which Claude Code adds to the system prompt. Benchmark v3 (v9): 72% of the
 /// Greps agents still made were for identifiers (definition, callers, uses, tests), mostly names
 /// they already knew; a pilot that steered them here by description alone got 0 calls.
@@ -114,18 +117,24 @@ fn call_tool(
     let top_n = params["arguments"]["top_n"]
         .as_u64()
         .map(|n| n.clamp(1, crate::protocol::MAX_TOP_N as u64) as usize);
+    // With a `path`, rank the most spans the daemon gives and keep the top n inside the scope.
     let req = Request::Query {
         repo: root.to_string_lossy().into_owned(),
         session: None,
         prompt: query,
         budget_ms: Some(budget_ms),
-        top_n,
+        top_n: if scope.is_some() {
+            Some(crate::protocol::MAX_TOP_N)
+        } else {
+            top_n
+        },
         render: None,
     };
     match api.call(req) {
         Ok(Response::Query { mut result, .. }) => {
             if let Some(s) = &scope {
                 result.spans.retain(|x| in_scope(&x.path, s));
+                result.spans.truncate(top_n.unwrap_or(DEFAULT_TOP_N));
                 result.related.retain(|x| in_scope(&x.path, s));
             }
             if result.spans.is_empty() {
@@ -147,6 +156,8 @@ fn call_tool(
 
 /// At most this many names per lookup (agents' Grep alternations carry 1-5).
 const MAX_IDENTS: usize = 8;
+/// A longer token is not a name (it would also be echoed back in the answer).
+const MAX_NAME_CHARS: usize = 128;
 
 /// Words that frame an identifier lookup ("callers of x", "def x") rather than name code.
 #[rustfmt::skip]
@@ -175,7 +186,7 @@ fn identifier_query(query: &str) -> Option<Vec<String>> {
         if !listed && FRAMING_WORDS.contains(&token.to_ascii_lowercase().as_str()) {
             continue;
         }
-        if !is_identifier(&token) && !is_literal(&token) {
+        if token.len() > MAX_NAME_CHARS || (!is_identifier(&token) && !is_literal(&token)) {
             return None;
         }
         if !names.contains(&token) {
@@ -243,17 +254,48 @@ fn code_shaped(s: &str) -> bool {
 /// while `quote` does not match `unquote`, `it` not `with`, `cookie` not `cookies`. Literals
 /// (`a-b`, `a/b`) match as plain text.
 fn has_name(line: &str, name: &str) -> bool {
+    name_at(line, name).is_some()
+}
+
+/// Byte offset of the first match of `name` in `line` (see [`has_name`]).
+fn name_at(line: &str, name: &str) -> Option<usize> {
     if !is_identifier(name) {
-        return line.contains(name);
+        return line.find(name);
     }
-    let (Some(first), Some(last)) = (name.chars().next(), name.chars().next_back()) else {
-        return false;
-    };
-    line.match_indices(name).any(|(at, _)| {
+    let (first, last) = (name.chars().next()?, name.chars().next_back()?);
+    line.match_indices(name).map(|(at, _)| at).find(|&at| {
         let before = line[..at].chars().next_back();
         let after = line[at + name.len()..].chars().next();
         starts_a_part(before, first) && ends_a_part(last, after)
     })
+}
+
+/// Chars kept before the match when a long line is cut.
+const EXCERPT_LEAD_CHARS: usize = 40;
+
+/// `line` trimmed and, when longer than [`MATCH_LINE_CHARS`], cut to a window that starts a
+/// little before the first match, with `…` where it was cut.
+fn match_excerpt(line: &str, names: &[String]) -> String {
+    let line = line.trim();
+    if line.chars().count() <= MATCH_LINE_CHARS {
+        return line.to_string();
+    }
+    let at = names
+        .iter()
+        .filter_map(|n| name_at(line, n))
+        .min()
+        .unwrap_or(0);
+    let start = line[..at]
+        .chars()
+        .count()
+        .saturating_sub(EXCERPT_LEAD_CHARS);
+    let window: String = line.chars().skip(start).take(MATCH_LINE_CHARS).collect();
+    let more = line.chars().count() > start + MATCH_LINE_CHARS;
+    format!(
+        "{}{window}{}",
+        if start > 0 { "…" } else { "" },
+        if more { "…" } else { "" }
+    )
 }
 
 fn starts_a_part(before: Option<char>, first: char) -> bool {
@@ -581,7 +623,7 @@ fn file_matches(
     let text: Vec<&str> = source.lines().collect();
     let line_text = |n: u32| -> String {
         text.get(n as usize - 1)
-            .map(|l| l.trim().chars().take(MATCH_LINE_CHARS).collect())
+            .map(|l| match_excerpt(l, idents))
             .unwrap_or_default()
     };
     if !clock.allows(source.len()) {
@@ -989,8 +1031,22 @@ mod tests {
         }
     }
 
+    /// A temporary repository, removed when dropped.
+    struct TempRepo(PathBuf);
+    impl std::ops::Deref for TempRepo {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempRepo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// A small repository: a definition, a caller, a test, a doc and a near-miss name.
-    fn repo(tag: &str) -> PathBuf {
+    fn repo(tag: &str) -> TempRepo {
         let root = std::env::temp_dir().join(format!("laya-mcp-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let files = [
@@ -1020,7 +1076,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         }
-        root
+        TempRepo(root)
     }
 
     fn search_text(api: &dyn DaemonApi, root: &Path, args: Value) -> (String, bool) {
@@ -1091,7 +1147,6 @@ mod tests {
             &out[..out.len().min(900)]
         );
         assert!(out.len() <= laya_rank::MAX_INJECT_CHARS);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1132,7 +1187,6 @@ mod tests {
             !all.contains("sk-") && !all.contains("PRIVATE KEY"),
             "{all}"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1168,7 +1222,6 @@ mod tests {
             pkg.contains("pkg/etag.py") && !pkg.contains("tests/"),
             "{pkg}"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1186,7 +1239,6 @@ mod tests {
             out.contains("in the 5 files read"),
             "the header counts files read: {out}"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1226,7 +1278,6 @@ mod tests {
             found.contains("pkg/digest.py"),
             "a plain word with matches is a lookup: {found}"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Records the budget of every daemon request; ranks nothing.
@@ -1255,7 +1306,6 @@ mod tests {
             json!({"query": "generate_digest", "path": "pkg/etag.py"}),
         );
         assert!(api.0.borrow().is_empty(), "one file needs no ranking");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1268,6 +1318,81 @@ mod tests {
         let order = ranked_first(files, Path::new("/r"), &ranked);
         let names: Vec<&str> = order.iter().map(|p| p.to_str().unwrap()).collect();
         assert_eq!(names, ["/r/d.py", "/r/b.py", "/r/a.py", "/r/c.py"]);
+    }
+
+    #[test]
+    fn an_overlong_name_is_not_a_lookup() {
+        // Review: a 6,000-char name produced 12,201 chars of output.
+        let long = "a".repeat(6_000);
+        assert_eq!(identifier_query(&long), None);
+        assert!(identifier_query(&"a".repeat(MAX_NAME_CHARS)).is_some());
+    }
+
+    #[test]
+    fn a_long_matching_line_is_cut_around_the_match() {
+        let root = repo("longline");
+        let line = format!("x = [{}] + generate_digest(1)\n", "0, ".repeat(100));
+        add(&root, "pkg/long.py", &line);
+        let (out, _) = search_text(
+            &Fake(true),
+            &root,
+            json!({"query": "generate_digest", "path": "pkg/long.py"}),
+        );
+        let shown = out.lines().find(|l| l.contains("1: ")).unwrap_or_default();
+        assert!(shown.contains("generate_digest(1)"), "{out}");
+        assert!(shown.contains('…'), "the cut is marked: {shown}");
+        assert!(shown.chars().count() < MATCH_LINE_CHARS + 20, "{shown}");
+    }
+
+    /// Returns 15 spans outside `pkg/` then 5 inside, and records the `top_n` it was asked for.
+    struct ManySpans(std::cell::Cell<Option<usize>>);
+    impl DaemonApi for ManySpans {
+        fn call(&self, req: Request) -> anyhow::Result<Response> {
+            let Request::Query { top_n, .. } = req else {
+                anyhow::bail!("unexpected")
+            };
+            self.0.set(top_n);
+            let span = |path: String| RankedSpan {
+                path,
+                start_line: 1,
+                end_line: 2,
+                symbol: String::new(),
+                p_relevant: None,
+                score: 1.0,
+                text: "x".into(),
+            };
+            let spans = (0..15)
+                .map(|i| span(format!("other/o{i}.rs")))
+                .chain((0..5).map(|i| span(format!("pkg/p{i}.rs"))))
+                .collect();
+            Ok(Response::Query {
+                result: QueryResult {
+                    spans,
+                    mode: RankMode::Laya,
+                    elapsed_ms: 1,
+                    candidates: 20,
+                    scored: 0,
+                    offered: 0,
+                    related: vec![],
+                },
+                rendered: None,
+                scope: None,
+            })
+        }
+    }
+
+    #[test]
+    fn a_description_search_applies_the_path_before_taking_the_top_n() {
+        let root = repo("scopedwords");
+        let api = ManySpans(Default::default());
+        let (out, _) = search_text(
+            &api,
+            &root,
+            json!({"query": "wal replay", "path": "pkg", "top_n": 3}),
+        );
+        assert_eq!(api.0.get(), Some(crate::protocol::MAX_TOP_N));
+        assert_eq!(out.matches("### pkg/").count(), 3, "{out}");
+        assert!(!out.contains("other/"), "{out}");
     }
 
     #[test]
