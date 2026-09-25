@@ -14,12 +14,11 @@
 //! 4. `span::shape_spans` merges adjacent/overlapping same-file chunks, keeps the top-N, and
 //!    enforces a total-line budget.
 //!
-//! [`render_context`] and [`read_narrowing`] turn a [`laya_core::QueryResult`] into what the
+//! [`render_context`] and [`render_sized`] turn a [`laya_core::QueryResult`] into what the
 //! hooks/MCP layer actually sends to Claude Code.
 
 mod config;
 mod fusion;
-mod read_narrow;
 mod related;
 mod render;
 mod retriever;
@@ -31,7 +30,6 @@ mod span;
 pub(crate) mod fakes;
 
 pub use config::RetrieverConfig;
-pub use read_narrow::{ReadPolicy, read_narrowing};
 pub use render::{
     FileMatches, IdentMatches, MATCH_MAX_CHARS, MAX_INJECT_CHARS, MatchGroup, MatchLine,
     TRUST_LINE, render_compact, render_compact_opts, render_context, render_context_opts,

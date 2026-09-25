@@ -1,5 +1,5 @@
 {
-  "description": "laya-codex: inject ranked code for each prompt, narrow large Reads, re-index on edit, re-inject after compaction. Every hook fails open.",
+  "description": "laya-codex: inject ranked code for each prompt, note Reads so a file already read is not injected again, re-index on edit, re-inject after compaction. Every hook fails open.",
   "hooks": {
     "SessionStart": [
       {"hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/laya-codex-hook", "timeout": 5}]}

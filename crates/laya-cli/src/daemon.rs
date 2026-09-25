@@ -16,9 +16,7 @@ use laya_rank::{FollowUpIntent, Retriever, RetrieverConfig, SizeOpts, SpanKey};
 
 use crate::config::{Config, rel_path, repo_root};
 use crate::indexer;
-use crate::protocol::{
-    MAX_BUDGET_MS, MAX_RENDER_TOKENS, MAX_TOP_N, ReadPlan, RenderReq, Request, Response,
-};
+use crate::protocol::{MAX_BUDGET_MS, MAX_RENDER_TOKENS, MAX_TOP_N, RenderReq, Request, Response};
 use crate::session::Sessions;
 
 /// Caches Laya probabilities in the store, keyed by (task, chunk content), so repeated or
@@ -431,59 +429,9 @@ impl Daemon {
                 }
                 Response::Ok
             }
-            Request::ReadPlan {
-                repo,
-                session,
-                path,
-            } => Response::ReadPlan {
-                plan: self.read_plan(&repo, &session, &path),
-            },
             // Acknowledged here; `serve_conn` exits the process once the reply is written.
             Request::Shutdown => Response::Ok,
         }
-    }
-
-    /// Plan the first whole-file Read of `path`: the region the session's last ranking (else its
-    /// last query's terms) points at, plus an outline of the file's items. `None` (pass the Read
-    /// through) unless the file is large, inside the repo, indexed, and unchanged since indexing
-    /// (its chunks' line numbers must describe the bytes the agent will get), and something
-    /// actually points into it. A plan is recorded as a partial read of the session.
-    fn read_plan(&self, repo: &str, session: &str, path: &str) -> Option<ReadPlan> {
-        let (root, id) = self.repo(repo);
-        let rel = rel_path(&root, path)?;
-        let abs = root.join(&rel);
-        // Cheap checks before reading: the indexer never indexes files over this size.
-        if std::fs::metadata(&abs).ok()?.len() > laya_parse::MAX_FILE_BYTES {
-            return None;
-        }
-        let indexed = self.store.file_hash(&id, &rel).ok()??;
-        let bytes = std::fs::read(&abs).ok()?;
-        let total_lines = crate::hook::line_count(&bytes);
-        let policy = laya_rank::ReadPolicy::default();
-        if total_lines < policy.min_file_lines {
-            return None;
-        }
-        if indexed != laya_parse::file_hash(&bytes) {
-            return None; // edited since indexing: chunk line numbers may be wrong
-        }
-        let chunks = self.store.chunks_of_file(&id, &rel).ok()?;
-        if chunks.is_empty() {
-            return None;
-        }
-        let (ranking, query) = self.sessions().read_context(session);
-        let signals = laya_rank::extract_signals(query.as_deref().unwrap_or_default());
-        let (offset, limit, basis) =
-            policy.read_region(ranking.as_ref(), &rel, &chunks, &signals, total_lines)?;
-        let outline = policy.outline(&chunks, &signals, (offset, limit));
-        self.sessions()
-            .narrowed_read(session, &rel, offset, offset + limit - 1);
-        Some(ReadPlan {
-            offset,
-            limit,
-            total_lines,
-            basis: basis.to_string(),
-            outline,
-        })
     }
 }
 
@@ -543,7 +491,6 @@ fn op_name(req: &Request) -> &'static str {
         Request::Session { .. } => "session",
         Request::ReindexFile { .. } => "reindex_file",
         Request::IndexRepo { .. } => "index_repo",
-        Request::ReadPlan { .. } => "read_plan",
         Request::Shutdown => "shutdown",
     }
 }
@@ -1455,6 +1402,51 @@ mod tests {
         }
     }
 
+    /// The hook talking to this daemon in-process.
+    struct Direct(Arc<Daemon>);
+    impl crate::hook::DaemonApi for Direct {
+        fn call(&self, req: Request) -> anyhow::Result<Response> {
+            Ok(self.0.handle(req))
+        }
+    }
+
+    #[test]
+    fn the_read_hook_outputs_nothing_and_a_whole_file_read_is_not_injected_again() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        let d = production_daemon(d.store.clone());
+        let (result, _) = ask_ranked(&d, &repo, "probe", "where is the wal segment replayed");
+        let top = result.spans[0].path.clone();
+        let api = Direct(Arc::clone(&d));
+        // The hook's root, as `laya-codex hook` finds it: canonical (temp dirs are symlinked).
+        let root = repo_root(Path::new(&repo));
+        let ctx = crate::hook::HookCtx {
+            api: &api,
+            root: root.clone(),
+            budget_ms: 10_000,
+            inject_tokens: 3000,
+            compact: true,
+            related: true,
+            adaptive: true,
+        };
+        let read = serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s",
+            "tool_name": "Read", "tool_input": {"file_path": root.join(&top)}});
+        let o = crate::hook::handle(&read, &ctx);
+        assert_eq!((o.action, o.output), ("note_read", None));
+        let prompt = serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s",
+            "prompt": "where is the wal segment replayed"});
+        let o = crate::hook::handle(&prompt, &ctx);
+        assert_eq!(o.action, "inject");
+        let text = o.output.unwrap()["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            !text.contains(&format!("### {top}:")),
+            "{top} was read: {text}"
+        );
+        assert_eq!(blocks(&text), 2, "the next files take its place: {text}");
+    }
+
     #[test]
     fn a_follow_up_without_a_named_intent_inlines_at_most_one_block() {
         let (d, repo) = daemon_with_files(WAL_FILES);
@@ -1709,160 +1701,6 @@ mod tests {
             }),
             Response::Session { .. }
         ));
-    }
-
-    /// A repo with an indexed 390-line `src/big.rs` (30 thirteen-line fns; `handler_17`, at
-    /// lines 222-234, calls `replay_wal_segment`) and an indexed 10-line `src/small.rs`.
-    fn plan_repo(tag: &str) -> (Arc<Daemon>, PathBuf, String) {
-        let root = std::env::temp_dir().join(format!("laya-plan-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        let mut big = String::new();
-        for i in 0..30 {
-            let call = if i == 17 {
-                "replay_wal_segment(x)"
-            } else {
-                "x + 1"
-            };
-            big.push_str(&format!(
-                "/// Handler {i}.\npub fn handler_{i}(x: u32) -> u32 {{\n    let y = {call};\n"
-            ));
-            for k in 0..7 {
-                big.push_str(&format!("    let y = y.wrapping_mul({k});\n"));
-            }
-            big.push_str("    y\n}\n\n");
-        }
-        assert_eq!(big.lines().count(), 390);
-        std::fs::write(root.join("src/big.rs"), &big).unwrap();
-        std::fs::write(root.join("src/small.rs"), "fn tiny() {}\n".repeat(10)).unwrap();
-        let d = Daemon::new(Arc::new(MemStore::default()), RetrieverConfig::default());
-        let repo = root.to_string_lossy().into_owned();
-        let (root, id) = d.repo(&repo);
-        for f in ["src/big.rs", "src/small.rs"] {
-            indexer::index_file(&root, d.store.as_ref(), &id, f).unwrap();
-        }
-        (d, root, repo)
-    }
-
-    fn plan(d: &Arc<Daemon>, repo: &str, session: &str, path: &str) -> Option<ReadPlan> {
-        match d.handle(Request::ReadPlan {
-            repo: repo.into(),
-            session: session.into(),
-            path: path.into(),
-        }) {
-            Response::ReadPlan { plan } => plan,
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn read_plan_shows_the_task_region_with_an_outline() {
-        let (d, root, repo) = plan_repo("lex");
-        assert_eq!(
-            plan(&d, &repo, "s", "src/big.rs"),
-            None,
-            "no task yet: nothing to aim at"
-        );
-        d.handle(Request::Query {
-            repo: repo.clone(),
-            session: Some("s".into()),
-            prompt: "fix the ordering bug in replay_wal_segment".into(),
-            budget_ms: Some(0),
-            top_n: None,
-            render: None,
-        });
-        d.handle(Request::NoteRead {
-            session: "s".into(),
-            path: "src/big.rs".into(),
-            full: true,
-        });
-        let abs = root.join("src/big.rs").to_string_lossy().into_owned();
-        let p = plan(&d, &repo, "s", &abs).expect("absolute paths are planned too");
-        assert_eq!((p.basis.as_str(), p.total_lines), ("lexical", 390));
-        let end = p.offset + p.limit - 1;
-        assert!(p.offset <= 224 && end >= 224, "{p:?}");
-        assert!(p.limit <= 200, "{p:?}");
-        assert!(
-            p.outline.contains("handler_17") && p.outline.contains('*'),
-            "{}",
-            p.outline
-        );
-        assert!(p.outline.len() <= 1600, "{}", p.outline.len());
-        // Only the window is in the agent's context now, not the whole file.
-        let already = d.sessions.lock().unwrap().already("s");
-        assert_eq!(already, vec![("src/big.rs".to_string(), p.offset, end)]);
-    }
-
-    #[test]
-    fn read_plan_prefers_the_sessions_ranked_spans() {
-        let (d, _, repo) = plan_repo("rank");
-        let span = laya_core::RankedSpan {
-            path: "src/big.rs".into(),
-            start_line: 40,
-            end_line: 52,
-            symbol: "fn handler_3".into(),
-            p_relevant: Some(0.1),
-            score: 0.1,
-            text: String::new(),
-        };
-        d.sessions.lock().unwrap().record_query(
-            "s",
-            &QueryResult {
-                spans: vec![span],
-                mode: laya_core::RankMode::Laya,
-                elapsed_ms: 1,
-                candidates: 1,
-                scored: 0,
-                offered: 0,
-                related: vec![],
-            },
-        );
-        let p = plan(&d, &repo, "s", "src/big.rs").unwrap();
-        assert_eq!((p.basis.as_str(), p.offset, p.limit), ("ranking", 35, 23));
-    }
-
-    #[test]
-    fn read_plan_fails_open_on_small_unindexed_stale_or_missing_files() {
-        let (d, root, repo) = plan_repo("open");
-        let span = |path: &str| laya_core::RankedSpan {
-            path: path.into(),
-            start_line: 1,
-            end_line: 5,
-            symbol: String::new(),
-            p_relevant: None,
-            score: 1.0,
-            text: String::new(),
-        };
-        d.sessions.lock().unwrap().record_query(
-            "s",
-            &QueryResult {
-                spans: vec![
-                    span("src/small.rs"),
-                    span("src/other.rs"),
-                    span("src/big.rs"),
-                ],
-                mode: laya_core::RankMode::Lexical,
-                elapsed_ms: 1,
-                candidates: 3,
-                scored: 0,
-                offered: 0,
-                related: vec![],
-            },
-        );
-        assert!(plan(&d, &repo, "s", "src/big.rs").is_some());
-        assert_eq!(plan(&d, &repo, "s", "src/small.rs"), None, "small");
-        let big = std::fs::read_to_string(root.join("src/big.rs")).unwrap();
-        std::fs::write(root.join("src/other.rs"), &big).unwrap();
-        assert_eq!(plan(&d, &repo, "s", "src/other.rs"), None, "not indexed");
-        assert_eq!(plan(&d, &repo, "s", "src/gone.rs"), None, "missing");
-        assert_eq!(plan(&d, &repo, "s", "/etc/hosts"), None, "outside the repo");
-        std::fs::write(root.join("src/big.rs"), format!("// edited\n{big}")).unwrap();
-        assert_eq!(plan(&d, &repo, "s", "src/big.rs"), None, "stale index");
-        // Huge (generated/minified) files are not even read.
-        let huge = "x".repeat(1 << 14) + "\n";
-        std::fs::write(root.join("src/huge.rs"), huge.repeat(300)).unwrap();
-        indexer::index_file(&root, d.store.as_ref(), &d.repo(&repo).1, "src/huge.rs").unwrap();
-        assert_eq!(plan(&d, &repo, "s", "src/huge.rs"), None, "huge");
     }
 
     #[test]

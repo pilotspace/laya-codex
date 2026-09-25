@@ -2,13 +2,13 @@
 //!
 //! Events handled (schemas verified empirically, see docs/build-context.md):
 //! - `UserPromptSubmit`: inject the ranked spans as `additionalContext`.
-//! - `PreToolUse` `Read`: the first whole-file Read of a large indexed file shows the daemon's
-//!   planned region plus a file outline; a second whole-file Read passes through (escape hatch).
+//! - `PreToolUse` `Read`: record the Read and output nothing, so later prompts do not inject code
+//!   from a file Claude already read whole.
 //! - `PreToolUse` `Agent|Task`: hand the parent's working set to the subagent prompt.
 //! - `PostToolUse` edits: re-index the edited file.
 //! - `SessionStart`: `compact` → re-inject the working set; `startup`/`resume` → background re-index.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use laya_core::{QueryResult, RankMode};
 use serde_json::{Value, json};
@@ -166,6 +166,9 @@ fn session_view(session: &str, reset: bool, ctx: &HookCtx) -> Option<SessionView
     }
 }
 
+/// Record the Read and output nothing: the Read runs exactly as Claude asked. A whole-file Read
+/// (no offset/limit) puts the file in Claude's context, so the daemon leaves it out of later
+/// injections.
 fn pre_read(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
     let Some(file) = tool_input["file_path"].as_str() else {
         return Outcome::skip("no_path");
@@ -174,64 +177,14 @@ fn pre_read(tool_input: &Value, session: &str, ctx: &HookCtx) -> Outcome {
         return Outcome::skip("outside_repo");
     };
     let ranged = !tool_input["offset"].is_null() || !tool_input["limit"].is_null();
-    let count = match ctx.api.call(Request::NoteRead {
+    match ctx.api.call(Request::NoteRead {
         session: session.to_string(),
-        path: rel.clone(),
+        path: rel,
         full: !ranged,
     }) {
-        Ok(Response::Count { count }) => count,
-        _ => return Outcome::skip("daemon_unavailable"),
-    };
-    if ranged || count > 1 {
-        return Outcome::skip(if ranged {
-            "already_ranged"
-        } else {
-            "escape_hatch"
-        });
-    }
-    let total = match count_lines(&ctx.root.join(&rel)) {
-        Ok(n) => n,
-        Err(action) => return Outcome::skip(action),
-    };
-    if total < laya_rank::ReadPolicy::default().min_file_lines {
-        return Outcome::skip("small_file");
-    }
-    let plan = match ctx.api.call(Request::ReadPlan {
-        repo: ctx.root.to_string_lossy().into_owned(),
-        session: session.to_string(),
-        path: rel.clone(),
-    }) {
-        Ok(Response::ReadPlan { plan: Some(p) }) => p,
-        Ok(Response::ReadPlan { plan: None }) => return Outcome::skip("not_narrowed"),
-        _ => return Outcome::skip("daemon_unavailable"),
-    };
-    // The daemon read the file too; if it saw another length or planned outside it, the file
-    // changed in between (or the plan is bad): never hide lines on a plan for other bytes.
-    let end = plan.offset.saturating_add(plan.limit).saturating_sub(1);
-    if plan.total_lines != total || plan.offset == 0 || plan.limit == 0 || end > total {
-        return Outcome::skip("stale_plan");
-    }
-    let mut updated = tool_input.clone();
-    updated["offset"] = json!(plan.offset);
-    updated["limit"] = json!(plan.limit);
-    let note = format!(
-        "[laya-codex] {rel} has {total} lines. Showing lines {}-{end} of {total} (best match for the task). \
-         Read again with offset/limit for any other part, or Read the whole file again to get all of it.\n\
-         Outline (start-end item; * = shown):\n{}",
-        plan.offset, plan.outline
-    );
-    Outcome {
-        injected_chars: note.len(),
-        output: Some(
-            json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
-            "updatedInput": updated, "additionalContext": note}}),
-        ),
-        action: if plan.basis == "ranking" {
-            "narrow_read"
-        } else {
-            "outline_read"
-        },
-        rank: None,
+        Ok(Response::Count { .. }) if ranged => Outcome::skip("note_ranged_read"),
+        Ok(Response::Count { .. }) => Outcome::skip("note_read"),
+        _ => Outcome::skip("daemon_unavailable"),
     }
 }
 
@@ -328,55 +281,18 @@ fn session_start(source: &str, session: &str, ctx: &HookCtx) -> Outcome {
     Outcome::skip("index_started")
 }
 
-/// Files larger than this are never read by the Read hook (the same cap the indexer uses).
-const MAX_READ_BYTES: u64 = laya_parse::MAX_FILE_BYTES;
-
-/// Line count of a regular file of at most [`MAX_READ_BYTES`], or the skip action to log.
-/// Stats before opening (a FIFO or device is never opened) and bounds the read, so a file that
-/// grows after the stat still cannot pull more than the cap into memory.
-fn count_lines(path: &Path) -> Result<u32, &'static str> {
-    use std::io::Read;
-    let meta = std::fs::metadata(path).map_err(|_| "unreadable")?;
-    if !meta.is_file() {
-        return Err("unreadable");
-    }
-    if meta.len() > MAX_READ_BYTES {
-        return Err("too_large");
-    }
-    let file = std::fs::File::open(path).map_err(|_| "unreadable")?;
-    let mut bytes = Vec::with_capacity(meta.len() as usize);
-    file.take(MAX_READ_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "unreadable")?;
-    if bytes.len() as u64 > MAX_READ_BYTES {
-        return Err("too_large");
-    }
-    Ok(line_count(&bytes))
-}
-
-/// Lines as the Read tool numbers them (`\n`-terminated, so CRLF counts once; a final line
-/// without a newline counts). Saturates at `u32::MAX`.
-pub(crate) fn line_count(bytes: &[u8]) -> u32 {
-    let n = bytes.iter().filter(|&&b| b == b'\n').count()
-        + usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
-    u32::try_from(n).unwrap_or(u32::MAX)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::ReadPlan;
     use laya_core::RankedSpan;
     use std::cell::RefCell;
+    use std::path::Path;
 
     struct Fake {
         calls: RefCell<Vec<Request>>,
         result: Option<QueryResult>,
         read_count: u32,
         rendered: Option<String>,
-        plan: Option<ReadPlan>,
-        /// `ReadPlan` fails (an older daemon answers `bad request`).
-        plan_down: bool,
         /// Every call fails (no daemon).
         down: bool,
     }
@@ -388,12 +304,6 @@ mod tests {
                 anyhow::bail!("down");
             }
             Ok(match req {
-                Request::ReadPlan { .. } if self.plan_down => Response::Error {
-                    message: "bad request".into(),
-                },
-                Request::ReadPlan { .. } => Response::ReadPlan {
-                    plan: self.plan.clone(),
-                },
                 Request::Query { render, .. } => match &self.result {
                     Some(r) => Response::Query {
                         result: r.clone(),
@@ -438,8 +348,6 @@ mod tests {
             result,
             read_count,
             rendered: None,
-            plan: None,
-            plan_down: false,
             down: false,
         }
     }
@@ -544,142 +452,6 @@ mod tests {
             "tool_input": {"file_path": root().join(path).to_string_lossy()}})
     }
 
-    fn plan_fake(read_count: u32) -> Fake {
-        let mut f = fake(None, read_count);
-        f.plan = Some(ReadPlan {
-            offset: 100,
-            limit: 60,
-            total_lines: 400,
-            basis: "lexical".into(),
-            outline: "  1-99 fn head\n* 100-159 fn replay_wal\n  160-400 fn tail".into(),
-        });
-        f
-    }
-
-    fn plan_calls(f: &Fake) -> usize {
-        f.calls
-            .borrow()
-            .iter()
-            .filter(|r| matches!(r, Request::ReadPlan { .. }))
-            .count()
-    }
-
-    #[test]
-    fn first_full_read_of_a_big_file_shows_the_planned_region_and_the_outline() {
-        let big = big_file();
-        let f = plan_fake(1);
-        let o = handle(&read_input(big), &ctx(&f));
-        assert_eq!(o.action, "outline_read");
-        let out = o.output.unwrap();
-        let h = &out["hookSpecificOutput"];
-        assert_eq!(h["permissionDecision"], "allow");
-        let upd = &h["updatedInput"];
-        assert!(upd["file_path"].as_str().unwrap().ends_with(big));
-        assert_eq!(
-            (upd["offset"].as_u64(), upd["limit"].as_u64()),
-            (Some(100), Some(60))
-        );
-        let note = h["additionalContext"].as_str().unwrap();
-        assert!(note.contains("Showing lines 100-159 of 400"), "{note}");
-        assert!(note.contains("Read the whole file again"), "{note}");
-        assert!(note.contains("* 100-159 fn replay_wal"), "{note}");
-        assert_eq!(o.injected_chars, note.len());
-        assert!(matches!(
-            &f.calls.borrow()[1],
-            Request::ReadPlan { path, session, .. } if path == big && session == "s"
-        ));
-        // A plan from the session's ranking is logged as before.
-        let mut g = plan_fake(1);
-        g.plan.as_mut().unwrap().basis = "ranking".into();
-        assert_eq!(handle(&read_input(big), &ctx(&g)).action, "narrow_read");
-    }
-
-    #[test]
-    fn second_full_read_is_the_escape_hatch() {
-        let f = plan_fake(2);
-        let o = handle(&read_input(big_file()), &ctx(&f));
-        assert_eq!((o.action, o.output), ("escape_hatch", None));
-        assert_eq!(plan_calls(&f), 0);
-    }
-
-    #[test]
-    fn small_files_pass_through_without_asking_the_daemon() {
-        let rel = "target/laya-hook-test-small.rs";
-        std::fs::create_dir_all(root().join("target")).unwrap();
-        std::fs::write(root().join(rel), "// small\n".repeat(249)).unwrap();
-        let f = plan_fake(1);
-        let o = handle(&read_input(rel), &ctx(&f));
-        assert_eq!((o.action, o.output), ("small_file", None));
-        assert_eq!(plan_calls(&f), 0);
-    }
-
-    #[test]
-    fn files_over_one_mib_pass_through_without_being_read_or_planned() {
-        let rel = "target/laya-hook-test-huge.rs";
-        std::fs::create_dir_all(root().join("target")).unwrap();
-        // Many short lines (well over `min_file_lines`), just past the 1 MiB cap.
-        let body = "// x\n".repeat((MAX_READ_BYTES as usize) / 5 + 10);
-        assert!(body.len() as u64 > MAX_READ_BYTES);
-        std::fs::write(root().join(rel), body).unwrap();
-        let f = plan_fake(1);
-        let o = handle(&read_input(rel), &ctx(&f));
-        assert_eq!((o.action, o.output), ("too_large", None));
-        assert_eq!(plan_calls(&f), 0);
-        let _ = std::fs::remove_file(root().join(rel));
-    }
-
-    #[test]
-    fn count_lines_refuses_oversized_and_non_regular_files() {
-        let dir = std::env::temp_dir().join(format!("laya-hook-cl-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let ok = dir.join("ok.rs");
-        std::fs::write(&ok, "a\nb\n").unwrap();
-        assert_eq!(count_lines(&ok), Ok(2));
-        let huge = dir.join("huge.rs");
-        std::fs::write(&huge, vec![b'\n'; MAX_READ_BYTES as usize + 1]).unwrap();
-        assert_eq!(count_lines(&huge), Err("too_large"));
-        // A directory (or FIFO/device) is never opened for reading.
-        assert_eq!(count_lines(&dir), Err("unreadable"));
-        assert_eq!(count_lines(&dir.join("missing.rs")), Err("unreadable"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn reads_pass_through_when_nothing_is_planned_or_the_daemon_fails() {
-        let big = big_file();
-        let none = fake(None, 1);
-        let o = handle(&read_input(big), &ctx(&none));
-        assert_eq!((o.action, o.output), ("not_narrowed", None));
-        let mut old = plan_fake(1);
-        old.plan_down = true;
-        let o = handle(&read_input(big), &ctx(&old));
-        assert_eq!((o.action, o.output), ("daemon_unavailable", None));
-        let mut down = plan_fake(1);
-        down.down = true;
-        let o = handle(&read_input(big), &ctx(&down));
-        assert_eq!((o.action, o.output), ("daemon_unavailable", None));
-    }
-
-    #[test]
-    fn plans_that_disagree_with_the_file_pass_through() {
-        let big = big_file();
-        let mut changed = plan_fake(1);
-        changed.plan.as_mut().unwrap().total_lines = 401;
-        let o = handle(&read_input(big), &ctx(&changed));
-        assert_eq!((o.action, o.output), ("stale_plan", None));
-        for (offset, limit) in [(0, 10), (10, 0), (390, 20)] {
-            let mut bad = plan_fake(1);
-            let p = bad.plan.as_mut().unwrap();
-            (p.offset, p.limit) = (offset, limit);
-            let o = handle(&read_input(big), &ctx(&bad));
-            assert_eq!(
-                (o.action, o.output),
-                ("stale_plan", None),
-                "{offset}+{limit}"
-            );
-        }
-    }
-
     /// A 400-line file inside the repo (under target/, which is gitignored).
     fn big_file() -> &'static str {
         let rel = "target/laya-hook-test-big.rs";
@@ -693,15 +465,44 @@ mod tests {
     }
 
     #[test]
-    fn ranged_reads_pass_through() {
+    fn a_read_is_recorded_and_passes_through_untouched() {
+        // A 400-line indexed-size file: the kind of Read the hook once narrowed.
         let big = big_file();
-        let r = res(vec![span(big, 100, 140, 0.95)]);
-        let input = json!({"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": "Read",
-            "tool_input": {"file_path": root().join(big).to_string_lossy(), "offset": 1, "limit": 10}});
+        let path = root().join(big).to_string_lossy().into_owned();
+        let ranged = json!({"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": "Read",
+            "tool_input": {"file_path": path, "offset": 1, "limit": 10}});
+        for (input, whole, action) in [
+            (read_input(big), true, "note_read"),
+            (ranged, false, "note_ranged_read"),
+        ] {
+            for count in [1, 2] {
+                let f = fake(None, count);
+                let o = handle(&input, &ctx(&f));
+                assert_eq!((o.action, o.output, o.injected_chars), (action, None, 0));
+                let calls = f.calls.borrow();
+                assert_eq!(calls.len(), 1, "only the NoteRead: {calls:?}");
+                assert!(
+                    matches!(&calls[0], Request::NoteRead { session, path, full }
+                        if session == "s" && path == big && *full == whole),
+                    "{calls:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_read_outside_the_repo_or_without_a_daemon_outputs_nothing() {
+        let outside = json!({"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": "Read",
+            "tool_input": {"file_path": "/etc/hosts"}});
+        let f = fake(None, 1);
         assert_eq!(
-            handle(&input, &ctx(&fake(Some(r), 1))).action,
-            "already_ranged"
+            (handle(&outside, &ctx(&f)).action, f.calls.borrow().len()),
+            ("outside_repo", 0)
         );
+        let mut down = fake(None, 1);
+        down.down = true;
+        let o = handle(&read_input(big_file()), &ctx(&down));
+        assert_eq!((o.action, o.output), ("daemon_unavailable", None));
     }
 
     #[test]

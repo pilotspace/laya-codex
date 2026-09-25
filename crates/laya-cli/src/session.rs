@@ -23,8 +23,6 @@ struct Session {
     full_reads: HashSet<String>,
     /// Last self-contained prompt: what thin follow-ups in this session are about.
     topic: Option<String>,
-    /// Text the last query retrieved with (see `effective_query`): what Reads are planned for.
-    last_query: Option<String>,
     touched: Option<Instant>,
 }
 
@@ -106,7 +104,7 @@ impl Sessions {
     /// delta and reference expansion already surface the topic's next spans and callers.
     pub fn effective_query(&mut self, id: &str, prompt: &str) -> String {
         let s = self.get(id);
-        let query = match &s.topic {
+        match &s.topic {
             Some(topic) if laya_rank::is_follow_up(prompt) => {
                 let sig = laya_rank::extract_signals(prompt);
                 let named: Vec<String> = sig.identifiers.into_iter().chain(sig.paths).collect();
@@ -120,22 +118,7 @@ impl Sessions {
                 s.topic = Some(prompt.to_string());
                 prompt.to_string()
             }
-        };
-        s.last_query = Some(query.clone());
-        query
-    }
-
-    /// What a Read plan is based on: the last ranking and the text it was retrieved with.
-    pub fn read_context(&mut self, id: &str) -> (Option<QueryResult>, Option<String>) {
-        let s = self.get(id);
-        (s.last.clone(), s.last_query.clone())
-    }
-
-    /// A whole-file Read was narrowed to `start..=end`: only that window is in the agent's
-    /// context (undoes the full-read mark `note_read` set for it).
-    pub fn narrowed_read(&mut self, id: &str, path: &str, start: u32, end: u32) {
-        self.get(id).full_reads.remove(path);
-        self.mark_sent(id, &[(path.to_string(), start, end)]);
+        }
     }
 
     /// Everything already in the agent's context: sent spans plus whole files it read.
@@ -253,36 +236,6 @@ mod tests {
         assert_eq!(s.effective_query("a", follow), other);
         // Other sessions are unaffected.
         assert_eq!(s.effective_query("b", follow), follow);
-    }
-
-    #[test]
-    fn read_context_is_the_last_ranking_and_the_last_retrieved_query() {
-        let mut s = Sessions::default();
-        assert_eq!(s.read_context("a"), (None, None));
-        let task = "fix the wal replay ordering bug in recover_shard";
-        s.effective_query("a", task);
-        s.record_query("a", &result(vec![span("x.rs", 1, 0.5)]));
-        let (last, query) = s.read_context("a");
-        assert_eq!(last.unwrap().spans[0].path, "x.rs");
-        assert_eq!(query.as_deref(), Some(task));
-        // A follow-up is retrieved (and so planned) as topic + the names it adds.
-        s.effective_query("a", "and enforce_budget()?");
-        let (_, query) = s.read_context("a");
-        assert!(query.unwrap().contains("enforce_budget"));
-    }
-
-    #[test]
-    fn a_narrowed_read_is_not_a_full_read_but_its_window_is_in_context() {
-        let mut s = Sessions::default();
-        s.note_read("a", "big.rs", true);
-        s.narrowed_read("a", "big.rs", 40, 120);
-        assert_eq!(s.already("a"), vec![("big.rs".to_string(), 40, 120)]);
-        // The escape-hatch re-read is a real full read.
-        s.note_read("a", "big.rs", true);
-        assert!(
-            s.already("a")
-                .contains(&("big.rs".to_string(), 1, u32::MAX))
-        );
     }
 
     #[test]
