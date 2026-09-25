@@ -107,9 +107,25 @@ def build_repo(job):
     os.makedirs(os.path.dirname(wt), exist_ok=True)
     cg = CandGen(candgen, moon_bin, port, home)
     tmp = out_path + ".tmp"
+    done = set()
+    if os.path.exists(tmp):  # resume an interrupted build: keep whole lines, skip their commits
+        with open(tmp) as f:
+            keep = [l for l in f if l.endswith("\n")]
+        good = []
+        for l in keep:
+            try:
+                done.add(json.loads(l)["sha"])
+                good.append(l)
+            except ValueError:
+                break
+        with open(tmp, "w") as f:
+            f.writelines(good)
+        stats["resumed_lists"] = len(done)
     try:
-        with open(tmp, "w") as out:
+        with open(tmp, "a") as out:
             for i, c in enumerate(commits):
+                if c["sha"] in done:
+                    continue
                 try:
                     checkout(repo, wt, c["parent"])
                     diff = common.git(repo, "diff", "-U0", "-M", "--no-color", "--no-ext-diff", c["parent"], c["sha"],
