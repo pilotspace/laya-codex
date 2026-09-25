@@ -1,63 +1,45 @@
 """Repo selection for laya-code fine-tuning (single source of truth for train / held-out split).
 
-moon is the primary held-out eval repo and must never contribute a training example.
-pilot-space is the second held-out eval repo.
+Held out (never a training example, checked by finetune/leakage.py): moon, httpx and hono (the
+benchmark repos the replay gate reads) and pilot-space (the held-out evaluation repo).
 """
 import os
 import subprocess
 
 # Directory holding one checkout per repo below (set LAYA_CODEX_REPOS_ROOT).
 ROOT = os.path.expanduser(os.environ.get("LAYA_CODEX_REPOS_ROOT", "~/src"))
+# Directory holding the benchmark checkouts (moon, httpx, hono); defaults to ROOT.
+BENCH_ROOT = os.path.expanduser(os.environ.get("LAYA_CODEX_BENCH_REPOS", ROOT))
 
 HELDOUT = {
-    "moon": os.path.join(ROOT, "moon"),
+    "moon": os.path.join(BENCH_ROOT, "moon"),
+    "httpx": os.path.join(BENCH_ROOT, "httpx"),
+    "hono": os.path.join(BENCH_ROOT, "hono"),
     "pilot-space": os.path.join(ROOT, "pilot-space"),
 }
 
 # mixed languages, no forks/clones of each other or of a held-out repo (checked by check_leakage()).
 # Excluded on purpose: helios / helios-mono / lunaris are Moon *client* codebases (59-146 files mention moon);
 # not moon's source, but same domain vocabulary -> would flatter the moon eval. dify / clickai/* are clones of
-# each other; ai-proxy-builds/* are copies of ai-proxy.
+# each other; ai-proxy-builds/* are copies of ai-proxy. ai-guard (a local checkout of Portkey-AI/gateway that
+# trained the first laya-code) is no longer available and is left out.
 TRAIN = {
     "codex": os.path.join(ROOT, "codex"),                                      # Rust + TS
     "velos": os.path.join(ROOT, "velos"),                                      # Rust
     "PraisonAI": os.path.join(ROOT, "PraisonAI"),                              # Py + TS
     "pi-mono": os.path.join(ROOT, "pi-mono"),                                  # TS
-    "ai-guard": os.path.join(ROOT, "ai-guard"),                                # TS
     "python-dependency-injector": os.path.join(ROOT, "python-dependency-injector"),  # Py
     "dispatch": os.path.join(ROOT, "repo-sample/python/dispatch"),             # Py + JS
     "ai-proxy": os.path.join(ROOT, "ai-proxy"),                                # Py + TSX
 }
 
 
-def _git(repo, *args):
-    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, timeout=120, check=True).stdout
-
-
-def root_commits(repo):
-    return set(_git(repo, "rev-list", "--max-parents=0", "HEAD").split())
-
-
 def check_leakage():
-    """Raise if any training repo is (inside) a held-out repo or shares a root commit with one or with another train repo."""
-    held_roots = {}
-    for name, path in HELDOUT.items():
-        held_roots[name] = root_commits(path)
-    seen = {}
-    for name, path in TRAIN.items():
-        real = os.path.realpath(path)
-        for hn, hp in HELDOUT.items():
-            hp = os.path.realpath(hp)
-            if real == hp or real.startswith(hp + os.sep) or hp.startswith(real + os.sep):
-                raise RuntimeError("train repo %s overlaps held-out repo %s on disk" % (name, hn))
-        roots = root_commits(path)
-        for hn, hr in held_roots.items():
-            if roots & hr:
-                raise RuntimeError("train repo %s shares history with held-out repo %s" % (name, hn))
-        for on, orr in seen.items():
-            if roots & orr:
-                raise RuntimeError("train repos %s and %s share history (fork/clone)" % (name, on))
-        seen[name] = roots
+    """Raise if a train repo overlaps, shares history with or vendors source of a held-out repo (leakage.py)."""
+    from leakage import check_repos
+    rep = check_repos(TRAIN, HELDOUT)
+    if not rep["ok"]:
+        raise RuntimeError("; ".join(rep["problems"]))
     return True
 
 
