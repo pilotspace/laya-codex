@@ -270,6 +270,8 @@ def train(args, device):
         log.append({"step": 0, "val_base_T": m0, "val": m0f})
         print("step 0 val (base T) %s" % json.dumps(m0), flush=True)
         print("step 0 val (fitted T) %s" % json.dumps(m0f), flush=True)
+        if device.type == "mps":
+            torch.mps.empty_cache()  # the evaluation's cached blocks would otherwise sit under the training peak
     model.train()
     t0, ema, finished = time.time(), None, progress(step, train_secs) >= 1.0
     while not finished:
