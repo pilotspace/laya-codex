@@ -37,10 +37,25 @@ open. Replayed offline on the 60 benchmark v2 tasks; not yet measured with Claud
 - **Rank mode in the hook log:** each prompt's line records `rank_mode` (`laya`, `laya-partial`
   when the time budget stopped the model early, or `lexical`), `scored`, `offered` and
   `candidates`. Query results carry `scored` and `offered` (additive fields).
-- **`LAYA_CODEX_SIZE_BY_REPO`** (opt-in, off): repositories under 200 indexed files (`1`) or
-  under a given count get one inlined block and a shorter map. Replay on httpx (92 files): the
-  first prompt's injection fell 31%, but the correct files inlined fell from 19 to 10 of 35, so
-  it stays off.
+
+### Removed
+Unused options, taken out to keep the ranking path to what the benchmarks measured. The injected
+context is unchanged: replaying the 60 benchmark tasks (two prompts each) with keyword and
+blended ranking gave byte-identical text for every prompt before and after.
+- **The task-scope classifier** (`LAYA_CODEX_SCOPE`, `LAYA_CODEX_SCOPE_P`). It was off by
+  default: zero-shot macro-F1 was at most 0.28, and even the true scope barely changed what
+  loaded. Query replies keep a `scope` field, now always null, so older clients still parse them.
+- **Probability-threshold sizing** (`LAYA_CODEX_TAU_FULL`, `LAYA_CODEX_TAU_MAP`). The defaults
+  were already zero; full code now always goes to the top-ranked files.
+- **Read narrowing.** The first whole-file Read of a large file is no longer cut to one region
+  with an outline; in benchmark v3 it narrowed no Read, because Claude reads with offset/limit
+  after a Grep. The `PreToolUse` `Read` hook now only records each Read and outputs nothing, so a
+  file Claude already read whole is not injected again. Older hooks that still ask for a read
+  plan get an error and let the Read through.
+- The removed variables are ignored if still set.
+- Hook log: Reads are logged as `note_read` (whole file) or `note_ranged_read` (with
+  offset/limit), replacing `narrow_read`, `outline_read`, `already_ranged`, `escape_hatch`,
+  `small_file`, `too_large`, `unreadable`, `not_narrowed` and `stale_plan`.
 
 ### Benchmark tooling
 - `run_bench.py run`: `--repeat N` (the stats average a task's repeats before pairing),

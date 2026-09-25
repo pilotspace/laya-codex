@@ -21,7 +21,7 @@ missing index it prints nothing, and Claude Code carries on as if laya-codex wer
 | Hook | When it acts | What Claude sees |
 |---|---|---|
 | `UserPromptSubmit` | every prompt, except slash commands, `#` memory lines and prompts with fewer than 2 content words | up to 9,500 characters: a ranked map of locations, the full code of the top 2 files, definition and use lines, and related code |
-| `PreToolUse` `Read` | the **first** whole-file Read of an indexed file of **250+ lines** | the Read is narrowed to the best region, plus an outline of the file. A second whole-file Read passes through untouched |
+| `PreToolUse` `Read` | every Read of a file in the repository | nothing: the Read runs as Claude asked. The daemon records it, and a file read whole is left out of later injections |
 | `PreToolUse` `Agent`/`Task` | a subagent is launched and this session has a ranking | up to 5 `path:start-end symbol` lines appended to the subagent's prompt |
 | `PostToolUse` edits | Edit/Write/MultiEdit/NotebookEdit | nothing. The edited file is re-indexed |
 | `SessionStart` | `startup`/`resume` in a git repository; `compact`; `clear` | after compaction, the session's working set is injected again (up to 8 spans). On startup, indexing runs in the background. Folders that are not git repositories are never indexed automatically |
@@ -183,7 +183,8 @@ Related by references:
 - … (4 more)
 ````
 
-The lexical-only run shows why the model matters. A test module (`read_narrow.rs:522-556`)
+The lexical-only run shows why the model matters. A test module (`read_narrow.rs:522-556`, a
+file since removed)
 takes one of the three full-code slots because it repeats the prompt's words. With the model,
 the P term in step 4 usually pushes such chunks down. Also, `laya_gate`
 (`retriever.rs:167-214`), where the fusion happens, is in the map but its code is not inlined,
@@ -239,48 +240,17 @@ without it (`laya-refs`), and total input tokens fell by 17.1% against 4.7%. In 
 code-reading tokens fell by 50.1% against 48.5%. Compaction or `/clear` resets the record (the
 `SessionStart` hook), so code that is no longer in context is sent again.
 
-## 5. Whole-file Reads: the Read plan
+## 5. Reads: recorded, never changed
 
-When Claude reads a large file whole, laya-codex narrows the **first** such Read to the region that
-matters and adds an outline. Captured input and output for `retriever.rs` (773 lines), right
-after the prompts above:
+The `PreToolUse` `Read` hook outputs nothing, so every Read runs exactly as Claude asked. It
+tells the daemon which file was read, and whether whole (no `offset`/`limit`). A file read whole
+is in Claude's context, so later prompts in the session leave its code out and the next-ranked
+files take its place, as with code laya-codex sent itself. A ranged Read is recorded too, but
+does not keep the file out: the rest of it may still be missing.
 
-```json
-{ "session_id": "doc-session-1", "hook_event_name": "PreToolUse", "tool_name": "Read",
-  "tool_input": { "file_path": "/home/me/laya-codex/crates/laya-rank/src/retriever.rs" } }
-```
-
-```json
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "allow",
-    "updatedInput": {
-      "file_path": "/home/me/laya-codex/crates/laya-rank/src/retriever.rs",
-      "offset": 28,
-      "limit": 192
-    },
-    "additionalContext": "[laya-codex] crates/laya-rank/src/retriever.rs has 773 lines. Showing lines 28-219 of 773 (best match for the task). Read again with offset/limit for any other part, or Read the whole file again to get all of it.\nOutline (start-end item; * = shown):\n* 1-31 Retriever\n* 33-129 impl Retriever<'a> > fn query\n* 131-165 impl Retriever<'a> > fn path_signal\n* 167-245 impl Retriever<'a> > fn laya_gate\n  247-285 weighted_scores, NON_CODE_INTENT\n  287-328 demote_non_code, path_matches, empty_result\n  330-359 fn call_scorer_bounded\n  361-409 mod tests\n  … (10 more test items)"
-  }
-}
-```
-
-How the plan is chosen (`read_narrow.rs`):
-
-- The file must be indexed and at least 250 lines long. The Read must have no `offset`/`limit`,
-  and it must be the first whole-file Read of that file in the session.
-- The region comes from the file's spans in the session's last ranking (`basis: ranking`).
-  Failing that, laya-codex picks the chunks that share the most distinctive task terms with the file
-  (`basis: lexical`). If neither exists, the Read is left alone, so code is never hidden on a
-  guess.
-- The window covers at most 200 lines: the best candidates (ranked spans, or whole items for the
-  lexical basis) plus 5 lines of context. It has to hide at least 100 lines, otherwise the Read
-  passes through.
-- **Escape hatch:** the same whole-file Read a second time passes through unchanged. In the
-  capture, the second Read produced no hook output.
-
-In the `v7` benchmark, 6 whole-file Reads were narrowed. Claude then read other ranges of those
-files and never needed the whole file.
+Earlier versions narrowed the first whole-file Read of a large file to its most relevant region
+plus an outline. In benchmark v3 that fired on no Read at all, because Claude reads with
+`offset`/`limit` after a Grep, so it was removed.
 
 ## 6. Why this saves tokens
 
@@ -317,8 +287,12 @@ code. Inlining more saved little and cost more.
 | `LAYA_CODEX_NO_MODEL` | unset | `1` gives lexical-only ranking with no model load |
 | `LAYA_CODEX_BUDGET_MS` | 1200 | Laya's time budget per prompt. The model scores as many candidates as fit; the lexical ranking is used only if none do |
 | `LAYA_CODEX_SCORE_TOP` | 16 | Candidates the model scores, best first (of 24); `0` = all |
-| `LAYA_CODEX_SIZE_BY_REPO` | off | `1` = one inlined block and a 6-entry map in repositories under 200 indexed files (a number sets the threshold). Off: in the replay it dropped correct inlined files |
 | `LAYA_CODEX_WEIGHT` | 0.5 | Laya's weight in the fusion; `rrf` switches to rank fusion |
+
+`LAYA_CODEX_SCOPE`, `LAYA_CODEX_SCOPE_P`, `LAYA_CODEX_TAU_FULL`, `LAYA_CODEX_TAU_MAP` and
+`LAYA_CODEX_SIZE_BY_REPO` are no longer read: the options they set (a task-scope classifier,
+probability thresholds and smaller caps for small repositories) were removed after the
+benchmarks showed no gain. Leaving them set changes nothing.
 
 ## 8. Troubleshooting with `laya-codex doctor`
 
@@ -356,13 +330,12 @@ WARN  mcp     no laya-codex server in /home/me/laya-codex/.mcp.json (the search 
 When laya-codex adds nothing to a prompt, check these first: whether the prompt is a slash command or
 has fewer than 2 content words; whether the repository is indexed (`laya-codex doctor`); and whether
 adaptive mode has already sent everything relevant. Set `LAYA_CODEX_HOOK_LOG=/tmp/laya-hook.jsonl` to
-log every hook decision, such as `inject`, `skip_prompt`, `already_in_context`, `narrow_read`
-or `escape_hatch`.
+log every hook decision, such as `inject`, `skip_prompt`, `already_in_context` or `note_read`.
 
 For the full exchange, use the trace. `laya-codex trace on` records, per hook call or MCP
 message, the JSON Claude Code sent, the JSON laya-codex returned, and every daemon call made in
-between (the query with its ranked spans, `p` scores, scope and rendered text; read plans; note
-and re-index calls), each with its time. `laya-codex trace show` summarises the entries,
+between (the query with its ranked spans, `p` scores and rendered text; note-read and re-index
+calls), each with its time. `laya-codex trace show` summarises the entries,
 `--full` adds the exact request and response, `--session <id prefix>` filters, `--json` prints
 the raw lines and `--follow` watches live. The file is
 `$LAYA_CODEX_HOME/trace/trace.jsonl` (mode 0600 in a 0700 directory); it rotates to

@@ -113,7 +113,8 @@ can be rebuilt from source, so it's never the source of truth.
   current prompt · this is the first Read of that file this session. The response adds a note
   ("narrowed by laya-codex: lines a–b; Read again for the full file"). **Escape hatch**: a
   second Read of the same file passes through untouched. Every rewrite is logged, so the
-  benchmark can measure how often the agent needed the full file.
+  benchmark can measure how often the agent needed the full file. *(Removed 2026-09-25: the
+  Read hook now only records Reads; see §6.)*
 - **PreToolUse(Agent|Task) span handoff**: append the current top spans (≤5, compact
   `path:a-b` + 1-line why) to the subagent's prompt via `updatedInput`, so subagents
   don't re-explore what the parent already ranked.
@@ -188,9 +189,8 @@ prompt ─► signals: stoplisted BM25 terms · identifiers · path mentions
           · adaptive mode only: skip spans the session already has
 ```
 
-Read hook: the first whole-file Read of an indexed file of 250+ lines gets the best region
-(the session ranking, else task-term match) plus an outline. A second whole-file Read passes
-through.
+Read hook: records each Read and outputs nothing; a file read whole is left out of later
+injections in the session.
 
 Setup and operations: `laya-codex init` / `laya-codex doctor`; daemon autostart is rate-limited (one attempt
 per 10 s); every hook fails open.
@@ -198,9 +198,9 @@ per 10 s); every hook fails open.
 | Plan item | As built | Why |
 |---|---|---|
 | D1 Laya as final reranker, zero-shot | **Fine-tuned `laya-code`** (git-history weak labels, 8 repos), fused with the lexical rank rather than used alone | Zero-shot laya-base did not beat BM25 on code. Laya-only and w=0.7 lost to w=0.5 end to end (MRR 0.602 / 0.678 vs 0.724), because the lexical rank demotes prose |
-| Thresholds 0.5 / 0.7 on P | **None by default** (rank-based inlining); `LAYA_CODEX_TAU_FULL/MAP` remain | P's scale shifts with prompt wording; on wrapped prompts every threshold lost gold coverage vs rank at equal code volume |
-| Scope classifier sizing context | **Wired and gated, no effect** (`LAYA_CODEX_SCOPE=0` disables it) | Zero-shot macro-F1 ≤ 0.28; even oracle scope barely changes what loads |
-| Guarded Read rewrite at p ≥ threshold | **Daemon Read plan** (region + outline, escape hatch) | The p-gated rewrite fired 0/11 times; whole-file Reads were 49% of the remaining Read tokens |
+| Thresholds 0.5 / 0.7 on P | **None** (rank-based inlining only; the threshold path was removed 2026-09-25) | P's scale shifts with prompt wording; on wrapped prompts every threshold lost gold coverage vs rank at equal code volume |
+| Scope classifier sizing context | **Removed** (2026-09-25; it was off by default) | Zero-shot macro-F1 ≤ 0.28; even oracle scope barely changes what loads |
+| Guarded Read rewrite at p ≥ threshold | **Read observer** (records Reads, changes none). A daemon Read plan (region + outline) replaced the rewrite, then was removed 2026-09-25 | The p-gated rewrite fired 0/11 times; the Read plan narrowed no Read in benchmark v3, because Claude reads with offset/limit after a Grep |
 | Inject more context | **Small, capped injection** (~1.5–2.5k tokens, ≤ 9,500 chars) | Inlining more saves little and costs more; Claude Code replaces output over 10k chars with a file preview |
 | — | **Prompt stoplist + follow-up topic** | Instruction wrappers ("find the source code…, comma-separated paths") beat task words in rarest-first term selection (MRR 0.724 → 0.394) |
 | — | **Session delta** (adaptive) | Follow-ups re-sent code already in context |

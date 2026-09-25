@@ -204,8 +204,8 @@ your prompt ─► laya-codex hook ─► local daemon ─► BM25 keyword searc
   machine re-ranks fewer of them rather than none; the rest keep their keyword order below. Only
   if the model is absent, or scores nothing in time, does keyword ranking stand alone.
 - **Adding code without repeating it.** laya-codex remembers what the session has already seen, so a
-  follow-up prompt doesn't get the same code twice. The first whole-file Read of a large file returns
-  the most relevant region plus an outline; reading the file again returns all of it.
+  follow-up prompt doesn't get the same code twice, nor code from a file Claude already read whole.
+  Claude's own Reads are never changed.
 - **Follow-up search.** Claude also gets an MCP tool, `search` (server `laya-codex`), for follow-up lookups.
 
 What gets injected, when and why, with real hook input and output:
@@ -303,7 +303,7 @@ tools.
 <summary><b>Will it get in Claude's way?</b></summary>
 
 - **It never blocks a tool call** and never fails a prompt: every hook fails open.
-- **The first time Claude reads a whole large file**, it gets the relevant region plus an outline; asking again returns the whole file.
+- **It never changes Claude's own searches or Reads.** It only notes which files Claude read.
 - **Only git repositories are indexed automatically.** Opening Claude Code in your home directory indexes nothing.
 
 </details>
@@ -405,12 +405,12 @@ Flags:
 | `LAYA_CODEX_WEIGHT` / `LAYA_CODEX_STATE_TOKENS` / `LAYA_CODEX_K` / `LAYA_CODEX_P_THRESHOLD` | `0.5` / `128` / `24` / `0` | ranking knobs (daemon start) |
 | `LAYA_CODEX_ADAPTIVE` | on | `0` = fixed compact injection; default skips code already sent or read in the session, and answers follow-ups about tests or callers with lists instead of code |
 | `LAYA_CODEX_SCORE_TOP` | `16` | candidates the model scores (best first); `0` = all of them |
-| `LAYA_CODEX_SIZE_BY_REPO` | off | `1` = one inlined block and a shorter map in repositories under 200 indexed files (a number sets the threshold); off because the replay lost correct inlined files |
-| `LAYA_CODEX_SCOPE` | off | `1` = let a Laya scope classifier size the injection (measured no-op; see RESULTS) |
 | `LAYA_CODEX_MOON_START_SECS` | `30` | how long a freshly started Moon may take to answer |
 | `LAYA_CODEX_MOON_PORT` / `LAYA_CODEX_MOON_BIN` | `16379` / `moon` beside the real `laya-codex` binary, else in `../libexec` (Homebrew), else on `PATH` | Moon sidecar; a missing binary is reported with every path tried |
 | `LAYA_CODEX_BIN` | unset | the `laya-codex` binary the Claude Code plugin should use |
 | `LAYA_CODEX_TRACE` | unset (`laya-codex trace on` decides) | `1` = record hook and MCP exchanges in `$LAYA_CODEX_HOME/trace/trace.jsonl`, a path = record there, `0` = never |
+
+`LAYA_CODEX_SCOPE`, `LAYA_CODEX_SCOPE_P`, `LAYA_CODEX_TAU_FULL`, `LAYA_CODEX_TAU_MAP` and `LAYA_CODEX_SIZE_BY_REPO` are no longer read; leaving them set changes nothing.
 
 </details>
 

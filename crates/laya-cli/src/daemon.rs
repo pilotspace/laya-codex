@@ -8,19 +8,15 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use laya_core::QueryResult;
 use laya_core::{Chunk, Scorer, Store};
-use laya_rank::{
-    FollowUpIntent, Retriever, RetrieverConfig, Scope, SizeOpts, SizingPolicy, SpanKey,
-};
+use laya_rank::{FollowUpIntent, Retriever, RetrieverConfig, SizeOpts, SpanKey};
 
 use crate::config::{Config, rel_path, repo_root};
 use crate::indexer;
-use crate::protocol::{
-    MAX_BUDGET_MS, MAX_RENDER_TOKENS, MAX_TOP_N, ReadPlan, RenderReq, Request, Response,
-};
+use crate::protocol::{MAX_BUDGET_MS, MAX_RENDER_TOKENS, MAX_TOP_N, RenderReq, Request, Response};
 use crate::session::Sessions;
 
 /// Caches Laya probabilities in the store, keyed by (task, chunk content), so repeated or
@@ -59,11 +55,6 @@ impl MemoScorer {
     pub fn without_cache_reads(mut self) -> Self {
         self.read_cache = false;
         self
-    }
-
-    /// The model's busy flag, shared with other users of the same model (the scope classifier).
-    pub fn busy_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
-        Arc::clone(&self.busy)
     }
 
     fn key(&self, task: &str, chunk: &Chunk) -> String {
@@ -156,109 +147,12 @@ impl Scorer for MemoScorer {
     }
 }
 
-/// Predicts how much code a prompt needs (function / file / module / cross-module), which sets
-/// the adaptive sizing caps. `None` = unknown; sizing then uses the default caps.
-pub trait ScopeClassifier: Send + Sync {
-    fn classify(&self, prompt: &str) -> Option<Scope>;
-}
-
-const SCOPES: [Scope; 4] = [Scope::Function, Scope::File, Scope::Module, Scope::Cross];
-
-/// Laya `choice` wording for the scope question; the criteria order matches `SCOPES`.
-pub const SCOPE_QUESTION: &str = "What is the scope of the code change needed for: \"{task}\"?";
-pub const SCOPE_CRITERIA: [(&str, &str); 4] = [
-    ("function", "the edit stays inside one function or method"),
-    ("file", "the edit is confined to one file"),
-    ("module", "a few related files in one module"),
-    ("cross", "many files across several modules"),
-];
-
-/// Argmax scope if its probability reaches `min_p`, else `None` (not confident enough to shrink
-/// or grow the context).
-pub fn scope_from_probs(probs: &[f32], min_p: f32) -> Option<Scope> {
-    if probs.len() != SCOPES.len() {
-        return None;
-    }
-    let (i, &p) = probs.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1))?;
-    (p >= min_p).then_some(SCOPES[i])
-}
-
-/// Scope classifier on the resident Laya model. Memoized per prompt in the store; skipped (→
-/// `None`) while the model is busy so a prompt never queues behind an abandoned scoring run.
-pub struct LayaScope {
-    pub scorer: Arc<laya_model::LayaScorer>,
-    pub store: Arc<dyn Store>,
-    pub busy: Arc<std::sync::atomic::AtomicBool>,
-    pub model_tag: String,
-    pub min_p: f32,
-}
-
-impl LayaScope {
-    fn probs(&self, prompt: &str) -> Option<Vec<f32>> {
-        let key = format!(
-            "scope:{}",
-            &blake3::hash(format!("{}\0{prompt}", self.model_tag).as_bytes()).to_hex()[..32]
-        );
-        if let Some(v) = self.store.memo_get(&key).ok().flatten() {
-            return v.split(',').map(|x| x.parse().ok()).collect();
-        }
-        use std::sync::atomic::Ordering;
-        if self
-            .busy
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return None;
-        }
-        let _guard = BusyGuard(&self.busy);
-        let criteria: Vec<(&str, Option<&str>)> =
-            SCOPE_CRITERIA.iter().map(|(n, d)| (*n, Some(*d))).collect();
-        let question = SCOPE_QUESTION.replace("{task}", prompt);
-        let probs = self
-            .scorer
-            .model
-            .choice(&question, &criteria, &[prompt.to_string()])
-            .ok()?
-            .pop()?;
-        let v: Vec<String> = probs.iter().map(|p| format!("{p:.4}")).collect();
-        let _ = self.store.memo_put(&key, &v.join(","), 86_400);
-        Some(probs)
-    }
-}
-
-impl ScopeClassifier for LayaScope {
-    fn classify(&self, prompt: &str) -> Option<Scope> {
-        let t0 = std::time::Instant::now();
-        let probs = self.probs(prompt)?;
-        let scope = scope_from_probs(&probs, self.min_p);
-        eprintln!(
-            "[laya-codex] scope {scope:?} p={probs:?} in {:?}",
-            t0.elapsed()
-        );
-        scope
-    }
-}
-
-fn scope_name(s: Scope) -> String {
-    serde_json::to_value(s)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_default()
-}
-
 pub struct Daemon {
     pub store: Arc<dyn Store>,
     pub scorer: RwLock<Option<Arc<dyn Scorer>>>,
-    pub scope: RwLock<Option<Arc<dyn ScopeClassifier>>>,
-    pub sizing: SizingPolicy,
     pub sessions: Mutex<Sessions>,
     pub indexing: Mutex<HashSet<String>>,
     pub base_cfg: RetrieverConfig,
-    /// Opt-in (`LAYA_CODEX_SIZE_BY_REPO`): repositories with fewer indexed files than this get
-    /// [`laya_rank::small_repo_caps`]. `None` = off.
-    pub small_repo_files: Option<usize>,
-    /// Indexed file count per repo id, with when it was read (see [`Daemon::is_small_repo`]).
-    file_counts: Mutex<HashMap<String, (usize, Instant)>>,
 }
 
 /// Whether `prompt` names identifiers or file paths.
@@ -267,9 +161,6 @@ fn names_code(prompt: &str) -> bool {
     !sig.identifiers.is_empty() || !sig.paths.is_empty()
 }
 
-/// How long an indexed file count is reused before it is read again.
-const FILE_COUNT_TTL: Duration = Duration::from_secs(300);
-
 /// Extra usage lines for a follow-up that asks for callers, and test pointers for one that asks
 /// for tests.
 const FOLLOW_UP_USAGE_LINES: usize = 16;
@@ -277,61 +168,19 @@ const FOLLOW_UP_USAGE_PER_IDENT: usize = 6;
 const FOLLOW_UP_TEST_REFS: usize = 4;
 
 impl Daemon {
-    #[cfg(test)]
     pub fn new(store: Arc<dyn Store>, base_cfg: RetrieverConfig) -> Arc<Self> {
-        Self::with_options(store, base_cfg, SizingPolicy::default(), None)
-    }
-
-    pub fn with_options(
-        store: Arc<dyn Store>,
-        base_cfg: RetrieverConfig,
-        sizing: SizingPolicy,
-        small_repo_files: Option<usize>,
-    ) -> Arc<Self> {
         Arc::new(Daemon {
             store,
             scorer: RwLock::new(None),
-            scope: RwLock::new(None),
-            sizing,
             sessions: Mutex::new(Sessions::default()),
             indexing: Mutex::new(HashSet::new()),
             base_cfg,
-            small_repo_files,
-            file_counts: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Whether repo `id` has fewer indexed files than the opt-in threshold. The count is cached
-    /// for [`FILE_COUNT_TTL`]; a store error counts as "not small" (today's sizing).
-    fn is_small_repo(&self, id: &str) -> bool {
-        let Some(limit) = self.small_repo_files else {
-            return false;
-        };
-        // Files are added to the index one by one: a count taken mid-index is too small.
-        if lock(&self.indexing).contains(id) {
-            return false;
-        }
-        let mut counts = lock(&self.file_counts);
-        let fresh = counts
-            .get(id)
-            .filter(|(_, at)| at.elapsed() < FILE_COUNT_TTL)
-            .map(|(n, _)| *n);
-        let n = match fresh {
-            Some(n) => n,
-            None => match self.store.list_files(id) {
-                Ok(files) => {
-                    counts.insert(id.to_string(), (files.len(), Instant::now()));
-                    files.len()
-                }
-                Err(_) => return false,
-            },
-        };
-        n > 0 && n < limit
-    }
-
-    /// Render `result` for injection. Adaptive: classify scope, size by scope and calibrated P,
-    /// skip what the session already has, and record what was inlined — under one session lock
-    /// so concurrent prompts cannot both send the same span.
+    /// Render `result` for injection. Adaptive: size by rank, skip what the session already has,
+    /// and record what was inlined — under one session lock so concurrent prompts cannot both
+    /// send the same span.
     fn render(
         &self,
         (root, id): (&Path, &str),
@@ -340,21 +189,10 @@ impl Daemon {
         result: &QueryResult,
         req: &RenderReq,
         follow_up: Option<FollowUpIntent>,
-    ) -> (String, Option<Scope>) {
+    ) -> String {
         if !req.adaptive {
-            return (
-                laya_rank::render_compact_opts(result, 3, req.budget_tokens, req.related),
-                None,
-            );
+            return laya_rank::render_compact_opts(result, 3, req.budget_tokens, req.related);
         }
-        let scope = self
-            .scope
-            .read()
-            .ok()
-            .and_then(|c| c.clone())
-            .and_then(|c| c.classify(prompt));
-        // Read before taking the session lock: it can go to the store.
-        let small_repo = self.is_small_repo(id);
         let mut sessions = self.sessions();
         let already: Vec<SpanKey> = session
             .map(|s| sessions.already(s))
@@ -366,24 +204,21 @@ impl Daemon {
                 end_line,
             })
             .collect();
-        let mut caps = Scope::caps(scope);
+        let mut caps = laya_rank::DEFAULT_CAPS;
         if let Some(intent) = follow_up {
             caps = caps.min(laya_rank::follow_up_caps(intent));
-        }
-        if small_repo {
-            caps = caps.min(laya_rank::small_repo_caps());
         }
         let opts = SizeOpts {
             caps,
             inline_prose: laya_rank::asks_for_non_code(prompt),
         };
-        let mut ctx = laya_rank::size_context_opts(result, &opts, &self.sizing, &already);
+        let mut ctx = laya_rank::size_context_opts(result, &opts, &already);
         self.keep_only_current_code(root, id, &mut ctx);
         if !req.related {
             ctx.related.clear();
         }
         if ctx.full.is_empty() && ctx.map.is_empty() && ctx.related.is_empty() {
-            return (String::new(), scope); // everything relevant is already in context
+            return String::new(); // everything relevant is already in context
         }
         let (text, keys) = laya_rank::render_sized_with_keys(&ctx, req.budget_tokens);
         if let Some(s) = session {
@@ -393,7 +228,7 @@ impl Daemon {
                 .collect();
             sessions.mark_sent(s, &keys);
         }
-        (text, scope)
+        text
     }
 
     /// Inline code only from files whose bytes still match the index, so the render can vouch
@@ -509,28 +344,24 @@ impl Daemon {
                         if let Some(s) = &session {
                             self.sessions().record_query(s, &result);
                         }
-                        let (rendered, scope) = match &render {
-                            Some(r) => {
-                                let r = RenderReq {
-                                    budget_tokens: r.budget_tokens.min(MAX_RENDER_TOKENS),
-                                    ..r.clone()
-                                };
-                                let (text, scope) = self.render(
-                                    (&root, &id),
-                                    session.as_deref(),
-                                    &prompt,
-                                    &result,
-                                    &r,
-                                    follow_up,
-                                );
-                                (Some(text), scope.map(scope_name))
-                            }
-                            None => (None, None),
-                        };
+                        let rendered = render.as_ref().map(|r| {
+                            let r = RenderReq {
+                                budget_tokens: r.budget_tokens.min(MAX_RENDER_TOKENS),
+                                ..r.clone()
+                            };
+                            self.render(
+                                (&root, &id),
+                                session.as_deref(),
+                                &prompt,
+                                &result,
+                                &r,
+                                follow_up,
+                            )
+                        });
                         Response::Query {
                             result,
                             rendered,
-                            scope,
+                            scope: None,
                         }
                     }
                     Err(e) => Response::Error {
@@ -598,59 +429,9 @@ impl Daemon {
                 }
                 Response::Ok
             }
-            Request::ReadPlan {
-                repo,
-                session,
-                path,
-            } => Response::ReadPlan {
-                plan: self.read_plan(&repo, &session, &path),
-            },
             // Acknowledged here; `serve_conn` exits the process once the reply is written.
             Request::Shutdown => Response::Ok,
         }
-    }
-
-    /// Plan the first whole-file Read of `path`: the region the session's last ranking (else its
-    /// last query's terms) points at, plus an outline of the file's items. `None` (pass the Read
-    /// through) unless the file is large, inside the repo, indexed, and unchanged since indexing
-    /// (its chunks' line numbers must describe the bytes the agent will get), and something
-    /// actually points into it. A plan is recorded as a partial read of the session.
-    fn read_plan(&self, repo: &str, session: &str, path: &str) -> Option<ReadPlan> {
-        let (root, id) = self.repo(repo);
-        let rel = rel_path(&root, path)?;
-        let abs = root.join(&rel);
-        // Cheap checks before reading: the indexer never indexes files over this size.
-        if std::fs::metadata(&abs).ok()?.len() > laya_parse::MAX_FILE_BYTES {
-            return None;
-        }
-        let indexed = self.store.file_hash(&id, &rel).ok()??;
-        let bytes = std::fs::read(&abs).ok()?;
-        let total_lines = crate::hook::line_count(&bytes);
-        let policy = laya_rank::ReadPolicy::default();
-        if total_lines < policy.min_file_lines {
-            return None;
-        }
-        if indexed != laya_parse::file_hash(&bytes) {
-            return None; // edited since indexing: chunk line numbers may be wrong
-        }
-        let chunks = self.store.chunks_of_file(&id, &rel).ok()?;
-        if chunks.is_empty() {
-            return None;
-        }
-        let (ranking, query) = self.sessions().read_context(session);
-        let signals = laya_rank::extract_signals(query.as_deref().unwrap_or_default());
-        let (offset, limit, basis) =
-            policy.read_region(ranking.as_ref(), &rel, &chunks, &signals, total_lines)?;
-        let outline = policy.outline(&chunks, &signals, (offset, limit));
-        self.sessions()
-            .narrowed_read(session, &rel, offset, offset + limit - 1);
-        Some(ReadPlan {
-            offset,
-            limit,
-            total_lines,
-            basis: basis.to_string(),
-            outline,
-        })
     }
 }
 
@@ -710,7 +491,6 @@ fn op_name(req: &Request) -> &'static str {
         Request::Session { .. } => "session",
         Request::ReindexFile { .. } => "reindex_file",
         Request::IndexRepo { .. } => "index_repo",
-        Request::ReadPlan { .. } => "read_plan",
         Request::Shutdown => "shutdown",
     }
 }
@@ -984,30 +764,7 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     }
     let state_tokens = env_num::<usize>("LAYA_CODEX_STATE_TOKENS").unwrap_or(128);
     eprintln!("[laya-codex] retriever config {base:?} state_tokens={state_tokens}");
-    // Rank-based by default (thresholds 0 = full code for the top spans by fused rank, capped by
-    // scope). Laya's P scale shifts with prompt wording, so on agent-wrapped prompts every P
-    // threshold lost gold coverage vs the fused rank at equal code volume (bench/size_sweep.py on
-    // --template bench/alt dumps). Adaptive's gain is the session delta, not P thresholds.
-    let sizing = SizingPolicy {
-        tau_full: env_num::<f32>("LAYA_CODEX_TAU_FULL").unwrap_or(0.0),
-        tau_map: env_num::<f32>("LAYA_CODEX_TAU_MAP").unwrap_or(0.0),
-        ..SizingPolicy::default()
-    };
-    let scope_p = env_num::<f32>("LAYA_CODEX_SCOPE_P").unwrap_or(0.4);
-    // Off by default: zero-shot scope is near-uniform (macro-F1 <= 0.28) and even oracle scope
-    // barely changes what loads, so it would only cost a model call per prompt.
-    let use_scope = std::env::var("LAYA_CODEX_SCOPE")
-        .map(|v| v == "1")
-        .unwrap_or(false);
-    eprintln!("[laya-codex] sizing {sizing:?} scope={use_scope} scope_p={scope_p}");
-    // Opt-in: `1` = repositories under 200 indexed files, a number = that threshold.
-    let small_repo_files = match std::env::var("LAYA_CODEX_SIZE_BY_REPO").as_deref() {
-        Ok("1") => Some(200),
-        Ok(v) => v.parse::<usize>().ok().filter(|&n| n > 1),
-        Err(_) => None,
-    };
-    eprintln!("[laya-codex] small_repo_files={small_repo_files:?}");
-    let daemon = Daemon::with_options(Arc::clone(&store), base, sizing, small_repo_files);
+    let daemon = Daemon::new(Arc::clone(&store), base);
 
     if let (true, Some(dir)) = (cfg.use_model, cfg.model_dir.clone()) {
         let d = Arc::clone(&daemon);
@@ -1040,23 +797,10 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
                     let batch: Vec<&Chunk> = std::iter::repeat_n(&warm, 24).collect();
                     let _ = scorer.score("warm up the relevance model", &batch);
                     eprintln!("[laya-codex] model warm-up in {:?}", t_warm.elapsed());
-                    let scorer = Arc::new(scorer);
-                    let inner: Arc<dyn Scorer> = scorer.clone();
+                    let inner: Arc<dyn Scorer> = Arc::new(scorer);
                     let mut memo = MemoScorer::new(inner, Arc::clone(&d.store), &tag);
                     if std::env::var("LAYA_CODEX_MEMO").is_ok_and(|v| v == "0") {
                         memo = memo.without_cache_reads();
-                    }
-                    if use_scope {
-                        let scope = LayaScope {
-                            scorer,
-                            store: Arc::clone(&d.store),
-                            busy: memo.busy_flag(),
-                            model_tag: name.clone(),
-                            min_p: scope_p,
-                        };
-                        if let Ok(mut s) = d.scope.write() {
-                            *s = Some(Arc::new(scope));
-                        }
                     }
                     if let Ok(mut s) = d.scorer.write() {
                         *s = Some(Arc::new(memo));
@@ -1295,13 +1039,6 @@ mod tests {
             2,
             "every prompt is scored cold"
         );
-    }
-
-    struct FixedScope(Option<Scope>);
-    impl ScopeClassifier for FixedScope {
-        fn classify(&self, _prompt: &str) -> Option<Scope> {
-            self.0
-        }
     }
 
     /// A repo on disk with four one-function files, indexed with their real hashes (the
@@ -1574,38 +1311,140 @@ mod tests {
         assert_eq!(pointers, 2, "{second}");
     }
 
+    /// Every chunk gets the same low probability: far below any probability threshold.
+    struct LowScorer;
+    impl Scorer for LowScorer {
+        fn score(&self, _task: &str, chunks: &[&Chunk]) -> laya_core::Result<Vec<f32>> {
+            Ok(vec![0.05; chunks.len()])
+        }
+    }
+
+    /// The production daemon's ranking and sizing, with `LowScorer` as the model.
+    fn production_daemon(store: Arc<dyn Store>) -> Arc<Daemon> {
+        let cfg = RetrieverConfig {
+            laya_weight: Some(0.5),
+            p_threshold: 0.0,
+            ..RetrieverConfig::default()
+        };
+        let d = Daemon::new(store, cfg);
+        *d.scorer.write().unwrap() = Some(Arc::new(LowScorer));
+        d
+    }
+
+    fn ask_ranked(
+        d: &Arc<Daemon>,
+        repo: &str,
+        session: &str,
+        prompt: &str,
+    ) -> (QueryResult, String) {
+        match d.handle(Request::Query {
+            repo: repo.into(),
+            session: Some(session.into()),
+            prompt: prompt.into(),
+            budget_ms: Some(10_000),
+            top_n: None,
+            render: Some(RenderReq {
+                budget_tokens: 3000,
+                related: true,
+                adaptive: true,
+            }),
+        }) {
+            Response::Query {
+                result,
+                rendered: Some(r),
+                ..
+            } => (result, r),
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
-    fn a_repo_being_indexed_is_not_sized_as_small() {
+    fn a_model_ranked_render_inlines_the_top_two_files_by_rank_whatever_their_probability() {
         let (d, repo) = daemon_with_files(WAL_FILES);
-        let small = Daemon::with_options(
-            d.store.clone(),
-            RetrieverConfig::default(),
-            SizingPolicy::default(),
-            Some(200),
-        );
-        let (_, id) = small.repo(&repo);
-        small.indexing.lock().unwrap().insert(id.clone());
+        let d = production_daemon(d.store.clone());
+        let (result, text) = ask_ranked(&d, &repo, "s", "where is the wal segment replayed");
         assert_eq!(
-            blocks(&ask(
-                &small,
-                &repo,
-                "s1",
-                "where is the wal segment replayed"
-            )),
-            2,
-            "a partial file count must not shrink the injection"
+            result.mode,
+            laya_core::RankMode::Laya,
+            "the model ranked it"
         );
-        small.indexing.lock().unwrap().remove(&id);
-        assert_eq!(
-            blocks(&ask(
-                &small,
-                &repo,
-                "s2",
-                "where is the wal segment replayed"
-            )),
-            1,
-            "and it was not cached while indexing"
+        assert!(result.spans.iter().all(|s| s.p_relevant == Some(0.05)));
+        assert_eq!(blocks(&text), 2, "{text}");
+        let inlined: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("### "))
+            .map(|l| l.split(':').next().unwrap_or_default())
+            .collect();
+        let top: Vec<&str> = result
+            .spans
+            .iter()
+            .take(2)
+            .map(|s| s.path.as_str())
+            .collect();
+        assert_eq!(inlined, top, "the first two ranked files: {text}");
+    }
+
+    #[test]
+    fn a_whole_file_read_keeps_that_file_out_of_later_injections() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        let d = production_daemon(d.store.clone());
+        let (result, _) = ask_ranked(&d, &repo, "probe", "where is the wal segment replayed");
+        let top = result.spans[0].path.clone();
+        for (session, full) in [("whole", true), ("ranged", false)] {
+            d.handle(Request::NoteRead {
+                session: session.into(),
+                path: top.clone(),
+                full,
+            });
+            let (_, text) = ask_ranked(&d, &repo, session, "where is the wal segment replayed");
+            let inlined = text.contains(&format!("### {top}:"));
+            assert_eq!(inlined, !full, "{session}: {text}");
+        }
+    }
+
+    /// The hook talking to this daemon in-process.
+    struct Direct(Arc<Daemon>);
+    impl crate::hook::DaemonApi for Direct {
+        fn call(&self, req: Request) -> anyhow::Result<Response> {
+            Ok(self.0.handle(req))
+        }
+    }
+
+    #[test]
+    fn the_read_hook_outputs_nothing_and_a_whole_file_read_is_not_injected_again() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        let d = production_daemon(d.store.clone());
+        let (result, _) = ask_ranked(&d, &repo, "probe", "where is the wal segment replayed");
+        let top = result.spans[0].path.clone();
+        let api = Direct(Arc::clone(&d));
+        // The hook's root, as `laya-codex hook` finds it: canonical (temp dirs are symlinked).
+        let root = repo_root(Path::new(&repo));
+        let ctx = crate::hook::HookCtx {
+            api: &api,
+            root: root.clone(),
+            budget_ms: 10_000,
+            inject_tokens: 3000,
+            compact: true,
+            related: true,
+            adaptive: true,
+        };
+        let read = serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s",
+            "tool_name": "Read", "tool_input": {"file_path": root.join(&top)}});
+        let o = crate::hook::handle(&read, &ctx);
+        assert_eq!((o.action, o.output), ("note_read", None));
+        let prompt = serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s",
+            "prompt": "where is the wal segment replayed"});
+        let o = crate::hook::handle(&prompt, &ctx);
+        assert_eq!(o.action, "inject");
+        let text = o.output.unwrap()["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            !text.contains(&format!("### {top}:")),
+            "{top} was read: {text}"
         );
+        assert_eq!(blocks(&text), 2, "the next files take its place: {text}");
     }
 
     #[test]
@@ -1643,46 +1482,6 @@ mod tests {
             "what does the changelog say about wal segment replay",
         );
         assert!(docs.contains("### CHANGELOG.md"), "{docs}");
-    }
-
-    #[test]
-    fn repo_size_caps_are_opt_in_and_apply_only_to_small_repos() {
-        let (d, repo) = daemon_with_files(WAL_FILES);
-        assert_eq!(
-            blocks(&ask(&d, &repo, "s1", "where is the wal segment replayed")),
-            2
-        );
-        let small = Daemon::with_options(
-            d.store.clone(),
-            RetrieverConfig::default(),
-            SizingPolicy::default(),
-            Some(200),
-        );
-        assert_eq!(
-            blocks(&ask(
-                &small,
-                &repo,
-                "s2",
-                "where is the wal segment replayed"
-            )),
-            1
-        );
-        let large = Daemon::with_options(
-            d.store.clone(),
-            RetrieverConfig::default(),
-            SizingPolicy::default(),
-            Some(3),
-        );
-        assert_eq!(
-            blocks(&ask(
-                &large,
-                &repo,
-                "s3",
-                "where is the wal segment replayed"
-            )),
-            2,
-            "5 files is not under a 3-file threshold"
-        );
     }
 
     fn query(d: &Arc<Daemon>, repo: &str, adaptive: bool) -> Response {
@@ -1846,20 +1645,18 @@ mod tests {
     }
 
     #[test]
-    fn scope_is_classified_and_reported_only_for_adaptive_renders() {
+    fn a_query_reports_no_scope_and_renders_only_when_asked() {
         let (d, repo) = daemon_with_code();
-        *d.scope.write().unwrap() = Some(Arc::new(FixedScope(Some(Scope::Function))));
-        assert!(
-            matches!(query(&d, &repo, true), Response::Query { scope: Some(ref s), .. } if s == "function")
-        );
-        assert!(matches!(
-            query(&d, &repo, false),
-            Response::Query {
-                scope: None,
-                rendered: Some(_),
-                ..
-            }
-        ));
+        for adaptive in [true, false] {
+            assert!(matches!(
+                query(&d, &repo, adaptive),
+                Response::Query {
+                    scope: None,
+                    rendered: Some(_),
+                    ..
+                }
+            ));
+        }
         let plain = d.handle(Request::Query {
             repo,
             session: None,
@@ -1869,16 +1666,6 @@ mod tests {
             render: None,
         });
         assert!(matches!(plain, Response::Query { rendered: None, .. }));
-    }
-
-    #[test]
-    fn scope_from_probs_needs_confidence() {
-        assert_eq!(
-            scope_from_probs(&[0.1, 0.7, 0.1, 0.1], 0.4),
-            Some(Scope::File)
-        );
-        assert_eq!(scope_from_probs(&[0.3, 0.3, 0.2, 0.2], 0.4), None);
-        assert_eq!(scope_from_probs(&[0.5], 0.4), None);
     }
 
     #[test]
@@ -1914,160 +1701,6 @@ mod tests {
             }),
             Response::Session { .. }
         ));
-    }
-
-    /// A repo with an indexed 390-line `src/big.rs` (30 thirteen-line fns; `handler_17`, at
-    /// lines 222-234, calls `replay_wal_segment`) and an indexed 10-line `src/small.rs`.
-    fn plan_repo(tag: &str) -> (Arc<Daemon>, PathBuf, String) {
-        let root = std::env::temp_dir().join(format!("laya-plan-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        let mut big = String::new();
-        for i in 0..30 {
-            let call = if i == 17 {
-                "replay_wal_segment(x)"
-            } else {
-                "x + 1"
-            };
-            big.push_str(&format!(
-                "/// Handler {i}.\npub fn handler_{i}(x: u32) -> u32 {{\n    let y = {call};\n"
-            ));
-            for k in 0..7 {
-                big.push_str(&format!("    let y = y.wrapping_mul({k});\n"));
-            }
-            big.push_str("    y\n}\n\n");
-        }
-        assert_eq!(big.lines().count(), 390);
-        std::fs::write(root.join("src/big.rs"), &big).unwrap();
-        std::fs::write(root.join("src/small.rs"), "fn tiny() {}\n".repeat(10)).unwrap();
-        let d = Daemon::new(Arc::new(MemStore::default()), RetrieverConfig::default());
-        let repo = root.to_string_lossy().into_owned();
-        let (root, id) = d.repo(&repo);
-        for f in ["src/big.rs", "src/small.rs"] {
-            indexer::index_file(&root, d.store.as_ref(), &id, f).unwrap();
-        }
-        (d, root, repo)
-    }
-
-    fn plan(d: &Arc<Daemon>, repo: &str, session: &str, path: &str) -> Option<ReadPlan> {
-        match d.handle(Request::ReadPlan {
-            repo: repo.into(),
-            session: session.into(),
-            path: path.into(),
-        }) {
-            Response::ReadPlan { plan } => plan,
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn read_plan_shows_the_task_region_with_an_outline() {
-        let (d, root, repo) = plan_repo("lex");
-        assert_eq!(
-            plan(&d, &repo, "s", "src/big.rs"),
-            None,
-            "no task yet: nothing to aim at"
-        );
-        d.handle(Request::Query {
-            repo: repo.clone(),
-            session: Some("s".into()),
-            prompt: "fix the ordering bug in replay_wal_segment".into(),
-            budget_ms: Some(0),
-            top_n: None,
-            render: None,
-        });
-        d.handle(Request::NoteRead {
-            session: "s".into(),
-            path: "src/big.rs".into(),
-            full: true,
-        });
-        let abs = root.join("src/big.rs").to_string_lossy().into_owned();
-        let p = plan(&d, &repo, "s", &abs).expect("absolute paths are planned too");
-        assert_eq!((p.basis.as_str(), p.total_lines), ("lexical", 390));
-        let end = p.offset + p.limit - 1;
-        assert!(p.offset <= 224 && end >= 224, "{p:?}");
-        assert!(p.limit <= 200, "{p:?}");
-        assert!(
-            p.outline.contains("handler_17") && p.outline.contains('*'),
-            "{}",
-            p.outline
-        );
-        assert!(p.outline.len() <= 1600, "{}", p.outline.len());
-        // Only the window is in the agent's context now, not the whole file.
-        let already = d.sessions.lock().unwrap().already("s");
-        assert_eq!(already, vec![("src/big.rs".to_string(), p.offset, end)]);
-    }
-
-    #[test]
-    fn read_plan_prefers_the_sessions_ranked_spans() {
-        let (d, _, repo) = plan_repo("rank");
-        let span = laya_core::RankedSpan {
-            path: "src/big.rs".into(),
-            start_line: 40,
-            end_line: 52,
-            symbol: "fn handler_3".into(),
-            p_relevant: Some(0.1),
-            score: 0.1,
-            text: String::new(),
-        };
-        d.sessions.lock().unwrap().record_query(
-            "s",
-            &QueryResult {
-                spans: vec![span],
-                mode: laya_core::RankMode::Laya,
-                elapsed_ms: 1,
-                candidates: 1,
-                scored: 0,
-                offered: 0,
-                related: vec![],
-            },
-        );
-        let p = plan(&d, &repo, "s", "src/big.rs").unwrap();
-        assert_eq!((p.basis.as_str(), p.offset, p.limit), ("ranking", 35, 23));
-    }
-
-    #[test]
-    fn read_plan_fails_open_on_small_unindexed_stale_or_missing_files() {
-        let (d, root, repo) = plan_repo("open");
-        let span = |path: &str| laya_core::RankedSpan {
-            path: path.into(),
-            start_line: 1,
-            end_line: 5,
-            symbol: String::new(),
-            p_relevant: None,
-            score: 1.0,
-            text: String::new(),
-        };
-        d.sessions.lock().unwrap().record_query(
-            "s",
-            &QueryResult {
-                spans: vec![
-                    span("src/small.rs"),
-                    span("src/other.rs"),
-                    span("src/big.rs"),
-                ],
-                mode: laya_core::RankMode::Lexical,
-                elapsed_ms: 1,
-                candidates: 3,
-                scored: 0,
-                offered: 0,
-                related: vec![],
-            },
-        );
-        assert!(plan(&d, &repo, "s", "src/big.rs").is_some());
-        assert_eq!(plan(&d, &repo, "s", "src/small.rs"), None, "small");
-        let big = std::fs::read_to_string(root.join("src/big.rs")).unwrap();
-        std::fs::write(root.join("src/other.rs"), &big).unwrap();
-        assert_eq!(plan(&d, &repo, "s", "src/other.rs"), None, "not indexed");
-        assert_eq!(plan(&d, &repo, "s", "src/gone.rs"), None, "missing");
-        assert_eq!(plan(&d, &repo, "s", "/etc/hosts"), None, "outside the repo");
-        std::fs::write(root.join("src/big.rs"), format!("// edited\n{big}")).unwrap();
-        assert_eq!(plan(&d, &repo, "s", "src/big.rs"), None, "stale index");
-        // Huge (generated/minified) files are not even read.
-        let huge = "x".repeat(1 << 14) + "\n";
-        std::fs::write(root.join("src/huge.rs"), huge.repeat(300)).unwrap();
-        indexer::index_file(&root, d.store.as_ref(), &d.repo(&repo).1, "src/huge.rs").unwrap();
-        assert_eq!(plan(&d, &repo, "s", "src/huge.rs"), None, "huge");
     }
 
     #[test]

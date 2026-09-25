@@ -20,6 +20,7 @@ use anyhow::{Context, bail};
 use serde_json::{Map, Value, json};
 
 /// Hook events laya-codex handles: (event, matcher, timeout seconds). Mirrors the README.
+/// `Read` only records the Read (no output): a file read whole is not injected again.
 pub const HOOK_EVENTS: [(&str, Option<&str>, u64); 4] = [
     ("SessionStart", None, 5),
     ("UserPromptSubmit", None, 8),

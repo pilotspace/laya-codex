@@ -15,7 +15,7 @@ This is the reranker gate the plan names: run it before and after a ranking chan
 
     python3 bench/replay_hooks.py --bin target/release/laya-codex --home /tmp/lc-home \\
         --moon-port 16494 --repo <clone> --tasks bench/tasks-v8/httpx.jsonl --out replay.jsonl \\
-        [--env LAYA_CODEX_SIZE_BY_REPO=0] [--label new]
+        [--env LAYA_CODEX_BUDGET_MS=0] [--label keywords]
     python3 bench/replay_hooks.py summary replay-a.jsonl replay-b.jsonl
 
 Use a scratch `--home` and `--moon-port` per binary: the daemon and Moon belong to the home, and a

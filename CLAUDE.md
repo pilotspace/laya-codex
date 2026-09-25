@@ -29,7 +29,7 @@ them; keep both. Hooks always fail open.
 | `laya-parse` | tree-sitter chunking, line-window fallback |
 | `laya-store` | Moon client, BM25, supervisor, auth |
 | `laya-model` | the Laya scorer (candle, Metal/CPU) |
-| `laya-rank` | retriever, fusion, sizing, rendering, read plans |
+| `laya-rank` | retriever, fusion, sizing, rendering |
 | `laya-cli` | `laya-codex` binary: daemon, hooks, MCP server, doctor, trace |
 
 ## Evidence rules

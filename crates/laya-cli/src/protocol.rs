@@ -19,8 +19,8 @@ pub const MAX_RENDER_TOKENS: usize = 32_000;
 pub enum Request {
     Ping,
     /// Rank spans for a prompt. `session` scopes the working set; `budget_ms` bounds Laya time.
-    /// With `render`, the daemon also sizes and renders the context (scope, calibrated P, and the
-    /// session's already-sent spans) and records what it rendered as sent.
+    /// With `render`, the daemon also sizes and renders the context (top-ranked files in full,
+    /// minus the session's already-sent spans) and records what it rendered as sent.
     Query {
         repo: String,
         session: Option<String>,
@@ -54,30 +54,9 @@ pub enum Request {
     IndexRepo {
         repo: String,
     },
-    /// Plan the first whole-file Read of `path` (repo-relative or absolute): the region to show
-    /// and an outline of the file. Answered with `Response::ReadPlan`; `plan: None` (or an error
-    /// from an older daemon) means pass the Read through untouched.
-    ReadPlan {
-        repo: String,
-        session: String,
-        path: String,
-    },
     /// Ask the daemon to exit (`laya-codex stop`). Answered with `Response::Ok` before it exits; the
     /// Moon it supervises keeps running. Older daemons answer "bad request".
     Shutdown,
-}
-
-/// A narrowed first Read: show `limit` lines from `offset` (1-based) of a `total_lines`-line
-/// file, and tell the agent what else is in it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ReadPlan {
-    pub offset: u32,
-    pub limit: u32,
-    pub total_lines: u32,
-    /// Why this region: `ranking` (the session's ranked spans) or `lexical` (task terms).
-    pub basis: String,
-    /// One line per item of the file (`* start-end label`, `*` = inside the shown region).
-    pub outline: String,
 }
 
 /// Daemon-side rendering request for `Query`.
@@ -86,8 +65,8 @@ pub struct RenderReq {
     pub budget_tokens: usize,
     /// Append the "Related by references" section.
     pub related: bool,
-    /// Size adaptively (scope + calibrated P) and skip spans already sent in this session;
-    /// `false` = the fixed compact format.
+    /// Size adaptively (by rank, smaller for follow-ups) and skip spans already sent in this
+    /// session; `false` = the fixed compact format.
     pub adaptive: bool,
 }
 
@@ -109,7 +88,8 @@ pub enum Response {
         result: QueryResult,
         #[serde(default)]
         rendered: Option<String>,
-        /// Task scope predicted by the Laya classifier (`function`, `file`, `module`, `cross`).
+        /// Always `None`: the task-scope classifier that set it was removed. The field stays so
+        /// replies keep the shape older clients and logs expect.
         #[serde(default)]
         scope: Option<String>,
     },
@@ -118,10 +98,6 @@ pub enum Response {
     },
     Session {
         view: SessionView,
-    },
-    ReadPlan {
-        #[serde(default)]
-        plan: Option<ReadPlan>,
     },
     Ok,
     Error {
@@ -168,36 +144,13 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn read_plan_roundtrips_and_an_empty_plan_is_null() {
-        let r = Request::ReadPlan {
-            repo: "/r".into(),
-            session: "s".into(),
-            path: "src/a.rs".into(),
-        };
-        let s = serde_json::to_string(&r).unwrap();
-        assert_eq!(
-            s,
-            r#"{"op":"read_plan","repo":"/r","session":"s","path":"src/a.rs"}"#
+        // Older hooks still send `read_plan`: it is refused, and they fail open on the error.
+        assert!(
+            serde_json::from_str::<Request>(
+                r#"{"op":"read_plan","repo":"/r","session":"s","path":"a"}"#
+            )
+            .is_err()
         );
-        assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
-        let p = Response::ReadPlan {
-            plan: Some(ReadPlan {
-                offset: 10,
-                limit: 50,
-                total_lines: 400,
-                basis: "lexical".into(),
-                outline: "  1-9 fn a".into(),
-            }),
-        };
-        let s = serde_json::to_string(&p).unwrap();
-        assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), p);
-        let none: Response = serde_json::from_str(r#"{"status":"read_plan","plan":null}"#).unwrap();
-        assert_eq!(none, Response::ReadPlan { plan: None });
-        let bare: Response = serde_json::from_str(r#"{"status":"read_plan"}"#).unwrap();
-        assert_eq!(bare, Response::ReadPlan { plan: None });
     }
 
     #[test]
