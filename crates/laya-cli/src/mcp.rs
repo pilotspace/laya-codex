@@ -353,19 +353,20 @@ fn scan(
     deadline: Instant,
 ) -> Result<Scan, String> {
     let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let files: Vec<PathBuf> = match scope {
-        Some(s) if base.join(s).is_file() => {
-            vec![crate::indexer::walk_admits(&base, s).ok_or_else(|| not_indexed(s))?]
-        }
-        Some(s) => laya_parse::walk_repo(&base.join(s)),
-        None => laya_parse::walk_repo(&base),
+    let walked = match scope {
+        Some(s) if base.join(s).is_file() => Walked {
+            files: vec![crate::indexer::walk_admits(&base, s).ok_or_else(|| not_indexed(s))?],
+            too_big: 0,
+            complete: true,
+        },
+        dir => walk_scope(&base, dir, deadline),
     };
     let mut out = Scan {
         files_read: 0,
-        complete: true,
+        complete: walked.complete,
         hits: Vec::new(),
     };
-    for path in files {
+    for path in walked.files {
         if Instant::now() > deadline {
             out.complete = false;
             break;
@@ -393,6 +394,64 @@ fn scan(
         }
     }
     Ok(out)
+}
+
+/// At most this many files are walked for one lookup.
+const MAX_WALK_FILES: usize = 100_000;
+
+/// The files the index would hold under `dir` (all of them when `None`).
+struct Walked {
+    files: Vec<PathBuf>,
+    /// Files of a known type skipped for size (over [`laya_parse::MAX_FILE_BYTES`]).
+    too_big: usize,
+    /// The walk reached every file (no deadline or [`MAX_WALK_FILES`] cut).
+    complete: bool,
+}
+
+/// Walk from the repository root with exactly [`laya_parse::walk_repo`]'s settings (hidden
+/// entries, `.gitignore`/`.ignore`/git excludes, no symlinks), pruned to `dir`, and admit a file
+/// only if `lang_for_path` accepts its repo-relative path (so `vendor/`, `node_modules/` and
+/// secrets stay out, as in the index) and it is at most 1 MiB. Bounded by `deadline` and
+/// [`MAX_WALK_FILES`].
+fn walk_scope(base: &Path, dir: Option<&str>, deadline: Instant) -> Walked {
+    let mut builder = ignore::WalkBuilder::new(base);
+    builder
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .ignore(true)
+        .parents(true)
+        .require_git(false)
+        .follow_links(false)
+        .sort_by_file_name(|a, b| a.cmp(b));
+    if let Some(d) = dir {
+        let scope = base.join(d);
+        builder.filter_entry(move |e| scope.starts_with(e.path()) || e.path().starts_with(&scope));
+    }
+    let mut out = Walked {
+        files: Vec::new(),
+        too_big: 0,
+        complete: true,
+    };
+    for entry in builder.build().flatten() {
+        if out.files.len() >= MAX_WALK_FILES || Instant::now() > deadline {
+            out.complete = false;
+            break;
+        }
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let rel = entry.path().strip_prefix(base).unwrap_or(entry.path());
+        if laya_parse::lang_for_path(&rel.to_string_lossy().replace('\\', "/")).is_none() {
+            continue;
+        }
+        match entry.metadata() {
+            Ok(m) if m.len() <= laya_parse::MAX_FILE_BYTES => out.files.push(entry.into_path()),
+            _ => out.too_big += 1,
+        }
+    }
+    out
 }
 
 fn not_indexed(path: &str) -> String {
@@ -1022,6 +1081,42 @@ mod tests {
         assert!(
             !all.contains("sk-") && !all.contains("PRIVATE KEY"),
             "{all}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_directory_scope_keeps_the_indexers_skip_and_ignore_rules() {
+        // Review: `path:"vendor"` walked from inside vendor/, so SKIP_DIRS and gitignored
+        // directories leaked.
+        let root = repo("dirscope");
+        add(&root, "vendor/lib.py", "x = generate_digest(1)\n");
+        add(&root, "node_modules/pkg/index.js", "generate_digest(1)\n");
+        add(&root, ".gitignore", "out/\n");
+        add(&root, "out/gen.py", "y = generate_digest(2)\n");
+        for dir in ["vendor", "node_modules", "node_modules/pkg", "out"] {
+            let (text, _) = search_text(
+                &Fake(true),
+                &root,
+                json!({"query": "generate_digest", "path": dir}),
+            );
+            assert!(text.contains("No match"), "{dir}: {text}");
+        }
+        let (all, _) = search_text(&Fake(true), &root, json!({"query": "generate_digest"}));
+        assert!(
+            !all.contains("vendor/")
+                && !all.contains("node_modules")
+                && !all.contains("out/gen.py"),
+            "{all}"
+        );
+        let (pkg, _) = search_text(
+            &Fake(true),
+            &root,
+            json!({"query": "generate_digest", "path": "pkg"}),
+        );
+        assert!(
+            pkg.contains("pkg/etag.py") && !pkg.contains("tests/"),
+            "{pkg}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
