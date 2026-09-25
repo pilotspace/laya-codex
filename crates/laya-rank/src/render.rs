@@ -317,13 +317,23 @@ pub struct MatchGroup {
     pub lines: Vec<MatchLine>,
 }
 
+/// How a file's lines are listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Listing {
+    /// By enclosing symbol.
+    Grouped,
+    /// As one flat group, without enclosing symbols: the file could not be parsed in time.
+    Flat,
+    /// Not at all: past the size cap its lines were only counted (their text is not read), so
+    /// it is only named, with its count, in the "Not shown" tail.
+    Counted,
+}
+
 /// Every matching line of one file, grouped by enclosing symbol in line order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMatches {
     pub path: String,
-    /// The groups carry enclosing symbols. `false`: one flat group (the file could not be parsed
-    /// in time), shown without group headings.
-    pub grouped: bool,
+    pub listing: Listing,
     pub groups: Vec<MatchGroup>,
 }
 
@@ -466,7 +476,7 @@ fn group_lines(f: &FileMatches, g: &MatchGroup) -> Vec<String> {
         format!("{indent}{}: {}{mark}{tag}\n", l.line, l.text)
     };
     let short = short_symbol(&g.symbol);
-    if !f.grouped || short.is_empty() {
+    if f.listing != Listing::Grouped || short.is_empty() {
         return g.lines.iter().map(|l| line(l, " ", "")).collect();
     }
     let first = &g.lines[0];
@@ -489,7 +499,7 @@ fn match_body(files: &[FileMatches], listed: &[bool], budget: usize) -> (String,
     let mut body = String::new();
     let mut shown = vec![0; files.len()];
     'files: for (i, f) in files.iter().enumerate() {
-        if !listed[i] {
+        if !listed[i] || f.listing == Listing::Counted {
             continue;
         }
         let test = if crate::related::is_test_path(&f.path) {
@@ -525,6 +535,15 @@ fn match_body(files: &[FileMatches], listed: &[bool], budget: usize) -> (String,
     (body, shown)
 }
 
+/// The chars a file takes in an answer without a size cap (its heading and the at most
+/// [`MATCH_FILE_LINES`] lines [`render_matches`] shows of it), so a caller can stop reading files
+/// once the cap is reached.
+pub fn rendered_chars(f: &FileMatches) -> usize {
+    match_body(std::slice::from_ref(f), &[true], usize::MAX)
+        .0
+        .len()
+}
+
 fn match_summary(
     m: &IdentMatches,
     names: &str,
@@ -555,7 +574,7 @@ fn match_summary(
         .files
         .iter()
         .zip(shown_per_file)
-        .filter(|(f, n)| **n > 0 && !f.grouped)
+        .filter(|(f, n)| **n > 0 && f.listing == Listing::Flat)
         .count();
     let docs_counted = listed.iter().any(|l| !l);
     let mut s = format!(
@@ -692,7 +711,7 @@ mod match_tests {
     fn file(path: &str, groups: Vec<(&str, Vec<MatchLine>)>) -> FileMatches {
         FileMatches {
             path: path.into(),
-            grouped: true,
+            listing: Listing::Grouped,
             groups: groups
                 .into_iter()
                 .map(|(s, lines)| MatchGroup {
@@ -851,6 +870,29 @@ mod match_tests {
     }
 
     #[test]
+    fn a_file_past_the_size_cap_is_counted_and_never_listed() {
+        // Pilot 2: files past the cap were listed with empty lines (` 213: `) and reported as
+        // "listed without enclosing functions".
+        let mut files = digest_files();
+        files.push(FileMatches {
+            path: "src/middleware/compress/index.ts".into(),
+            listing: Listing::Counted,
+            groups: vec![MatchGroup {
+                symbol: String::new(),
+                lines: vec![line(131, "", false), line(132, "", false)],
+            }],
+        });
+        let out = render_matches(&lookup(files));
+        assert!(!out.contains(" 131: "), "{out}");
+        assert!(
+            out.contains("Not shown: src/middleware/compress/index.ts (2)."),
+            "{out}"
+        );
+        assert!(!out.contains("without enclosing functions"), "{out}");
+        assert!(out.contains("first 4 shown"), "{out}");
+    }
+
+    #[test]
     fn short_symbols_drop_the_outer_path_keywords_and_long_names() {
         assert_eq!(short_symbol("class Response > def iter_text"), "iter_text");
         assert_eq!(short_symbol("impl Store for MoonStore > fn get"), "get");
@@ -954,7 +996,7 @@ mod match_tests {
     #[test]
     fn a_file_listed_without_its_enclosing_functions_is_never_complete() {
         let mut files = digest_files();
-        files[1].grouped = false;
+        files[1].listing = Listing::Flat;
         let out = render_matches(&lookup(files));
         assert!(!out.contains("; complete"), "{out}");
         assert!(
