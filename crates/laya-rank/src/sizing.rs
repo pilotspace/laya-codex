@@ -53,17 +53,6 @@ pub fn follow_up_caps(intent: FollowUpIntent) -> SizingCaps {
     }
 }
 
-/// Caps for a small repository (opt-in, `LAYA_CODEX_SIZE_BY_REPO=1`): there Claude reads little
-/// code on its own (3.3k tokens per two-prompt session on the 92-file httpx), so a second inlined
-/// block mostly replaces reading it would not have done.
-pub fn small_repo_caps() -> SizingCaps {
-    SizingCaps {
-        map_spans: 6,
-        full_spans: 1,
-        related: 6,
-    }
-}
-
 /// Options for [`size_context_opts`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SizeOpts {

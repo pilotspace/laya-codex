@@ -8,7 +8,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use laya_core::QueryResult;
 use laya_core::{Chunk, Scorer, Store};
@@ -155,11 +155,6 @@ pub struct Daemon {
     pub sessions: Mutex<Sessions>,
     pub indexing: Mutex<HashSet<String>>,
     pub base_cfg: RetrieverConfig,
-    /// Opt-in (`LAYA_CODEX_SIZE_BY_REPO`): repositories with fewer indexed files than this get
-    /// [`laya_rank::small_repo_caps`]. `None` = off.
-    pub small_repo_files: Option<usize>,
-    /// Indexed file count per repo id, with when it was read (see [`Daemon::is_small_repo`]).
-    file_counts: Mutex<HashMap<String, (usize, Instant)>>,
 }
 
 /// Whether `prompt` names identifiers or file paths.
@@ -168,9 +163,6 @@ fn names_code(prompt: &str) -> bool {
     !sig.identifiers.is_empty() || !sig.paths.is_empty()
 }
 
-/// How long an indexed file count is reused before it is read again.
-const FILE_COUNT_TTL: Duration = Duration::from_secs(300);
-
 /// Extra usage lines for a follow-up that asks for callers, and test pointers for one that asks
 /// for tests.
 const FOLLOW_UP_USAGE_LINES: usize = 16;
@@ -178,53 +170,14 @@ const FOLLOW_UP_USAGE_PER_IDENT: usize = 6;
 const FOLLOW_UP_TEST_REFS: usize = 4;
 
 impl Daemon {
-    #[cfg(test)]
     pub fn new(store: Arc<dyn Store>, base_cfg: RetrieverConfig) -> Arc<Self> {
-        Self::with_options(store, base_cfg, None)
-    }
-
-    pub fn with_options(
-        store: Arc<dyn Store>,
-        base_cfg: RetrieverConfig,
-        small_repo_files: Option<usize>,
-    ) -> Arc<Self> {
         Arc::new(Daemon {
             store,
             scorer: RwLock::new(None),
             sessions: Mutex::new(Sessions::default()),
             indexing: Mutex::new(HashSet::new()),
             base_cfg,
-            small_repo_files,
-            file_counts: Mutex::new(HashMap::new()),
         })
-    }
-
-    /// Whether repo `id` has fewer indexed files than the opt-in threshold. The count is cached
-    /// for [`FILE_COUNT_TTL`]; a store error counts as "not small" (today's sizing).
-    fn is_small_repo(&self, id: &str) -> bool {
-        let Some(limit) = self.small_repo_files else {
-            return false;
-        };
-        // Files are added to the index one by one: a count taken mid-index is too small.
-        if lock(&self.indexing).contains(id) {
-            return false;
-        }
-        let mut counts = lock(&self.file_counts);
-        let fresh = counts
-            .get(id)
-            .filter(|(_, at)| at.elapsed() < FILE_COUNT_TTL)
-            .map(|(n, _)| *n);
-        let n = match fresh {
-            Some(n) => n,
-            None => match self.store.list_files(id) {
-                Ok(files) => {
-                    counts.insert(id.to_string(), (files.len(), Instant::now()));
-                    files.len()
-                }
-                Err(_) => return false,
-            },
-        };
-        n > 0 && n < limit
     }
 
     /// Render `result` for injection. Adaptive: size by rank, skip what the session already has,
@@ -242,8 +195,6 @@ impl Daemon {
         if !req.adaptive {
             return laya_rank::render_compact_opts(result, 3, req.budget_tokens, req.related);
         }
-        // Read before taking the session lock: it can go to the store.
-        let small_repo = self.is_small_repo(id);
         let mut sessions = self.sessions();
         let already: Vec<SpanKey> = session
             .map(|s| sessions.already(s))
@@ -258,9 +209,6 @@ impl Daemon {
         let mut caps = laya_rank::DEFAULT_CAPS;
         if let Some(intent) = follow_up {
             caps = caps.min(laya_rank::follow_up_caps(intent));
-        }
-        if small_repo {
-            caps = caps.min(laya_rank::small_repo_caps());
         }
         let opts = SizeOpts {
             caps,
@@ -869,14 +817,7 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     }
     let state_tokens = env_num::<usize>("LAYA_CODEX_STATE_TOKENS").unwrap_or(128);
     eprintln!("[laya-codex] retriever config {base:?} state_tokens={state_tokens}");
-    // Opt-in: `1` = repositories under 200 indexed files, a number = that threshold.
-    let small_repo_files = match std::env::var("LAYA_CODEX_SIZE_BY_REPO").as_deref() {
-        Ok("1") => Some(200),
-        Ok(v) => v.parse::<usize>().ok().filter(|&n| n > 1),
-        Err(_) => None,
-    };
-    eprintln!("[laya-codex] small_repo_files={small_repo_files:?}");
-    let daemon = Daemon::with_options(Arc::clone(&store), base, small_repo_files);
+    let daemon = Daemon::new(Arc::clone(&store), base);
 
     if let (true, Some(dir)) = (cfg.use_model, cfg.model_dir.clone()) {
         let d = Arc::clone(&daemon);
@@ -1423,35 +1364,6 @@ mod tests {
         assert_eq!(pointers, 2, "{second}");
     }
 
-    #[test]
-    fn a_repo_being_indexed_is_not_sized_as_small() {
-        let (d, repo) = daemon_with_files(WAL_FILES);
-        let small = Daemon::with_options(d.store.clone(), RetrieverConfig::default(), Some(200));
-        let (_, id) = small.repo(&repo);
-        small.indexing.lock().unwrap().insert(id.clone());
-        assert_eq!(
-            blocks(&ask(
-                &small,
-                &repo,
-                "s1",
-                "where is the wal segment replayed"
-            )),
-            2,
-            "a partial file count must not shrink the injection"
-        );
-        small.indexing.lock().unwrap().remove(&id);
-        assert_eq!(
-            blocks(&ask(
-                &small,
-                &repo,
-                "s2",
-                "where is the wal segment replayed"
-            )),
-            1,
-            "and it was not cached while indexing"
-        );
-    }
-
     /// Every chunk gets the same low probability: far below any probability threshold.
     struct LowScorer;
     impl Scorer for LowScorer {
@@ -1578,36 +1490,6 @@ mod tests {
             "what does the changelog say about wal segment replay",
         );
         assert!(docs.contains("### CHANGELOG.md"), "{docs}");
-    }
-
-    #[test]
-    fn repo_size_caps_are_opt_in_and_apply_only_to_small_repos() {
-        let (d, repo) = daemon_with_files(WAL_FILES);
-        assert_eq!(
-            blocks(&ask(&d, &repo, "s1", "where is the wal segment replayed")),
-            2
-        );
-        let small = Daemon::with_options(d.store.clone(), RetrieverConfig::default(), Some(200));
-        assert_eq!(
-            blocks(&ask(
-                &small,
-                &repo,
-                "s2",
-                "where is the wal segment replayed"
-            )),
-            1
-        );
-        let large = Daemon::with_options(d.store.clone(), RetrieverConfig::default(), Some(3));
-        assert_eq!(
-            blocks(&ask(
-                &large,
-                &repo,
-                "s3",
-                "where is the wal segment replayed"
-            )),
-            2,
-            "5 files is not under a 3-file threshold"
-        );
     }
 
     fn query(d: &Arc<Daemon>, repo: &str, adaptive: bool) -> Response {
