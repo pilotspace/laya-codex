@@ -94,25 +94,9 @@ it gives.
 
 ## 5. Work in large files
 
-When Claude opens a whole file of more than 250 lines that laya-codex has indexed, the first Read returns
-the most relevant region plus an outline of the rest:
-
-```
-[laya-codex] crates/laya-rank/src/retriever.rs has 773 lines. Showing lines 28-219 of 773 (best
-match for the task). Read again with offset/limit for any other part, or Read the whole file
-again to get all of it.
-Outline (start-end item; * = shown):
-* 33-129 impl Retriever<'a> > fn query
-* 167-245 impl Retriever<'a> > fn laya_gate
-  247-285 weighted_scores, NON_CODE_INTENT
-  330-359 fn call_scorer_bounded
-  …
-```
-
-(From [how-it-works.md](how-it-works.md), which shows the full hook input and output.)
-
-Claude reads the part that matters instead of 800 lines. A second Read of the same file returns
-everything, so nothing is ever hidden.
+laya-codex never changes Claude's Reads. The injected map gives line ranges, so Claude can read
+only those lines of a large file. When Claude does read a file whole, laya-codex notes it and
+leaves that file's code out of later injections in the session: Claude already has all of it.
 
 ## 6. Long sessions and compaction
 

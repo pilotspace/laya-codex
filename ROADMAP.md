@@ -107,7 +107,7 @@ Make the first five minutes painless and the tool visible where Claude Code user
     full disk. laya-codex should compact it automatically.
   - The fixed ~3.4k-token injection exceeds what stock Claude reads on small repos. The follow-up
     change cuts the injection about 30% per session on every repo (replay). Repo-size caps
-    (`LAYA_CODEX_SIZE_BY_REPO`) are opt-in: they dropped correct inlined files on httpx.
+    (`LAYA_CODEX_SIZE_BY_REPO`) were opt-in and are removed: they dropped correct inlined files on httpx.
   - **Next run** (needs approval, ≈ $50): baseline / this build / this build keywords-only, 60
     tasks, rank mode and output tokens logged, `--rerun-unhealthy` for failed injections.
   - SWE-bench-style edit tasks are still open; a 10-task httpx pilot comes first.
