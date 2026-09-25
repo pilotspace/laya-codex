@@ -20,7 +20,7 @@ own lookups through laya-codex `search` and a retrained Laya ranking the right c
 
 ## Non-goals
 
-Everything listed as frozen in [VISION.md](../VISION.md#out-of-scope-frozen).
+Everything listed as removed or frozen in [VISION.md](../VISION.md#out-of-scope).
 
 ## Workstreams
 
@@ -30,7 +30,7 @@ Everything listed as frozen in [VISION.md](../VISION.md#out-of-scope-frozen).
 | WS1 | Measurement truth | 3 | bench engineer (`python-expert`, sonnet) | WS0 | free |
 | WS2 | Pull: `search` replaces Grep | 1 | Rust engineer (`senior-rust-engineer`, opus) | WS0 | pilot ≈ $6 |
 | WS3 | Precision: retrain Laya as reranker | 2 | ML engineer (`ml-expert`, opus) | WS1 replay + training data restored by the owner | local GPU time |
-| WS4 | Simplify: remove frozen code paths | — | Rust engineer (`senior-rust-engineer`, sonnet) | WS2 merged | free |
+| WS4 | Simplify: remove the paths VISION.md lists as removed | — | Rust engineer (`senior-rust-engineer`, sonnet) | WS2 merged | free |
 | WS5 | Validate and release v0.4.0 | all | orchestrator + bench engineer | WS2, WS3 gate, WS4 | full run ≈ $30 |
 
 Every workstream ends with a review by `athena:code-reviewer` before its PR leaves draft.
@@ -41,7 +41,7 @@ Every workstream ends with a review by `athena:code-reviewer` before its PR leav
 2. Land PR #15 as the new baseline (v9 measured it; CI green): the MCP steering, `score_top=16`,
    rank-mode logging, follow-up answers and the bench harness.
 3. Land this plan, [VISION.md](../VISION.md) and a public `CLAUDE.md` (focus rules) in one docs PR.
-4. Close draft PR #9 (batch reads) with a pointer to the frozen list.
+4. Close draft PR #9 (batch reads) with a pointer to the out-of-scope list in VISION.md.
 5. `add init` locally (the ADD bundle stays out of the public repo) and record each workstream as
    one ADD task.
 
@@ -108,16 +108,24 @@ the owner decides what changes next.
 
 ### WS4 — Simplify (Rust engineer)
 
-Files owned: `crates/laya-rank/src/sizing.rs`, `crates/laya-cli/src/daemon.rs` (config and render
-only), `crates/laya-cli/src/session.rs`, `finetune/scope*.py`, related bench configs.
+Files owned: `crates/laya-rank/src/{sizing,read_narrow}.rs`, `crates/laya-cli/src/{daemon,session,hook,init,doctor,protocol}.rs`
+(the removed paths only), `plugin/hooks/hooks.json`, `finetune/scope*.py`, related bench configs
+and `docs/how-it-works.md`.
 
-Remove code paths that are off by default and have negative evidence, with tests updated first:
-scope classifier (runtime path, `LAYA_CODEX_SCOPE*`), probability-threshold sizing
-(`LAYA_CODEX_TAU_*`), `LAYA_CODEX_SIZE_BY_REPO`, and bench arms that only exercised them. The
-Read-narrowing hook stays (frozen, fail-open).
+Remove, owner decision 2026-09-25, with tests changed first:
 
-Acceptance: default behaviour byte-identical on the replay (same injected text for every prompt);
-fewer env knobs documented in `docs/how-it-works.md`; all CI checks green.
+1. Scope classifier: runtime path, `LAYA_CODEX_SCOPE*`, `finetune/scope*.py` and its tests.
+2. Probability-threshold sizing: `LAYA_CODEX_TAU_*` (rank-based sizing is the only mode).
+3. Repository-size caps: `LAYA_CODEX_SIZE_BY_REPO`.
+4. Read narrowing: the `ReadPlan` request, `read_narrow.rs`, the `updatedInput` rewrite, the
+   outline note, `narrowed_read` and the matching `doctor` checks. **Keep the Read observer:**
+   the hook still sends `NoteRead` for each Read and outputs nothing, because the session delta
+   (`Sessions::already`) uses whole-file Reads to avoid re-injecting code Claude already has;
+   dropping it would raise injected tokens. `Agent|Task` handoff stays.
+
+Acceptance: the prompt injection is byte-identical on the replay (same text for every prompt);
+a `PreToolUse Read` event records the read and returns no output; a whole-file Read still
+suppresses re-injection of that file; fewer env knobs in `docs/how-it-works.md`; all CI checks green.
 
 ### WS5 — Validate and release (orchestrator + bench engineer)
 

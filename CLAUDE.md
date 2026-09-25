@@ -14,7 +14,7 @@ Before starting any change, name which lever it moves and which number it should
    (gold inlined vs injected tokens in the offline replay).
 3. **Honest measurement** — benchmark and replay tooling that reports the targets as defined.
 
-If a change moves none of them, or touches the frozen list in VISION.md, stop and ask the owner.
+If a change moves none of them, or touches anything VISION.md lists as out of scope, stop and ask the owner.
 Do not add opt-in flags, new render modes, new heuristics or new distribution work "while here".
 
 ## Architecture in one breath
