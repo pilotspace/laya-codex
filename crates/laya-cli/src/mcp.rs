@@ -104,10 +104,12 @@ fn call_tool(
         Err(e) => return text_result(e, true),
     };
     if let Some(idents) = identifier_query(&query) {
-        return match lookup(api, root, &idents, scope.as_deref(), budget_ms) {
-            Ok(text) => text_result(text, false),
-            Err(e) => text_result(e, true),
-        };
+        match lookup(api, root, &idents, scope.as_deref(), budget_ms) {
+            // One plain word ("retry") that names nothing may still describe code: rank it.
+            Ok(found) if found.lines == 0 && idents.len() == 1 && !code_shaped(&idents[0]) => {}
+            Ok(found) => return text_result(found.text, false),
+            Err(e) => return text_result(e, true),
+        }
     }
     let top_n = params["arguments"]["top_n"]
         .as_u64()
@@ -159,11 +161,12 @@ const FRAMING_WORDS: &[&str] = &[
 ];
 
 /// Names an exact lookup searches for, or `None` when `query` describes code in words. A single
-/// name, names separated by `|` or `,`, or several code-shaped names (`snake_case`, `CamelCase`,
-/// digits, `a-b`, `a/b`) are a lookup; plain words ("wal replay") are a description. Framing words
-/// ("callers of x", "def x") are skipped unless the names are listed with `|` or `,`.
+/// name, names listed with `|`, or several code-shaped names (`snake_case`, `CamelCase`, digits,
+/// `a-b`, `a/b`; separated by spaces or commas) are a lookup; plain words ("wal replay", "where is
+/// handler defined, and who calls it") are a description. Framing words ("callers of x", "def x")
+/// are skipped unless the names are listed with `|`.
 fn identifier_query(query: &str) -> Option<Vec<String>> {
-    let listed = query.contains('|') || query.contains(',');
+    let listed = query.contains('|');
     let mut names: Vec<String> = Vec::new();
     for raw in query.split(|c: char| c.is_whitespace() || c == '|' || c == ',') {
         let Some(token) = clean_token(raw) else {
@@ -745,7 +748,7 @@ fn lookup(
     idents: &[String],
     scope: Option<&str>,
     budget_ms: u64,
-) -> Result<String, String> {
+) -> Result<Lookup, String> {
     let deadline = Instant::now() + LOOKUP_DEADLINE;
     let mut s = scan(root, scope, idents, deadline)?;
     rank_hits(api, root, idents, &mut s.hits, budget_ms);
@@ -775,7 +778,8 @@ fn lookup(
         definition = definition.or(def);
         files.push(f);
     }
-    Ok(render_matches(&IdentMatches {
+    let lines = s.hits.iter().map(|h| h.lines.len()).sum();
+    let text = render_matches(&IdentMatches {
         idents: idents.to_vec(),
         scope: scope.map(str::to_string),
         files_read: s.files_read,
@@ -783,7 +787,14 @@ fn lookup(
         scan_complete: s.complete,
         files,
         definition,
-    }))
+    });
+    Ok(Lookup { text, lines })
+}
+
+/// A rendered lookup and how many matching lines it found.
+struct Lookup {
+    text: String,
+    lines: usize,
 }
 
 pub fn serve(
@@ -1140,6 +1151,46 @@ mod tests {
         assert!(
             out.contains("in the 5 files read"),
             "the header counts files read: {out}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_a_bar_makes_a_list_of_names() {
+        // Review: "where is handler defined, and who calls it" became a lookup of 8 names.
+        assert_eq!(
+            identifier_query("where is handler defined, and who calls it"),
+            None
+        );
+        assert_eq!(identifier_query("foo, bar"), None);
+        assert_eq!(
+            identifier_query("iter_text, TextChunker"),
+            Some(vec!["iter_text".to_string(), "TextChunker".to_string()]),
+            "code-shaped names separated by commas are still names"
+        );
+        assert_eq!(
+            identifier_query("callers of fetch, tests of parse_url"),
+            None,
+            "`fetch` is a plain word"
+        );
+    }
+
+    #[test]
+    fn one_plain_word_without_a_match_falls_back_to_the_ranked_search() {
+        // Review: "retry" got a definitive "No match" where a description search would help.
+        let root = repo("plainword");
+        let (out, err) = search_text(&Fake(true), &root, json!({"query": "retry"}));
+        assert!(!err);
+        assert!(out.contains("### src/a.rs:3-9"), "{out}");
+        let (code, _) = search_text(&Fake(true), &root, json!({"query": "retry_count"}));
+        assert!(
+            code.contains("No match"),
+            "a code-shaped name keeps the answer: {code}"
+        );
+        let (found, _) = search_text(&Fake(true), &root, json!({"query": "stream"}));
+        assert!(
+            found.contains("pkg/digest.py"),
+            "a plain word with matches is a lookup: {found}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
