@@ -19,127 +19,173 @@ state:    file: <path> (lines a-b)\n<code>        (truncated to 128 tokens in pr
 ```
 
 It is the default re-ranker of [laya-codex](https://github.com/pilotspace/laya-codex), which feeds
-Claude Code the most relevant code spans for a prompt (tree-sitter chunks, then Moon BM25
-candidates, then laya-code re-ranking).
+Claude Code the most relevant code spans for a prompt. Lexical search finds the candidates
+(tree-sitter chunks, then BM25, definitions and path matches fused into a top 24), laya-code scores
+the first 16, and laya-codex ranks them by `0.5 · lexical rank score + 0.5 · P`.
+
+This revision (the second) was trained for exactly that job: on the candidate lists the laya-codex
+retriever produces, with the input the laya-codex scorer builds. The first revision
+(`f3d6bd2344e4750dd917f95d40ceacfa81bb81db`) was trained on 40-line windows ranked by a separate
+BM25, and in the laya-codex offline replay it tied keyword ranking (63 vs 62 gold files inlined of
+115). This revision inlines 70.
 
 ## Model details
 
 | | |
 |---|---|
 | Base model | `convaiinnovations/laya`, root checkpoint (revision `1c5edc17a7acd8701df6fc341c0d179f1c62c982`), Apache-2.0 |
+| Warm start | the previous laya-code revision `f3d6bd2344e4750dd917f95d40ceacfa81bb81db` (itself fine-tuned from the base) |
 | Architecture | unchanged: same safetensors keys, shapes and dtypes as the base (205 F16 tensors + `temperature` F32), 842,609,210 bytes |
-| What changed | `model.safetensors` (fine-tuned weights) and `rl_agent_config.json` (`model_name`, `noul:2` temperature **0.9410**, was 1.9834; `finetune` block). `encoder/config.json`, `tokenizer/*`, `rl_agent_api.py` and `rl_common.py` are byte-identical to the base. The `training` block of `rl_agent_config.json` is inherited from the base and describes the base's training, not this fine-tune. |
+| What changed | `model.safetensors` (fine-tuned weights) and `rl_agent_config.json` (`model_name`, `noul:2` temperature **0.8057**, was 0.9410 in the previous revision and 1.9834 in the base; `finetune` block). `encoder/config.json`, `tokenizer/*`, `rl_agent_api.py` and `rl_common.py` are byte-identical to the base. The `training` block of `rl_agent_config.json` is inherited from the base and describes the base's training, not this fine-tune. |
 | Context | 512 tokens (`max_len`), 192 for the question head (`head_max_len`) |
-| Runtime | Python: `rl_agent_api.RLAgent` from this repo (same as the base). Rust: `laya-model` crate of laya-codex (candle; Metal F16 on macOS, CPU F32 elsewhere), parity-tested against the Python reference |
+| Runtime | Python: `rl_agent_api.RLAgent` from this repo (same as the base). Rust: `laya-model` crate of laya-codex (candle; Metal F16 on macOS, CPU F32 elsewhere), parity-tested against the Python reference with these weights (7 of 7 tests pass on CPU and Metal) |
 | License | Apache-2.0 (see `LICENSE` and `NOTICE`) |
 
 ## Training data
 
-Weak supervision from git history. Nothing was hand-labelled.
+Weak supervision from the git history of fixed commits. Nothing was hand-labelled.
 
-- **8 training repositories** (mixed Rust, Python, TypeScript and JavaScript): openai/codex,
-  TinDang97/velos, MervinPraison/PraisonAI, badlogic/pi-mono, Portkey-AI/gateway (local
-  `ai-guard` checkout), TinDang97/python-dependency-injector, Netflix/dispatch and
-  pilotspace/hydroa (local `ai-proxy` checkout). Source: `finetune/repos.py`.
-- **Held out** (never used for training or calibration): pilotspace/moon and pilot-space.
-  Moon client codebases (helios, helios-mono, lunaris) were left out so that Moon vocabulary
-  does not leak into the Moon eval. A root-commit check rejects forks and clones of each other
-  and of the held-out repos.
-- **Examples**: up to 600 non-merge commits per repo (the `build_data.py` default) that touch 1–4 source files and have an
-  informative subject (at least 20 characters). The task is the subject plus a short first body
-  line. The candidate list is the BM25 top 12 over other files plus the parent-revision windows
-  of the touched files (40-line windows, stride 30). Labels: 1.0 for a window that overlaps a
-  changed hunk, 0.7 for another window of a touched file, 0 for other files. Extra examples:
-  hunks BM25 missed (label 1.0), a random same-file window (label 0.4) and random windows from
-  other files (label 0).
-- **Size**: 50,926 pairs, split by commit hash into 45,790 train and 5,136 validation pairs.
-  Train pairs: 2,779 candidate positives, 5,609 candidate same-file, 24,768 candidate negatives,
-  4,656 extra positives, 2,392 same-file, 5,586 random negatives. Per-repo counts (v2 data;
-  the warm start used v1 data from the same repos):
+- **7 training repositories** (mixed Rust, Python, TypeScript and JavaScript): openai/codex,
+  TinDang97/velos, MervinPraison/PraisonAI, earendil-works/pi (`pi-mono`),
+  ets-labs/python-dependency-injector, Netflix/dispatch and pilotspace/hydroa (`ai-proxy`).
+  Source: `finetune/repos.py`. The first revision also used `ai-guard` (a local checkout of
+  Portkey-AI/gateway); that checkout is no longer available and it was dropped.
+- **Commits**: per repository, the most recent (up to 1,200) non-merge commits with one parent,
+  1–8 changed source files and an informative subject, that **fix something**: a fix/bug word in the
+  subject, or a body that closes an issue. codex stopped at 1,170 of its 1,200.
+- **Task text**: the subject without its conventional-commit type, numeric scope or PR number; for
+  half of the commits (chosen by hash) the first prose paragraph of the body is appended, so both
+  short and descriptive prompts are covered.
+- **Candidate lists, shaped like production**: for each commit, the parent revision is checked out
+  and indexed with the laya-codex indexer (tree-sitter chunks of 10–50 lines into Moon), and the
+  laya-codex retriever is run on the task through `laya-candgen` (`finetune/candgen`): the retriever
+  code itself, with a scorer that records what it is handed. Each list is therefore the task focus
+  and the top 24 lexical candidates in lexical order, exactly as laya-code sees them in production.
+  On httpx the recorded order matches `laya-codex query` in lexical mode.
+- **Labels**: a candidate overlapping a line the fix changed (`git diff -U0 -M`, old side) = 1.0;
+  another chunk of a changed file = 0.6; anything else = 0 (hard negatives: lexical candidates the
+  fix did not touch).
+- **Size**: 4,466 lists, 106,986 candidates (2,833 changed-line chunks, 6,408 other chunks of
+  changed files, 97,745 negatives). 2,599 lists have a changed chunk among their 24 candidates.
+  Split by commit hash (10% validation). Training used the 2,168 training lists with a changed
+  chunk among the first 16 candidates, cut to those 16 (what production scores).
 
-  | repo | train commits | val commits | train pairs | val pairs |
+  | repo | lists | with a changed chunk in the top 24 | training lists | validation lists (all / with a changed chunk) |
   |---|---|---|---|---|
-  | PraisonAI | 231 | 18 | 3,711 | 280 |
-  | ai-guard | 460 | 40 | 7,404 | 665 |
-  | ai-proxy | 200 | 23 | 3,293 | 380 |
-  | codex | 446 | 54 | 7,676 | 932 |
-  | dispatch | 447 | 53 | 7,347 | 863 |
-  | pi-mono | 439 | 61 | 7,386 | 1,013 |
-  | python-dependency-injector | 453 | 47 | 7,066 | 744 |
-  | velos | 117 | 16 | 1,907 | 259 |
-- **Training**: top 8 of 28 encoder layers, the final norm and the decision head. fp32 on an
-  M4 Pro (MPS). AdamW; learning rate 2e-5 for the encoder and 1e-4 for the head. 32 sequences
-  per update. Log loss against soft targets. 536 updates on v2 data, warm-started from 300
-  updates on v1 data (about 2.3 h in total). Checkpoint chosen by lowest validation NLL. The
-  `noul:2` temperature was then refitted on the validation split, using the exported F16
-  weights.
+  | PraisonAI | 1,200 | 753 | 627 | 123 / 82 |
+  | ai-proxy | 111 | 85 | 67 | 15 / 13 |
+  | codex | 1,170 | 663 | 567 | 105 / 68 |
+  | dispatch | 611 | 307 | 267 | 59 / 28 |
+  | pi-mono | 1,200 | 649 | 525 | 145 / 78 |
+  | python-dependency-injector | 124 | 100 | 79 | 17 / 17 |
+  | velos | 50 | 42 | 36 | 6 / 6 |
+  | **total** | **4,466** | **2,599** | **2,168** | **470 / 292** |
+
+### Leakage policy
+
+Held out, never used for training, checkpoint selection or calibration: **moon, httpx and hono**
+(the laya-codex benchmark repositories the replay reads) and **pilot-space** (the held-out
+evaluation repository). `finetune/leakage.py` checks, and the build refuses to start otherwise:
+
+- no training checkout inside a held-out one (or the reverse);
+- no shared root commit between a training repo and a held-out repo, or between two training repos
+  (forks, clones, mirrors);
+- no held-out source file of 512 bytes or more vendored in a training repo at HEAD (same git blob);
+- no training list from a held-out repo, from a commit that exists in a held-out repo, or with a
+  task equal to a benchmark task.
+
+The check passed on all 4,466 lists. Moon client codebases (helios, helios-mono, lunaris) stay out
+of training, as before.
+
+## Training
+
+- Warm start from the previous laya-code revision; same input format, so the laya-codex scorer
+  and its settings are unchanged.
+- Input exactly as the laya-codex scorer builds it: the primary question over the retriever's task
+  focus, the state tokens cut to the first 128, `[MASK]` in code blanked.
+- Trainable: top 12 of 28 encoder layers, the final norm and the decision head (173M parameters);
+  `act_head` frozen (unused by `noul`).
+- One micro-batch = one candidate list of 16. 4 lists per update. AdamW (weight decay 0.01),
+  learning rate 2e-5 for the encoder and 1e-4 for the head, 30 warm-up updates, then linear decay.
+  Gradient clip 1.0.
+- Loss: log loss on the two `noul` logits against the soft label (strictly proper, so the
+  probabilities stay calibratable) plus a listwise softmax cross-entropy of the logit margins within
+  each list (the order the production blend consumes), weight 1.
+- Hardware: M4 Pro 24 GB, PyTorch MPS, fp32 with activation checkpointing (peak about 11 GB).
+  550 updates (about one epoch) in 1.9 h of optimisation, about 3 s per list of 16.
+- Selected checkpoint: update 540, the best on the validation monitor (292 lists): gold files among
+  the first two chunks after the production blend, then the rank of the first changed chunk.
+
+## Calibration
+
+The `noul:2` temperature was refitted by minimum NLL on the **exported F16 weights**, over the first
+16 candidates of all 470 validation lists (7,507 candidates): **T = 0.8057** (was 0.9410). NLL
+0.2282 → 0.2254, ECE on hard labels 0.061 → 0.045, AUROC 0.834 (unchanged by T), mean P 0.093 for a
+base rate of 0.079.
 
 ## Evaluation
 
-All numbers come from files in the laya-codex repository and are quoted as recorded. Gold labels
-are file-level: the files the commit touched. Candidates are BM25 windows at HEAD.
+### Held-out and validation lists
 
-### Re-ranker comparison, 128-token state (production setting)
+`finetune/eval_lists.py`: each model scored with its own configured temperature and ranked by the
+production blend (0.5 lexical rank + 0.5 P over the first 16). "Gold in the first two" is the
+share of changed files among the first two chunks (laya-codex inlines about two blocks per prompt).
+Differences are paired bootstrap means with 95% intervals.
 
-`spike/results/compare_models.json` (`spike/compare_models.py`): the 40 most recent qualifying
-moon commits, BM25 top 24, state truncated to 128 tokens, probabilities pooled over all
-candidates (base rate 0.309).
-
-| model | Laya-only MRR | Laya-only P@10 | RRF MRR | AUROC | ECE | mean P |
+| set | lists | metric | lexical only | previous laya-code, blend | **this revision, blend** | difference |
 |---|---|---|---|---|---|---|
-| BM25 alone | 0.480 (MRR) | 0.340 | – | – | – | – |
-| laya-base (`convaiinnovations/laya`) | 0.479 | 0.348 | 0.505 | 0.586 | 0.362 | 0.671 |
-| laya-typed-decisions | 0.441 | 0.288 | 0.456 | 0.539 | 0.239 | 0.545 |
-| **laya-code** | **0.702** | **0.405** | **0.630** | **0.713** | **0.049** | 0.328 |
+| pilot-space (held out) | 45 | gold in the first two | 0.550 | 0.472 | **0.606** | +0.133 [+0.044, +0.244] |
+| pilot-space (held out) | 45 | changed file ranked first | 0.339 | 0.344 | **0.539** | +0.194 [+0.072, +0.328] |
+| pilot-space (held out) | 45 | AUROC (changed file vs other) | – | 0.591 | **0.859** | |
+| validation (training repos) | 292 | gold in the first two | 0.343 | 0.372 | **0.484** | +0.112 [+0.077, +0.148] |
+| validation (training repos) | 292 | changed file ranked first | 0.211 | 0.248 | **0.359** | +0.111 [+0.070, +0.155] |
+| validation (training repos) | 292 | AUROC (changed file vs other) | – | 0.679 | **0.836** | |
 
-### Held-out evaluation, 256-token state (training protocol)
+### laya-codex offline replay (the release gate)
 
-`spike/results/finetune_eval.json` (`finetune/eval.py`): 40 tasks per held-out repo, BM25 top 32,
-state truncated to 256 tokens. Paired bootstrap over the tasks.
+`bench/replay_decide.sh`: the 60 benchmark tasks of moon, httpx and hono replayed through the real
+`laya-codex hook` (release build of laya-codex at `1d55bf3`, default settings: w = 0.5, 16 scored
+candidates, 128 state tokens, 1.2 s budget), first prompt, 115 gold files. Gold inlined = gold files
+whose code was inlined in the injection. The gate was run once for this revision; nothing was tuned
+on it.
 
-| repo | model | Laya-only MRR | RRF MRR | RRF P@10 | ECE (15 bins) | AUROC pooled |
-|---|---|---|---|---|---|---|
-| moon | laya-base | 0.497 | 0.586 | 0.343 | 0.461 | 0.584 |
-| moon | laya-code | 0.526 | 0.519 | 0.398 | 0.060 | 0.677 |
-| pilot-space | laya-base | 0.519 | 0.762 | 0.323 | 0.509 | 0.536 |
-| pilot-space | laya-code | 0.646 | 0.714 | 0.393 | 0.016 | 0.709 |
+| arm | gold inlined (of 115) | tasks with gold inlined (of 60) | mean injected chars | hook p95 |
+|---|---|---|---|---|
+| keywords (lexical only) | 62 | 49 | 4,479 | 0.02–0.05 s |
+| blend, previous laya-code | 63 | 48 | 4,403 | 0.53–0.56 s |
+| model only, previous laya-code | 47 | 42 | 4,173 | 0.79–0.83 s |
+| **blend, this revision (production)** | **70** | **52** | 4,513 | 0.53–0.56 s |
+| model only, this revision | 72 | 52 | 4,624 | 0.79–0.83 s |
 
-Under this protocol, laya-code clearly improves calibration and discrimination. It puts more
-gold-file spans in the top 10: RRF P@10 rose by +0.055 (95% CI [0.013, 0.098]) on moon and by
-+0.070 ([0.033, 0.108]) on pilot-space. Its **RRF MRR did not beat laya-base's**: −0.066
-([−0.195, 0.061]) on moon and −0.049 ([−0.172, 0.073]) on pilot-space. For that reason,
-laya-codex fuses laya-code by score (`(1−w)·lexical + w·P`, w = 0.5) rather than by RRF.
-
-End to end, the laya-codex paired Claude Code benchmark (20 moon tasks, `docs/RESULTS.md`)
-measured −45% code-reading tokens and −25% wall-clock time for the whole pipeline, with no loss
-of answer recall. The same document reports that the model's **marginal** contribution over
-lexical-only ranking is within run-to-run noise at n = 20. Do not read the pipeline numbers as a
-property of this model.
+Per repository (blend, this revision vs previous vs keywords): hono 31 / 27 / 28 of 46, moon
+21 / 17 / 18 of 34, httpx 18 / 19 / 16 of 35. The production blend inlines 11% more gold files than
+before for 2.5% more injected characters. Model-only is a diagnostic; laya-codex ships the blend.
+p95 ranges are across the three repositories on an M4 Pro (Metal, warmed).
 
 ## Intended use
 
 - Re-ranking lexical (BM25) candidates of source-code chunks for a natural-language
-  software-change task, as a calibrated `P(relevant)`.
-- Gating or fusing retrieval results by probability; P is calibrated to the training
-  distribution (ECE ≤ 0.06 on held-out repos).
+  software-change task, as a calibrated `P(relevant)`, blended with the lexical rank as laya-codex
+  does.
 
 ## Out of scope and limitations
 
-- **Weak labels.** A commit touching a file does not make every window of it relevant, and the
-  file-level gold is coarse.
-- **Small evaluation.** Each held-out set has 40 tasks, and most CIs are wide. The two
-  protocols (128 vs 256 tokens, top 24 vs 32) give different absolute numbers, as shown above.
-- **Low probabilities.** P rarely exceeds 0.5 (max 0.49 on moon, 0.50 on pilot-space at 256
-  tokens). Use rank or score fusion, or a threshold near 0.4, not "P ≥ 0.5 means relevant".
-- **Under-trained.** Only about half an epoch of the v2 data was used, on a shared laptop.
-  Validation AUROC was still rising when training stopped.
+- **Validation is in-repo.** Checkpoint selection and the temperature use a validation split of
+  the training repositories (different commits, same codebases), which flatters those numbers.
+- **The held-out evidence is small.** pilot-space contributes only 45 lists with a changed chunk
+  among the candidates, and its intervals are wide. The replay is 60 tasks on 3 repositories, and
+  the gain is not uniform: on httpx the new blend inlines one gold file fewer than the previous one.
+- **Weak labels.** A fix touching a file does not make every chunk of it relevant; a relevant chunk
+  the fix did not touch counts as a negative. Commits that fix something are a narrower task mix
+  than what users type.
+- **Low probabilities.** Mean P is about 0.09 and precision at P ≥ 0.5 is 0.24 on validation. Use
+  rank or score fusion, not "P ≥ 0.5 means relevant".
 - **English prompts only.** Training covered Rust, Python, TypeScript and JavaScript; other
   languages are untested.
-- **Other tasks untested.** It is not a general Laya replacement: `choice`/`score` questions
-  (for example, task scope) were not trained, and zero-shot scope accuracy is poor
-  (`spike/results/scope_eval.json`).
-- **Too slow for interactive CPU use.** At 421M parameters, CPU re-ranking of 24 candidates is
-  too slow for interactive use. laya-codex runs it on Metal, or falls back to lexical ranking.
+- **Other tasks untested.** It is not a general Laya replacement: `choice`/`score` questions were not
+  trained.
+- **Too slow for interactive CPU use.** At 421M parameters, CPU re-ranking of 16 candidates is too
+  slow for interactive use. laya-codex runs it on Metal, or falls back to lexical ranking.
 - **Legal status of training data.** The model was trained on permissively licensed public
   code plus the author's own repositories. It is a classifier and cannot reproduce that code,
   but the legal status of weights trained on source code is not settled.
@@ -155,4 +201,4 @@ unchanged from the base. See `NOTICE`.
 
 ## Files
 
-See `MANIFEST.sha256` for the sha256 of every uploaded file.
+See `MANIFEST.sha256` for the sha256 of every model file.
