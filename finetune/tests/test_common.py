@@ -71,8 +71,35 @@ def test_task_text_uses_short_first_body_line_only():
     assert common.task_text("fix: handle empty frames in decoder", "x" * 300) == "fix: handle empty frames in decoder"
 
 
+def _model_dir(path):
+    os.makedirs(os.path.join(path, "tokenizer"))
+    open(os.path.join(path, "tokenizer", "tokenizer.json"), "w").write("{}")
+    open(os.path.join(path, "rl_common.py"), "w").write("")
+    return path
+
+
+def test_find_model_dir_prefers_env_then_base_then_laya_code(tmp_path):
+    home = str(tmp_path)
+    models = os.path.join(home, ".cache", "laya-codex", "models")
+    snap = _model_dir(os.path.join(home, ".cache", "huggingface", "hub", "models--tindang--laya-code", "snapshots", "abc"))
+    assert common.find_model_dir({}, home) == snap
+    code = _model_dir(os.path.join(models, "laya-code"))
+    assert common.find_model_dir({}, home) == code
+    base = _model_dir(os.path.join(models, "laya-base"))
+    assert common.find_model_dir({}, home) == base
+    assert common.find_model_dir({"LAYA_CODEX_FT_BASE": "/x/y"}, home) == "/x/y"
+
+
+def test_find_model_dir_without_any_model_is_the_laya_base_path(tmp_path):
+    home = str(tmp_path)
+    assert common.find_model_dir({}, home) == os.path.join(home, ".cache", "laya-codex", "models", "laya-base")
+
+
 @pytest.fixture(scope="module")
 def tok():
+    path = os.path.join(BASE, "tokenizer", "tokenizer.json")
+    if not os.path.isfile(path):
+        pytest.skip("no laya tokenizer (set LAYA_CODEX_FT_BASE, or install laya-base or laya-code)")
     from transformers import AutoTokenizer
     return AutoTokenizer.from_pretrained(os.path.join(BASE, "tokenizer"))
 

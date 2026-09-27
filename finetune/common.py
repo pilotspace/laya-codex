@@ -9,13 +9,30 @@ Input format contract (must match the Rust scorer, crates/laya-model/src/{scorer
 
 The older window helpers (windows, make_state, encode, bm25_score_doc) serve eval.py's spike protocol.
 """
+import glob
 import os
 import re
 import subprocess
 import sys
 
-# Model dir whose rl_common.py / tokenizer the tools import (LAYA_CODEX_FT_BASE; default laya-base).
-BASE_MODEL = os.path.expanduser(os.environ.get("LAYA_CODEX_FT_BASE", "~/.cache/laya-codex/models/laya-base"))
+
+def find_model_dir(env=os.environ, home=os.path.expanduser("~")):
+    """Model dir whose rl_common.py and tokenizer the tools import: LAYA_CODEX_FT_BASE when set, else the first
+    of laya-base, the installed laya-code and the Hugging Face cache snapshot of tindang/laya-code that has both
+    (their tokenizer and reference code are byte-identical); the laya-base path when none does."""
+    if env.get("LAYA_CODEX_FT_BASE"):
+        return os.path.expanduser(env["LAYA_CODEX_FT_BASE"])
+    models = os.path.join(home, ".cache", "laya-codex", "models")
+    hub = os.path.join(env.get("HF_HOME") or os.path.join(home, ".cache", "huggingface"), "hub")
+    cands = [os.path.join(models, "laya-base"), os.path.join(models, "laya-code")] + \
+        sorted(glob.glob(os.path.join(hub, "models--tindang--laya-code", "snapshots", "*")))
+    for c in cands:
+        if os.path.isfile(os.path.join(c, "tokenizer", "tokenizer.json")) and os.path.isfile(os.path.join(c, "rl_common.py")):
+            return c
+    return cands[0]
+
+
+BASE_MODEL = find_model_dir()
 WORK = os.path.expanduser(os.environ.get("LAYA_CODEX_FT_WORK", "~/.cache/laya-codex/finetune"))
 if BASE_MODEL not in sys.path:
     sys.path.insert(0, BASE_MODEL)
