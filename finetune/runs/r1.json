@@ -1,0 +1,260 @@
+{
+ "run": "r1",
+ "model": {
+  "exported": "laya-code-r1",
+  "checkpoint": "best.pt = update 540 (ckpt-r1/best-s540.pt)",
+  "model.safetensors_sha256": "e759adc16a499aef407d4d5672b912ad20baf15d44248e835b3ee3ff5da91b4a",
+  "rl_agent_config.json_sha256": "febbcac345d8142d649567746a83446e458c49b0e61256811ac0b36e72a1169f",
+  "noul_temperature": 0.8056693043803747,
+  "warm_start": {
+   "repo": "tindang/laya-code",
+   "revision": "f3d6bd2344e4750dd917f95d40ceacfa81bb81db",
+   "model.safetensors_sha256": "1cc1a3716fcd0121a1aafab184d844b6df9b54a8237c883d05780e101cbae5f8"
+  }
+ },
+ "code": {
+  "branch": "feat/reranker-retrain",
+  "base": "origin/main 1d55bf3",
+  "data_built_with": "2512656 (build_data.py) + 1f18b5f (candgen); codex resumed with c02bf12",
+  "trained_with": "7550628 + 2375782 (train.py)"
+ },
+ "repos": {
+  "train": {
+   "codex": {
+    "github": "openai/codex",
+    "dir": "codex",
+    "head": "4b1c0c30dabd08fed7d6523844f9156d982eb297",
+    "origin": "git@github.com:openai/codex.git"
+   },
+   "velos": {
+    "github": "TinDang97/velos",
+    "dir": "velos",
+    "head": "ac9494e8cb3e301ba3273afa2a8177986f511466",
+    "origin": "git@github.com:TinDang97/velos.git"
+   },
+   "PraisonAI": {
+    "github": "MervinPraison/PraisonAI",
+    "dir": "PraisonAI",
+    "head": "5c7d76d72d4ae5ba58365fb8a8a6357185ddc79a",
+    "origin": "git@github.com:MervinPraison/PraisonAI.git"
+   },
+   "pi-mono": {
+    "github": "earendil-works/pi",
+    "dir": "pi-mono",
+    "head": "49681e1b71c9c32cdfbf45c21f8e3cb3a8c8629d",
+    "origin": "git@github.com:earendil-works/pi.git"
+   },
+   "python-dependency-injector": {
+    "github": "ets-labs/python-dependency-injector",
+    "dir": "python-dependency-injector",
+    "head": "b2c7e3e3c80b9cc6e9748795b07f4aee1bf3fb55",
+    "origin": "git@github.com:ets-labs/python-dependency-injector.git"
+   },
+   "dispatch": {
+    "github": "Netflix/dispatch",
+    "dir": "repo-sample/python/dispatch",
+    "head": "dd2837e82a0bf5565b1b4b4b91ea30b7262d4061",
+    "origin": "git@github.com:Netflix/dispatch.git"
+   },
+   "ai-proxy": {
+    "github": "pilotspace/hydroa",
+    "dir": "ai-proxy",
+    "head": "cd17ccf3bac579f49d3faf6d95a1f88e200dbaed",
+    "origin": "git@github.com:pilotspace/hydroa.git"
+   }
+  },
+  "heldout": {
+   "pilot-space": {
+    "github": "TinDang97/pilot-space",
+    "head": "b1a7445db902487b1b6f0534a279c71dfff6a571",
+    "origin": "git@github.com:TinDang97/pilot-space.git"
+   },
+   "moon": {
+    "github": "pilotspace/moon",
+    "head": "8bba3ced49abc43e656a62cbf142b3cb99a48d62",
+    "origin": "https://github.com/pilotspace/moon"
+   },
+   "httpx": {
+    "github": "encode/httpx",
+    "head": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254",
+    "origin": "https://github.com/encode/httpx"
+   },
+   "hono": {
+    "github": "honojs/hono",
+    "head": "6cadf7537385c6e3df9cbd6d05c9b84c82ae0361",
+    "origin": "https://github.com/honojs/hono"
+   }
+  },
+  "dropped": {
+   "ai-guard": "local checkout of Portkey-AI/gateway used by the first laya-code; unavailable"
+  }
+ },
+ "data": {
+  "dir": "~/.cache/laya-codex/finetune/data_v3",
+  "commit_list": "data_v3/commits.tsv (repo, split, sha, parent, has_pos, with_body), sha256 88298cd265bcb52ce6def94ff6240e3d04529efda9569ec9fd673f9fc41773ee",
+  "files": {
+   "PraisonAI.jsonl": {
+    "sha256": "b99afabaf07e20d8c381def99577b772fc760556055d3f814053e4466b09d004",
+    "lists": 1200,
+    "commit_list_sha256": {
+     "train": "ee1c82808ac4f3bf89f8f55919ca475c4e6f2ad602aa811186081133dfb5a61b",
+     "val": "b130f72d9a68dc3b4f4d6cefcfed05ec08a8fa13b21216c7b2d5e8afdbee61f5"
+    },
+    "commits": {
+     "train": 1077,
+     "val": 123
+    }
+   },
+   "ai-proxy.jsonl": {
+    "sha256": "0ba04e2d76fca7c7dc86ba2aad4100602e773cab8d4b6ee0707f9b1f5b6ad0a0",
+    "lists": 111,
+    "commit_list_sha256": {
+     "train": "9f147b2f5287f64bec55229c6a3c44b91d7c984a7caeeee138d30583e374101d",
+     "val": "15e953932b680ba585dfbdb03fa702c151ffc10763fc23421e228fa3244adbca"
+    },
+    "commits": {
+     "train": 96,
+     "val": 15
+    }
+   },
+   "codex.jsonl": {
+    "sha256": "44c35274fd0462df7e4a26a7948a74e6f11f83138b310a173c8be5d535cd44de",
+    "lists": 1170,
+    "commit_list_sha256": {
+     "train": "358847a719ead7c455f2c9e2907dc86eb4e88995c24f4f04961927b849795ecc",
+     "val": "360f7b5120d33e54cfd1ec474271e14ad813b3e6f9e9c6590fe1bad5e44abc00"
+    },
+    "commits": {
+     "train": 1065,
+     "val": 105
+    }
+   },
+   "dispatch.jsonl": {
+    "sha256": "98aaf45a859686a68f2b72761af5eb243ef633a0df34bb8b193016ed6300363f",
+    "lists": 611,
+    "commit_list_sha256": {
+     "train": "ec0602b25fcaf0202fd186660ca991493c555816acf715e5a107dc2421baf933",
+     "val": "0ef490ef543ea00074ccfa01d8c3ff549b60ccb42c53228935aba1ab1eba4b19"
+    },
+    "commits": {
+     "train": 552,
+     "val": 59
+    }
+   },
+   "heldout-pilot-space.jsonl": {
+    "sha256": "f218b309793420a44d36298175a48db8b816250a0327d9db9d8eb82a59df40f7",
+    "lists": 90,
+    "commit_list_sha256": {
+     "heldout": "86d105022df534c6460dd147d0dbdc63ca33c2a87ac5e0cea99a36d797f6cbca"
+    },
+    "commits": {
+     "heldout": 90
+    }
+   },
+   "pi-mono.jsonl": {
+    "sha256": "ec4083d6f1f7acb10cc68bf40b9e4aab1be8d2528c0cf1ba85ac398910ed4bdf",
+    "lists": 1200,
+    "commit_list_sha256": {
+     "train": "6cfd150ccc5e9753fe1c10f1d786097c870623b022ac8a775b6b878258a4a0a1",
+     "val": "9c65d5d7b9c9fa0b40f078c7efcb2c8558d71840bb564dffe5bcfad1aa344524"
+    },
+    "commits": {
+     "train": 1055,
+     "val": 145
+    }
+   },
+   "python-dependency-injector.jsonl": {
+    "sha256": "8b50ee2126e9f0f8d5e9276a057c1797b45576a9acf82104b2af76cd94ceb044",
+    "lists": 124,
+    "commit_list_sha256": {
+     "train": "08e8649fbe35d0633b67f7841ddd6ca264d2463b9b9d523b0e35f7613b9c4f40",
+     "val": "d5ecab5038979ce5e1d6afdf15b29cd444fef579a8ceb01bb2940b4deedbc28e"
+    },
+    "commits": {
+     "train": 107,
+     "val": 17
+    }
+   },
+   "velos.jsonl": {
+    "sha256": "a69c3f08ff69d6246510bc01818de9c2123438a82744e267d8f239b61efc52ed",
+    "lists": 50,
+    "commit_list_sha256": {
+     "train": "63c2ef52e9888739f1d5df4298318c2f6150677e318fe9229ac8d276d08ff917",
+     "val": "012524d00c2fa3510e255d0d254f7ac9c40655e6e41fc64a9a055168033cf016"
+    },
+    "commits": {
+     "train": 44,
+     "val": 6
+    }
+   }
+  },
+  "selection": "most recent 1,200 fixed commits per repo at the HEAD above (common.is_fix; one parent; 1-8 source files; informative subject), processed oldest first; split val if int(sha[:8],16) % 10 == 0; body appended if int(sha[8:16],16) % 2 == 0 and the body is not empty",
+  "codex_stop": "codex has 1,170 of its 1,200 commits: the build was interrupted by the session at 894 lists, resumed with a fresh Moon index (c02bf12) at about 8 lists a minute, and stopped by hand at 1,170 to start training inside the time budget. The commits not built are the most recent of the 1,200 (commits are processed oldest first).",
+  "leakage_check": "finetune/leakage.py: ok on all 4,466 lists (no held-out repo, commit or benchmark task)"
+ },
+ "training": {
+  "command": "LAYA_CODEX_FT_BASE=<laya-code f3d6bd2> LAYA_CODEX_FT_CKPT=~/.cache/laya-codex/finetune/ckpt-r1 python3 finetune/train.py --base <laya-code f3d6bd2> --top-layers 12 --epochs 2 --lists-per-step 4 --lr-enc 2e-5 --lr-head 1e-4 --warmup 30 --list-weight 1.0 --eval-every 180 --val-n 400 --max-hours 5 --grad-ckpt",
+  "seeds": {
+   "torch.manual_seed": 13,
+   "list order rng": 14,
+   "validation monitor sample": "random.Random(7) (all 292 used)"
+  },
+  "planned_updates": 1084,
+  "stopped_at_update": 550,
+  "stop": "stopped by hand at update 550 of 1,084 (progress 0.507, about one pass over the 2,168 training lists) to evaluate; the learning rate was 1.04e-5 (encoder) at the stop, not decayed to its floor. A first launch without --grad-ckpt swapped (24 GB) and was killed at step 0; 2375782 fixed the cache.",
+  "selected": "update 540 (best blend top2_gold on the 292-list validation monitor, 0.4971)",
+  "optimisation_seconds": 6778,
+  "hardware": "M4 Pro 24 GB, MPS, fp32, activation checkpointing",
+  "validation_monitor": {
+   "0": {
+    "auroc": 0.6668,
+    "blend_top2": 0.3896
+   },
+   "180": {
+    "auroc": 0.786,
+    "blend_top2": 0.4829
+   },
+   "360": {
+    "auroc": 0.8199,
+    "blend_top2": 0.4954
+   },
+   "540": {
+    "auroc": 0.8274,
+    "blend_top2": 0.4971
+   }
+  }
+ },
+ "finalize": {
+  "commands": [
+   "python3 finetune/export.py --base <laya-code f3d6bd2> --ckpt ckpt-r1/best.pt --out <laya-code-r1>",
+   "python3 finetune/calibrate.py --model <laya-code-r1>",
+   "python3 finetune/export.py --base <laya-code f3d6bd2> --verify <laya-code-r1>",
+   "python3 spike/make_parity_fixtures.py <laya-code-r1> fixtures/laya_parity.json && LAYA_CODEX_MODEL_DIR=<laya-code-r1> cargo test -p laya-model --release --locked --features metal --test parity (committed fixtures restored afterwards)",
+   "python3 finetune/eval_lists.py --models current=<laya-code f3d6bd2> candidate=<laya-code-r1> --out eval-lists-laya-code-r1.json"
+  ],
+  "results": {
+   "temperature": "0.9410 -> 0.8057 (470 validation lists, 7,507 candidates)",
+   "parity": "7 of 7 on CPU and Metal",
+   "pilot_space_top2_gold_diff": "+0.133 [+0.044, +0.244]",
+   "validation_top2_gold_diff": "+0.112 [+0.077, +0.148]"
+  }
+ },
+ "replay": {
+  "command": "sh bench/replay_decide.sh --bin <laya-codex release built from 1d55bf3> --home <scratch home> --model-dir <laya-code f3d6bd2> --moon-bin <moon> --repos-dir <moon, httpx, hono checkouts> --port 16560 --candidate-model-dir <laya-code-r1>",
+  "turn1_gold_inlined_of_115": {
+   "keywords": 62,
+   "blend": 63,
+   "model-only": 47,
+   "candidate": 70,
+   "candidate-model-only": 72
+  },
+  "mean_injected_chars": {
+   "keywords": 4479,
+   "blend": 4403,
+   "model-only": 4173,
+   "candidate": 4513,
+   "candidate-model-only": 4624
+  },
+  "gate": "gold >= 67 met (70); p95 within 1.2 s (0.53-0.56 s); the chars clause (no more than the blend arm) was not met (+2.5%) and was waived by the owner"
+ }
+}
