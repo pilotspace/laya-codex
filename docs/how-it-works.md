@@ -26,7 +26,24 @@ missing index it prints nothing, and Claude Code carries on as if laya-codex wer
 | `PostToolUse` edits | Edit/Write/MultiEdit/NotebookEdit | nothing. The edited file is re-indexed |
 | `SessionStart` | `startup`/`resume` in a git repository; `compact`; `clear` | after compaction, the session's working set is injected again (up to 8 spans). On startup, indexing runs in the background. Folders that are not git repositories are never indexed automatically |
 
-The MCP tool `search` runs the same ranking on demand, for queries Claude chooses itself.
+The MCP tool `search` answers the lookups Claude would otherwise make with Grep:
+
+- **Names** (`generateDigest`, or several as `iter_text|aiter_text`, optionally with a `path`): every
+  line that contains the name, also inside longer names (`test_raise_for_status`), in code and config,
+  as `line: text` under each file and its enclosing function, class or test. The definition is marked,
+  test files are flagged, and the answer says whether the list is complete. Docs are only counted.
+  Files are ordered by the same lexical + Laya ranking the hooks use.
+- **Descriptions in words** get the ranked code spans the hooks use (10–50 lines each).
+
+Limits: at most 6,000 characters and 40 lines per file per answer, one 3 s deadline for walking,
+reading and parsing, names up to 128 characters. A file is read only if the indexer would index it,
+so `.env`, keys, ignored and vendored files are never returned, even when named in `path`. Files that
+don't fit are counted in a "Not shown" tail, and "complete" is claimed only when every file in scope
+was searched. Each injection ends with one line pointing to `search` for callers and tests.
+
+In paid pilots (10 sessions per arm, httpx and hono) Claude called `search` in about half of the
+sessions, and Greps fell 11–37% against the ranked-spans-only tool; see
+[docs/plans/2026-09-refocus.md](plans/2026-09-refocus.md#progress).
 
 ## 1. A prompt comes in
 

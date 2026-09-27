@@ -560,5 +560,37 @@ class ReportIncludesLedger(unittest.TestCase):
         self.assertIn("tool calls/session", md)
 
 
+class DropStalls(unittest.TestCase):
+    """A task whose session hung in any arm is dropped from every arm, so pairs stay complete."""
+
+    def rows(self):
+        return [
+            {"arm": "baseline", "task_id": "ok", "rc": [0, 0], "prompt_wall_s": [20.0, 15.0]},
+            {"arm": "laya", "task_id": "ok", "rc": [0, 0], "prompt_wall_s": [18.0, 12.0]},
+            {"arm": "baseline", "task_id": "slow", "rc": [0, 0], "prompt_wall_s": [916.0, 12.0]},
+            {"arm": "laya", "task_id": "slow", "rc": [0, 0], "prompt_wall_s": [30.0, 10.0]},
+            {"arm": "baseline", "task_id": "failed", "rc": [1, 1], "prompt_wall_s": [40.0, 30.0]},
+            {"arm": "laya", "task_id": "failed", "rc": [0, 0], "prompt_wall_s": [25.0, 20.0]},
+        ]
+
+    def test_long_prompts_and_failed_exits_drop_the_task_from_every_arm(self):
+        import drop_stalls
+        self.assertEqual(drop_stalls.stalled_tasks(self.rows(), 300), {"slow", "failed"})
+
+    def test_the_copy_keeps_only_complete_pairs(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            src, out = os.path.join(d, "run"), os.path.join(d, "out")
+            os.makedirs(src)
+            with open(os.path.join(src, "runs.jsonl"), "w") as f:
+                for r in self.rows():
+                    f.write(json.dumps(r) + "\n")
+            here = os.path.dirname(os.path.abspath(__file__))
+            subprocess.run([sys.executable, os.path.join(here, "drop_stalls.py"), src, out],
+                           check=True, capture_output=True)
+            kept = [json.loads(l) for l in open(os.path.join(out, "runs.jsonl"))]
+            self.assertEqual({(r["arm"], r["task_id"]) for r in kept}, {("baseline", "ok"), ("laya", "ok")})
+
+
 if __name__ == "__main__":
     unittest.main()

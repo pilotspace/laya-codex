@@ -1,0 +1,53 @@
+{
+ "n_tasks_paired": 15,
+ "reference": "baseline",
+ "arms": {
+  "baseline": {
+   "reading_tokens": 12858.933333333332,
+   "injected_tokens": 0.0,
+   "total_input_tokens": 483325.93333333335,
+   "output_tokens": 5774.466666666666,
+   "wall_s": 1360.3833333333334,
+   "num_turns": 17.866666666666667,
+   "cost_usd": 0.4473256666666667,
+   "recall": 0.9,
+   "precision": 0.30060846560846566,
+   "hit_any": 0.9333333333333333,
+   "recall_all_turns": 0.9
+  },
+  "laya": {
+   "reading_tokens": 8264.933333333332,
+   "injected_tokens": 2002.6,
+   "total_input_tokens": 313446.6,
+   "output_tokens": 5050.933333333333,
+   "wall_s": 743.7673333333333,
+   "num_turns": 12.333333333333334,
+   "cost_usd": 0.35537413333333334,
+   "recall": 0.8111111111111111,
+   "precision": 0.31444444444444447,
+   "hit_any": 0.9333333333333333,
+   "recall_all_turns": 0.8666666666666667,
+   "reading_cost_change_pct": -20.2,
+   "wall_change_pct": -45.3,
+   "median_wall_ratio": 0.697,
+   "median_total_input_ratio": 0.547
+  },
+  "laya-lex": {
+   "reading_tokens": 8215.266666666666,
+   "injected_tokens": 2132.0666666666666,
+   "total_input_tokens": 344937.6,
+   "output_tokens": 5657.466666666666,
+   "wall_s": 124.97066666666666,
+   "num_turns": 13.0,
+   "cost_usd": 0.3885686,
+   "recall": 0.9111111111111111,
+   "precision": 0.43563492063492065,
+   "hit_any": 1.0,
+   "recall_all_turns": 0.9333333333333333,
+   "reading_cost_change_pct": -19.5,
+   "wall_change_pct": -90.8,
+   "median_wall_ratio": 0.596,
+   "median_total_input_ratio": 0.636
+  }
+ }
+}

@@ -1,6 +1,49 @@
 # Plan: refocus on the three levers (v0.4.0)
 
-Status: **proposed** (2026-09-25) · North star: [docs/VISION.md](../VISION.md)
+Status: **in progress**. WS0–WS2 and WS4 are merged, WS3 and WS5 are being released as v0.4.0, WS6 is running.
+Proposed 2026-09-25. North star: [docs/VISION.md](../VISION.md)
+
+## Progress
+
+| id | state | what landed | evidence |
+|---|---|---|---|
+| WS0 | done | #15: benchmark fixes, v9 data. #16: this plan, VISION.md, CLAUDE.md. #9 (batch reads) closed | — |
+| WS1 | done | #17: read + injected as the token metric, tool-call ledger, `bench/replay_decide.sh`, `--pilot` | v9 reproduced exactly: 4,230 vs 4,424 tokens; 8.45 vs 5.10 tool calls; replay gold inlined 62 / 63 / 47 |
+| WS2 | done, gate not met | #18: `search` answers name lookups. #20: files past the size cap are counted instead of listed empty | see the pull pilots below |
+| WS3 | model accepted, waiting for upload | branch `feat/reranker-retrain`: production-shaped lists from fixed commits, leakage check, laya-code-r1 | see the precision gate below |
+| WS4 | done | #19: scope classifier, threshold sizing, size caps and Read narrowing removed | injected text byte-identical on 600 of 600 replayed prompts |
+| WS5 | measured; release in progress | benchmark v10: stock vs main + laya-code-r1 vs keywords only ($32.40) | 51 paired tasks: wall −12.0%, turns −33.6%, tool calls 9.0 → 5.3, `search` 1.0 per session, read + injected +6.2% (n.s.), first-question recall +0.145. r1 vs keywords: no significant difference. See [docs/RESULTS.md](../RESULTS.md) |
+| WS6 | running | inject less using laya-code-r1's probabilities (branch `feat/smaller-injection`) | gate: ≥ 66/115 gold inlined at ≤ 60% of today's injected chars |
+
+**Pull pilots** (sonnet, effort medium, 10 sessions per arm on httpx and hono):
+
+| build vs its baseline | `search` calls per session | Grep | read + injected | wall | recall, both turns |
+|---|---|---|---|---|---|
+| ranked spans only (steering text) vs v9 build | 0 | −4% | — | −1% | — |
+| name lookups (8591f05) vs ranked spans | 0.60 | −37% | +8% | −4.5% | +0.04 |
+| trimmed name lookups (#18) vs ranked spans | 0.50 | −11% | −10.6% | −2.9% | −0.04 |
+| test lookups vs #18 (20 sessions per arm) | 0.65 | −17% | +8% | −1.9% | −0.05 |
+
+- The gate, "`search` ≥ 1 call per session and Grep −⅓", was not met. The owner merged #18 for its
+  token and time gain.
+- Test lookups were dropped: Claude asked for `tests` in 3 of 13 searches.
+- Pilots of 10–20 sessions per arm cannot separate ±5% effects, so time and token claims wait for
+  the full benchmark.
+
+**Precision gate** (offline replay, 60 tasks, gold inlined on the first prompt, of 115):
+
+| arm | gold inlined | mean injected chars | hook p95 |
+|---|---|---|---|
+| keywords | 62 | 4,479 | 0.02–0.05 s |
+| blend, laya-code v1 | 63 | 4,403 | 0.53–0.56 s |
+| model alone, laya-code v1 | 47 | 4,173 | 0.79–0.83 s |
+| **blend, laya-code-r1** | **70** | 4,513 | 0.53–0.56 s |
+| model alone, laya-code-r1 | 72 | 4,624 | 0.79–0.83 s |
+
+- laya-code-r1 passes the gold clause (≥ 67). It injects 2.5% more characters than the v1 blend,
+  so the "no more injected chars" clause was not met; the owner waived it.
+- On the held-out pilot-space lists, gold in the top 2 rose 0.133 [0.044, 0.244] over v1.
+- Rust/Python parity passes on CPU and Metal.
 
 ## Outcome
 

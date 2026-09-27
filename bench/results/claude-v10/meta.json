@@ -1,0 +1,5 @@
+{"version": "v10", "date": "2026-09-27", "binary": "1d55bf3cf9b6e543368910d15437889b42c02cc5", "model": "laya-code-r1 (local, T 0.8057)",
+ "claude_model": "sonnet", "effort": "medium", "turns": 2,
+ "arms": {"baseline": "stock Claude Code", "laya": "laya-adaptive", "laya-lex": "laya-lex (keywords only)"},
+ "caps_usd": {"httpx": 9, "hono": 9, "moon": 18}, "spent_usd": 32.40,
+ "notes": "moon stopped at its cap after 15 tasks per arm; tasks with a prompt over 300 s or a non-zero exit dropped from every arm (bench/drop_stalls.py); hono laya-lex 26de73133b rerun after a 916 s stall (original in hono/runs.with-stall.jsonl)"}
