@@ -1,12 +1,69 @@
-# laya-codex — results (2026-09-23)
+# laya-codex — results (updated 2026-09-27)
 
 All numbers are reproducible from this repo; raw per-run rows are in `bench/results/`.
 Hardware: Apple M4 Pro, 24 GB. Agent: Claude Code 2.1.280, model `sonnet`, isolated from user
 settings/plugins/MCP (`--setting-sources project --strict-mcp-config`), tools Read/Grep/Glob.
 
-## At a glance
+## Benchmark v10 (2026-09-27): the refocus release
 
-*Updated 2026-09-24. The report in one page; the sections below hold the detail.*
+**What ran.**
+- **Build:** laya-codex at `1d55bf3`, which adds name lookups in `search`, the honest token metric
+  and the removal of unused sizing paths. It ran with the retrained model laya-code-r1.
+- **Arms:** stock Claude Code, laya-codex, and the same laya-codex build with keyword-only ranking.
+- **Tasks:** the same 60 tasks, the same two prompts per task. Sonnet, medium effort.
+- **Cost:** $32.40.
+
+Data: `bench/results/claude-v10/` (as run) and `claude-v10/nostall/` (analysed). Headline:
+`bench/results/headline-v10.json`.
+
+**What was dropped.**
+- **Moon:** stopped at its $18 cap after 15 tasks per arm.
+- **Stalls:** a task was dropped from every arm when any arm's session exited non-zero or had a
+  prompt over 300 s (`bench/drop_stalls.py`). These were Claude API hangs of up to 4 hours, in every
+  arm; laya-codex's hooks time out after at most 8 s. That dropped 4 moon tasks.
+- **Rerun:** one hono keywords-only session that stalled 916 s was run again. The original row is
+  kept in `claude-v10/hono/runs.with-stall.jsonl`.
+- **Analysed:** 51 paired tasks: moon 11, httpx 20, hono 20.
+
+**laya-codex vs stock Claude Code** (pooled, ratio of sums, 95% paired bootstrap CI):
+
+| metric | v10 | v9 (same tasks, 2026-09-24) |
+|---|---|---|
+| Code read + injected (the token target) | +6.2% [−11.3, +26.3], n.s. | +4.6% [−5.3, +16.1], n.s. |
+| Code-reading tokens | −32.0% [−47.0, −15.0] | −35.7% [−44.0, −26.8] |
+| Total input tokens | −21.7% [−35.1, −6.4] | −23.5% [−30.1, −17.2] |
+| Wall-clock time (the time target) | −12.0% [−19.1, −4.4] | −11.4% [−15.0, −7.9] |
+| Turns | −33.6% [−40.4, −26.5] | −32.1% [−37.1, −27.1] |
+| Output tokens | −19.8% [−26.8, −12.3] | −16.3% [−20.3, −12.3] |
+| Cost | −8.8% [−16.3, −1.9] | −10.1% [−14.0, −6.1] |
+| Answer recall, first question | 0.904 vs 0.758 (+0.145 [+0.065, +0.222]) | 0.910 vs 0.774 |
+| Answer recall, both questions | 0.940 vs 0.953 (−0.013, n.s.) | 0.951 vs 0.968 |
+
+**Tool calls per session** (`bench/ledger.py`):
+
+| arm | total | Grep | Read | laya-codex `search` |
+|---|---|---|---|---|
+| stock | 9.02 | 5.29 | 3.45 | – |
+| laya-codex (r1) | 5.31 | 2.04 | 2.27 | 0.98 |
+| laya-codex, keywords only | 5.52 | 1.81 | 2.65 | 1.04 |
+
+**laya-code-r1 vs keyword-only ranking** (same build): no significant difference on any metric.
+Wall −4.2% [−19.1, +12.3], code read + injected −1.6% [−11.1, +8.2], first-question recall
+−0.008. Offline, r1 inlines more of the right files than keywords (70 of 115 vs 62, see
+[docs/plans/2026-09-refocus.md](plans/2026-09-refocus.md#progress)); 51 tasks are too few to see
+that in sessions.
+
+**What it means.**
+- **Claude now uses `search`.** It calls laya-codex `search` about once per session, where v9 saw
+  0.02, and Grep fell 61%.
+- **Tool calls did not fall further.** Total tool calls stayed at about 5 per session, the same
+  as v9, so time did not move: −12%, against a goal of −30%.
+- **The token target is not met:** read + injected +6%, against a goal of −50%. The injection is
+  still as large as the reading it saves. Shrinking it is the next lever.
+
+## At a glance (benchmark v2)
+
+*Updated 2026-09-24. Superseded by benchmark v10 above; kept for the history of the limits.*
 
 **Summary.**
 - **What benchmark v2 showed:** with laya-codex, Claude reads 38% less code, takes 21% fewer

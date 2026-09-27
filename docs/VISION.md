@@ -29,22 +29,33 @@ prompt / search ──► lexical candidates (BM25 ⊕ defining ⊕ path, top 24
 ## Targets
 
 Measured against stock Claude Code on the benchmark suite (3 repositories, 60 tasks, paired,
-95% bootstrap intervals). Baseline numbers are benchmark v3 (v9, 2026-09-24, PR #15 branch).
+95% bootstrap intervals).
 
 | target | definition | stock | laya-codex now | goal |
 |---|---|---|---|---|
-| **Tokens −50%** | code tokens reaching Claude per session: tokens Claude reads **plus** tokens laya-codex injects | 4,230 | 4,424 (+4.6%) | ≤ 2,115 |
-| **Time −30%** | session wall-clock | 33.4 s | 29.6 s (−11.4%) | ≤ 23.4 s |
-| **Quality: no loss** | answer recall of the gold files, turn 1 and both turns | 0.774 / 0.968 | 0.910 / 0.951 | not worse on either |
+| **Tokens −50%** | code tokens reaching Claude per session: tokens Claude reads **plus** tokens laya-codex injects | 4,635 | 4,924 (+6.2%, n.s.) | ≤ 2,318 |
+| **Time −30%** | session wall-clock | 38.3 s | 33.7 s (−12.0%) | ≤ 26.8 s |
+| **Quality: no loss** | answer recall of the gold files, turn 1 and both turns | 0.758 / 0.953 | 0.904 / 0.940 | not worse on either |
 
-Why the two gaps exist (from v9 `runs.jsonl`):
+The current figures are from benchmark v10 (2026-09-27, 51 paired tasks, laya-code-r1; see
+[docs/RESULTS.md](RESULTS.md)). The goals are relative, so their absolute values follow each run's
+stock baseline: v9 measured stock at 33.4 s and 4,230 tokens.
 
-- **Time follows tool calls.** Each tool call costs about 2 s. laya-codex sessions still make 5.1
-  tool calls (2.85 Grep, 2.17 Read) against 8.45 for stock Claude, and call laya-codex `search`
-  0.02 times. Reaching −30% means about 2 tool calls per session.
-- **The injection cancels the reading savings.** Claude reads 36% less, but the injected code
-  (1,704 tokens per session) brings the total back above stock. Reaching −50% needs a smaller
-  injection that still carries the right code: that is the reranker's job.
+Why the two gaps exist (v10 `runs.jsonl`, `bench/ledger.py`):
+
+- **Time follows tool calls.**
+  - Each tool call costs about 2 s.
+  - laya-codex sessions make 5.3 tool calls against 9.0 for stock Claude.
+  - Since name lookups (#18), Claude calls laya-codex `search` about once per session (v9: 0.02),
+    and Grep fell from 5.3 to 2.0. But it swapped Greps for searches one for one, so the total
+    stayed at v9's level.
+  - Reaching −30% means about 2 tool calls per session.
+- **The injection cancels the reading savings.**
+  - Claude reads 32% less, but the injected code (about 1.7k tokens per session) brings the total
+    back above stock.
+  - Reaching −50% needs a smaller injection that still carries the right code.
+  - The retrained reranker (laya-code-r1) ranks the right code higher, 70 vs 62 of 115 offline,
+    and shrinking the injection with it is the current work.
 
 ## The levers (the only work in scope)
 
@@ -84,3 +95,5 @@ Frozen (not developed unless this page changes):
 | 2026-09-25 | Keep lexical candidates + Laya rerank (lexical mode is not dropped). Refocus the project on the three levers above; everything else is frozen |
 | 2026-09-25 | The token target counts tokens read plus tokens injected. Remove the scope classifier, probability-threshold sizing, repository-size caps and the Read-narrowing hook (supersedes the 2026-09-22 guarded Read rewrite) |
 | 2026-09-25 | `search` answers name lookups (callers, uses, tests, definitions) with an exact, complete scan of the files on disk that the indexer admits; Laya orders the files and picks the definition shown. Descriptions of concepts keep the lexical + Laya ranking. Completeness is what Claude reaches for Grep to get, and no ranker can promise it |
+| 2026-09-25 | Merge name lookups (#18) although the pilot gate (≥ 1 `search` per session, Grep −⅓) was not met: Claude used `search` in half the sessions and read + injected fell 10.6%. Test lookups were dropped: Claude asked for them in 3 of 13 searches and tokens rose 8% |
+| 2026-09-26 | Accept laya-code-r1: 70 of 115 gold inlined in the production blend against 62 for keywords and 63 for v1, at the same latency. The "no more injected chars" clause (+2.5%) is waived. Laya alone now beats keywords (72 vs 62) |
