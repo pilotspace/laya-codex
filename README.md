@@ -2,8 +2,8 @@
 
 # laya-codex
 
-**Claude Code gets the right code with your prompt: it reads 38% less, takes 21% fewer turns, and
-names the right files more often.**
+**Claude Code gets the right code with your prompt: 34% fewer turns, 41% fewer tool calls, 12%
+less time, and the right files named more often.**
 
 laya-codex indexes your repository on your machine and, before Claude starts each task, gives it the
 code that task needs. Claude skips most of the grep-and-open-files hunt.
@@ -16,7 +16,7 @@ code that task needs. Claude skips most of the grep-and-open-files hunt.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-savings-dark.svg">
-  <img alt="With laya-codex, Claude Code reads 38% fewer code tokens, takes 21% fewer turns and costs 10% less; total input (−3.7%) and wall-clock time (+3.5%) show no significant change (paired benchmark, 60 tasks on three repositories, 95% confidence intervals)" src="docs/assets/benchmark-savings-light.svg" width="760">
+  <img alt="With laya-codex, Claude Code takes 33.6% fewer turns, 12.0% less wall-clock time, 19.8% fewer output tokens, 21.7% fewer input tokens and costs 8.8% less; it reads 32.0% less code, but code read plus code injected shows no significant change (+6.2%) (paired benchmark v10, 51 tasks on three repositories, 95% confidence intervals)" src="docs/assets/benchmark-savings-light.svg" width="760">
 </picture>
 
 </div>
@@ -73,7 +73,7 @@ helping from the next prompt. To check the setup, run `laya-codex doctor --repo 
 |---|---|---|
 | **What Claude has before its first turn** | Only your prompt | Your prompt, plus the function that does the check (`check_target`), its code, and the line that calls it |
 | **What Claude does first** | Searches with grep and opens files until it finds the check | Reads the check it was given and starts fixing it |
-| **Turn at which a correct file is in context** (benchmark median, 60 tasks) | 5.5 | **0** (46 of 60 tasks) |
+| **Turn at which a correct file is in context** (benchmark v2 median, 60 tasks) | 5.5 | **0** (46 of 60 tasks) |
 
 What laya-codex added to the prompt, trimmed from real output on this repository:
 
@@ -113,13 +113,13 @@ laya-codex had one in context before Claude's first turn in most tasks:
 
 ## Why you might want it
 
-- **Claude starts with the right code.** On 46 of 60 benchmark tasks, the code the task needed
-  arrived with the prompt, so Claude skipped most of the grep-and-open-files hunt and took 21%
-  fewer turns.
-- **Longer sessions, lower bills.** Claude reads 38% fewer code tokens, so it uses up the context
-  window more slowly, and a task costs 10% less.
+- **Claude starts with the right code.** The code a task needs arrives with the prompt, so Claude
+  skips most of the grep-and-open-files hunt: 34% fewer turns, 41% fewer tool calls (Greps fall
+  from 5.3 to 2.0 per session), 12% less time.
+- **Smaller sessions, lower bills.** 22% fewer input tokens and 20% fewer output tokens, so the context
+  window fills more slowly, and a task costs 9% less.
 - **Better first answers.** On the first question of each task, Claude named the right files more
-  often (answer recall 0.82 → 0.90).
+  often (answer recall 0.76 → 0.90).
 - **Nothing to learn.** It runs through Claude Code's own hooks. You keep prompting as usual.
 - **Everything stays on your machine.** Indexing and ranking run locally, with no server, account or
   telemetry. Only the code laya-codex adds to a prompt goes to Anthropic, the same way code Claude
@@ -132,32 +132,37 @@ laya-codex had one in context before Claude's first turn in most tasks:
 We compared stock Claude Code with Claude Code plus laya-codex on 60 real code-change tasks from
 three open-source repositories: [moon](https://github.com/pilotspace/moon) (Rust),
 [httpx](https://github.com/encode/httpx) (Python) and [hono](https://github.com/honojs/hono)
-(TypeScript), 20 tasks each, none of them used in training. Each task comes from a commit in the
-repository's history, and each session asks two questions: where the change goes, then which tests
-cover it. Both arms use the same model (Claude Sonnet), and all numbers are paired, with 95%
-bootstrap confidence intervals.
+(TypeScript), none of them used in training. Each task comes from a commit in the repository's
+history, and each session asks two questions: where the change goes, then which tests cover it.
+Both arms use the same model (Claude Sonnet, medium effort), and all numbers are paired, with 95%
+bootstrap confidence intervals. This is benchmark v10 (2026-09-27): laya-codex with the retrained
+laya-code-r1 model, 51 tasks (moon stopped at its cost cap after 15 tasks, and 4 of those were
+dropped because a Claude API session hung for up to 4 hours in every arm).
 
 | vs stock Claude Code | change | 95% CI |
 |---|---|---|
-| Code-reading tokens | **−38.2%** | −50.8% … −21.8% |
-| Turns | **−20.9%** | −27.7% … −13.7% |
-| Cost | −9.9% | −18.7% … −0.4% |
-| Total input tokens | −3.7% | −16.9% … +11.9%, not significant |
-| Wall-clock time | +3.5% | −6.2% … +14.8%, not significant |
-| Answer recall, first question | **0.90 vs 0.82** | difference +0.03 … +0.14 |
-| Answer recall, both questions | 0.96 vs 0.93 | difference −0.01 … +0.08, not significant |
+| Turns | **−33.6%** | −40.4% … −26.5% |
+| Tool calls per session | **9.0 → 5.3** | Grep 5.3 → 2.0; laya-codex `search` 1.0 |
+| Wall-clock time | **−12.0%** | −19.1% … −4.4% |
+| Output tokens | **−19.8%** | −26.8% … −12.3% |
+| Total input tokens | **−21.7%** | −35.1% … −6.4% |
+| Cost | **−8.8%** | −16.3% … −1.9% |
+| Code-reading tokens | −32.0% | −47.0% … −15.0% |
+| Code read + code injected | +6.2% | −11.3% … +26.3%, not significant |
+| Answer recall, first question | **0.90 vs 0.76** | difference +0.07 … +0.22 |
+| Answer recall, both questions | 0.94 vs 0.95 | difference −0.07 … +0.03, not significant |
 
-Code reading fell on every repository: −37% on moon, −32% on httpx and −47% on hono.
+Code reading fell on every repository (−26% on moon, −38% on httpx, −38% on hono), but on httpx
+and hono the injected code costs more than that saves.
 
-### What limits this result, and what changed since
+### What limits this result, and what is next
 
-| limit | why | since this run (unreleased, replayed offline, not yet re-measured with Claude) |
+| limit | why | next |
 |---|---|---|
-| **Not faster yet**: time +3.5%, not significant; our −30% goal is not met | Time follows how much Claude *writes*, not how much it reads (chart below). laya-codex cut turns by 21%, but each remaining turn wrote more. | Runs now report output tokens next to time, so the next one shows where the time goes. |
-| **Small repositories trade reads for injected code**: on httpx and hono the added code roughly cancels what it saves | The session's second prompt got two more blocks of code that was mostly already covered | That prompt now gets test pointers, call sites and locations instead: **60–64% smaller**, 29–32% less per session (chart below) |
-| **An earlier run didn't replicate**: v7 measured −50% reading and −17% time on moon, this run −37% and +14% | A single 20-task run is noisy | The benchmark can repeat tasks, pin settings and compare two builds |
-| **Model vs keywords unsettled** | The run didn't record which prompts the model actually ranked | Every prompt's ranking mode (model, partial or keywords) is now logged |
-| **Scope**: tasks that find and explain code, not edits; one model (Sonnet) | — | Still open: an edit-task pilot comes first |
+| **Tokens**: code read + injected +6.2%, not significant; our −50% goal is not met | The injection (about 1.7k tokens per session) is as large as the reading it saves | Inject less: fewer and shorter blocks when the model is confident. In progress, gated by the offline replay |
+| **Time**: −12.0%; our −30% goal is not met | Claude now answers lookups with laya-codex `search` (1.0 per session) instead of Grep, but total tool calls stayed at about 5 per session, and time follows the tool calls and the output | Make one call answer more, so sessions need fewer of them |
+| **Model vs keywords**: no end-to-end difference | laya-code-r1 inlines more right files offline (70 of 115 vs 62 for keywords), but at 51 tasks the sessions show no significant difference (time −4%, tokens −2%) | A larger run once the injection shrinks |
+| **Scope**: tasks that find and explain code, not edits; one model (Sonnet) | — | Still open: an edit-task pilot |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/insight-time-dark.svg">
@@ -177,7 +182,7 @@ Full method, per-repository results, the model-vs-keywords comparison and raw da
 
 ```sh
 cd scripts
-python3 charts.py ../bench/results/headline-v8.json ../docs/assets
+python3 charts.py ../bench/results/headline-v10.json ../docs/assets
 python3 insight_charts.py ../bench/results/claude-v8 ../bench/results/replay-2026-09-24 ../docs/assets
 ```
 
@@ -360,9 +365,9 @@ contains your prompts and code, so review it before attaching it to an
 - **v0.2.0:** one name everywhere: the CLI is `laya-codex` (was `laya`), env vars are
   `LAYA_CODEX_*`; a Homebrew formula; the plugin, crash isolation and daemon limits from 0.1.x.
 - **Next:**
-  - turning the model's better ranking into an end-to-end gain (benchmark v2 shows none yet);
-  - shortening the checking-and-answering tail, where the time goal is lost;
-  - smaller injections on small repositories;
+  - smaller injections, so code read plus code injected falls (the −50% token goal);
+  - fewer tool calls per session, so time falls further (the −30% time goal);
+  - turning the retrained model's better offline ranking into an end-to-end gain (benchmark v10 shows none yet);
   - compacting Moon's data log automatically (it reached 4.1 GB during the benchmark);
   - a faster model for Linux.
 

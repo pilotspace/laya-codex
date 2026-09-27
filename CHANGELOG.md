@@ -6,9 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Follow-up prompts get answers instead of more code, the model scores only the candidates that
-matter, and a benchmark run now records what it needs to settle the questions benchmark v2 left
-open. Replayed offline on the 60 benchmark v2 tasks; not yet measured with Claude.
+Claude answers its own lookups with laya-codex `search` instead of Grep, follow-up prompts get
+answers instead of more code, unused sizing paths are gone, and the benchmark reports the honest
+token metric.
+
+Benchmark v10 against stock Claude Code (51 paired tasks, with the retrained laya-code-r1):
+- 34% fewer turns and 41% fewer tool calls;
+- Grep 5.3 → 2.0 per session, and `search` about 1 per session;
+- 12% less time and 9% lower cost;
+- first-question recall 0.76 → 0.90;
+- code read plus injected +6%, not significant.
+
+See [docs/RESULTS.md](docs/RESULTS.md).
 
 ### Changed
 - **Follow-up prompts inline no more code when they ask for tests or callers.**

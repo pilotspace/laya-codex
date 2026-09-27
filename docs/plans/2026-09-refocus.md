@@ -1,7 +1,7 @@
 # Plan: refocus on the three levers (v0.4.0)
 
-Status: **in progress**. WS0–WS2 and WS4 are merged; WS3 has a model accepted and waiting for
-upload; WS5 is running. Proposed 2026-09-25. North star: [docs/VISION.md](../VISION.md)
+Status: **in progress**. WS0–WS2 and WS4 are merged, WS3 and WS5 are being released as v0.4.0, WS6 is running.
+Proposed 2026-09-25. North star: [docs/VISION.md](../VISION.md)
 
 ## Progress
 
@@ -12,7 +12,8 @@ upload; WS5 is running. Proposed 2026-09-25. North star: [docs/VISION.md](../VIS
 | WS2 | done, gate not met | #18: `search` answers name lookups. #20: files past the size cap are counted instead of listed empty | see the pull pilots below |
 | WS3 | model accepted, waiting for upload | branch `feat/reranker-retrain`: production-shaped lists from fixed commits, leakage check, laya-code-r1 | see the precision gate below |
 | WS4 | done | #19: scope classifier, threshold sizing, size caps and Read narrowing removed | injected text byte-identical on 600 of 600 replayed prompts |
-| WS5 | running | benchmark v10: stock vs main + laya-code-r1 vs keywords only | — |
+| WS5 | measured; release in progress | benchmark v10: stock vs main + laya-code-r1 vs keywords only ($32.40) | 51 paired tasks: wall −12.0%, turns −33.6%, tool calls 9.0 → 5.3, `search` 1.0 per session, read + injected +6.2% (n.s.), first-question recall +0.145. r1 vs keywords: no significant difference. See [docs/RESULTS.md](../RESULTS.md) |
+| WS6 | running | inject less using laya-code-r1's probabilities (branch `feat/smaller-injection`) | gate: ≥ 66/115 gold inlined at ≤ 60% of today's injected chars |
 
 **Pull pilots** (sonnet, effort medium, 10 sessions per arm on httpx and hono):
 
