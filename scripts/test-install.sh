@@ -166,9 +166,9 @@ pass "unpinned model manifest refused"
 #    manifest committed in release/hf-laya-code, so a later upload to the model repo cannot change
 #    what this installer downloads.
 # shellcheck disable=SC2016 # the ${...} below is install.sh's text, matched literally
-rev="$(sed -n's/^MODEL_REVISION="${LAYA_CODEX_MODEL_REVISION:-\([^}]*\)}"$/\1/p' "$here/install.sh")"
+rev="$(sed -n 's/^MODEL_REVISION="${LAYA_CODEX_MODEL_REVISION:-\([^}]*\)}"$/\1/p' "$here/install.sh")"
 # shellcheck disable=SC2016
-pin="$(sed -n's/^MODEL_MANIFEST_SHA256="${LAYA_CODEX_MODEL_MANIFEST_SHA256:-\([^}]*\)}"$/\1/p' "$here/install.sh")"
+pin="$(sed -n 's/^MODEL_MANIFEST_SHA256="${LAYA_CODEX_MODEL_MANIFEST_SHA256:-\([^}]*\)}"$/\1/p' "$here/install.sh")"
 [ "$pin" = "$(sum "$here/release/hf-laya-code/MANIFEST.sha256")" ] ||
     fail "install.sh pins manifest '$pin', not the sha256 of release/hf-laya-code/MANIFEST.sha256"
 printf '%s' "$rev" | grep -Eq '^[0-9a-f]{40}$' ||
