@@ -1,6 +1,8 @@
 # Run r1: every command, in order
 
-The retrained laya-code (Hugging Face revision 2) was produced by these commands on an M4 Pro 24 GB
+The retrained laya-code (published as Hugging Face commit `25f97e5a2ec5f8cf7218a4f67504367d8832e1fe`
+on the `r1` branch of `tindang/laya-code`; `main` keeps the first model) was produced by these
+commands on an M4 Pro 24 GB
 (macOS, torch 2.11 with MPS, transformers 5.4, huggingface_hub CLI 1.8.0), 2026-09-25/26. Repository
 HEADs, data hashes, seeds and results are in [r1.json](r1.json).
 
@@ -119,5 +121,9 @@ sh bench/replay_decide.sh --bin target/release/laya-codex --home <scratch> --mod
 
 ## 8. Release files
 
-`release/hf-laya-code/MANIFEST.sha256` = `shasum -a 256` of the seven model files of `$OUT`; the
-upload is the owner's (see the model card and `install.sh`: the pinned revision is filled in after it).
+`release/hf-laya-code/MANIFEST.sha256` = `shasum -a 256` of the seven model files of `$OUT`. The
+owner uploaded them (with the model card, `NOTICE` and the manifest) to the `r1` branch of
+`tindang/laya-code` as commit `25f97e5a2ec5f8cf7218a4f67504367d8832e1fe`; the served manifest hashes to
+`c32745e3b27956d194bd49db2bc1e8d1f212d536fc45c738e431c7f302451b81` and a full download checks 7 of 7.
+`install.sh` (`MODEL_REVISION`) and `crates/laya-cli/src/config.rs` (`LAYA_CODE_REVISION`) pin that
+commit; `scripts/test-install.sh` checks both.

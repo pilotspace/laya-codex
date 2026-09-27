@@ -99,7 +99,8 @@ The pipeline has six steps. Each step is a function in `crates/laya-rank`.
 
    The state is `file: <path> (lines a-b)` followed by the chunk text, cut to 128 tokens. The
    answer is a calibrated probability **P** that the chunk is relevant. The model is the
-   fine-tuned [laya-code](https://huggingface.co/tindang/laya-code), which runs on Metal on Apple
+   fine-tuned [laya-code](https://huggingface.co/tindang/laya-code/tree/r1) (revision `25f97e5` on the
+   `r1` branch, which the installer pins), which runs on Metal on Apple
    Silicon. Probabilities are memoised per prompt and chunk, so a repeated prompt skips the model.
 4. **Fusion.** Candidates are ordered by
 

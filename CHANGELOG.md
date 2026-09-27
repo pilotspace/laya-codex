@@ -20,6 +20,16 @@ Benchmark v10 against stock Claude Code (51 paired tasks, with the retrained lay
 See [docs/RESULTS.md](docs/RESULTS.md).
 
 ### Changed
+- **The retrained laya-code, pinned.** The installer downloads laya-code revision `25f97e5` (the
+  `r1` branch of [tindang/laya-code](https://huggingface.co/tindang/laya-code/tree/r1)) and refuses
+  any other model manifest; `laya-codex doctor` suggests the same revision for a manual
+  `hf download`.
+  - Why: the model was retrained on the candidate lists laya-codex's retriever produces, and in the
+    offline replay it inlines 70 of 115 gold files against 63 for the first model and 62 for keyword
+    ranking, for 2.5% more injected characters. The installer used to follow the model repo's
+    `main` branch, so any upload changed what every installed version downloaded.
+  - The first model stays on `main` (revision `f3d6bd2`); set `LAYA_CODEX_MODEL_REVISION` and
+    `LAYA_CODEX_MODEL_MANIFEST_SHA256` to install another revision.
 - **Follow-up prompts inline no more code when they ask for tests or callers.**
   - Why: a follow-up ("now find the tests and call sites") is ranked on the session's topic, so
     it used to inline the topic's next-ranked blocks. Replaying the benchmark v2 sessions, the

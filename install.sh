@@ -22,7 +22,7 @@ RELEASES_URL="${LAYA_CODEX_RELEASES_URL:-https://github.com/$REPO/releases}"
 # The laya-code revision this installer downloads: a Hugging Face commit of tindang/laya-code (never a
 # branch, so a later upload cannot change what this version installs), and the sha256 of its
 # MANIFEST.sha256, a copy of release/hf-laya-code/MANIFEST.sha256 (scripts/test-install.sh checks both).
-MODEL_REVISION="${LAYA_CODEX_MODEL_REVISION:-REPLACE_WITH_HF_REVISION_SHA_AFTER_UPLOAD}"
+MODEL_REVISION="${LAYA_CODEX_MODEL_REVISION:-25f97e5a2ec5f8cf7218a4f67504367d8832e1fe}"
 MODEL_MANIFEST_SHA256="${LAYA_CODEX_MODEL_MANIFEST_SHA256:-c32745e3b27956d194bd49db2bc1e8d1f212d536fc45c738e431c7f302451b81}"
 MODEL_URL="${LAYA_CODEX_MODEL_URL:-https://huggingface.co/tindang/laya-code/resolve/$MODEL_REVISION}"
 MODEL="${LAYA_CODEX_MODEL:-auto}"

@@ -256,5 +256,16 @@
    "candidate-model-only": 4624
   },
   "gate": "gold >= 67 met (70); p95 within 1.2 s (0.53-0.56 s); the chars clause (no more than the blend arm) was not met (+2.5%) and was waived by the owner"
+ },
+ "published": {
+  "repo": "tindang/laya-code",
+  "branch": "r1",
+  "revision": "25f97e5a2ec5f8cf7218a4f67504367d8832e1fe",
+  "manifest_sha256": "c32745e3b27956d194bd49db2bc1e8d1f212d536fc45c738e431c7f302451b81",
+  "main_still": "f3d6bd2344e4750dd917f95d40ceacfa81bb81db (first model)",
+  "pinned_by": [
+   "install.sh MODEL_REVISION",
+   "crates/laya-cli/src/config.rs LAYA_CODE_REVISION"
+  ]
  }
 }

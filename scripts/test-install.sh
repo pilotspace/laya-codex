@@ -173,6 +173,9 @@ pin="$(sed -n 's/^MODEL_MANIFEST_SHA256="${LAYA_CODEX_MODEL_MANIFEST_SHA256:-\([
     fail "install.sh pins manifest '$pin', not the sha256 of release/hf-laya-code/MANIFEST.sha256"
 printf '%s' "$rev" | grep -Eq '^[0-9a-f]{40}$' ||
     fail "install.sh does not pin a Hugging Face commit SHA of laya-code (MODEL_REVISION='$rev')"
+# `laya-codex doctor` tells users to download the same revision by hand.
+grep -q "^pub const LAYA_CODE_REVISION: &str = \"$rev\";" "$here/crates/laya-cli/src/config.rs" ||
+    fail "crates/laya-cli/src/config.rs LAYA_CODE_REVISION is not install.sh's revision $rev"
 pass "defaults pin revision $rev and the committed model manifest"
 
 echo "all installer tests passed"

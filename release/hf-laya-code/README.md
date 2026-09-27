@@ -29,6 +29,11 @@ retriever produces, with the input the laya-codex scorer builds. The first revis
 BM25, and in the laya-codex offline replay it tied keyword ranking (63 vs 62 gold files inlined of
 115). This revision inlines 70.
 
+**Where it is published.** This revision is commit `25f97e5a2ec5f8cf7218a4f67504367d8832e1fe` on the
+`r1` branch of `tindang/laya-code`; the `main` branch still holds the first revision. laya-codex's
+installer pins `25f97e5` and the sha256 of its `MANIFEST.sha256`. To download it by hand:
+`hf download tindang/laya-code --revision 25f97e5a2ec5f8cf7218a4f67504367d8832e1fe --local-dir <dir>`.
+
 ## Model details
 
 | | |

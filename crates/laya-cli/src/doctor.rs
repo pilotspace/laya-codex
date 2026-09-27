@@ -13,7 +13,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::client::Client;
-use crate::config::{Config, INSTALL_SH, MOON_FIX, is_executable, model_candidates};
+use crate::config::{
+    Config, INSTALL_SH, LAYA_CODE_REVISION, MOON_FIX, is_executable, model_candidates,
+};
 use crate::hook::DaemonApi;
 use crate::init::{HOOK_EVENTS, command_program, is_laya_hook};
 use crate::protocol::{Request, Response};
@@ -201,7 +203,7 @@ pub fn check_model(use_model: bool, dir: Option<&Path>, searched: &[PathBuf]) ->
             ),
             Some(format!(
                 "download and verify the laya-code re-ranker (~850 MB): `curl -fsSL {INSTALL_SH} | sh -s -- --model-only`, \
-                 or `hf download tindang/laya-code --local-dir {dest}` (or set LAYA_CODEX_MODEL_DIR; LAYA_CODEX_NO_MODEL=1 silences this)"
+                 or `hf download tindang/laya-code --revision {LAYA_CODE_REVISION} --local-dir {dest}` (or set LAYA_CODEX_MODEL_DIR; LAYA_CODEX_NO_MODEL=1 silences this)"
             )),
         );
     };
@@ -803,8 +805,9 @@ mod tests {
             fix.contains("https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh -s -- --model-only"),
             "{fix}"
         );
+        // The manual download pins the same revision as install.sh, never the repo's main branch.
         let hf = format!(
-            "hf download tindang/laya-code --local-dir {}",
+            "hf download tindang/laya-code --revision 25f97e5a2ec5f8cf7218a4f67504367d8832e1fe --local-dir {}",
             searched[0].display()
         );
         assert!(fix.contains(&hf), "{fix}");
