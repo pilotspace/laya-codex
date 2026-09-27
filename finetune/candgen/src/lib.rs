@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use laya_core::{Chunk, Scorer, Store};
 use laya_rank::{Retriever, RetrieverConfig};
@@ -60,7 +60,11 @@ pub fn recording_config() -> RetrieverConfig {
 
 /// Run the production candidate generation for `prompt` and return what the scorer would see.
 /// `None` when the prompt yields no candidates (the scorer is never called).
-pub fn candidates(store: &dyn Store, repo: &str, prompt: &str) -> laya_core::Result<Option<Recorded>> {
+pub fn candidates(
+    store: &dyn Store,
+    repo: &str,
+    prompt: &str,
+) -> laya_core::Result<Option<Recorded>> {
     let recorder = Arc::new(Recorder::default());
     let scorer: Arc<dyn Scorer> = recorder.clone();
     Retriever::new(store, Some(scorer), recording_config()).query(repo, prompt)?;
@@ -74,18 +78,24 @@ fn rel(root: &Path, p: &Path) -> String {
         .replace('\\', "/")
 }
 
-/// Counts from one [`index_repo`] run.
+/// Counts from one [`index_repo`] run (the fields of `IndexStats` in `laya-cli/src/indexer.rs`).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct IndexStats {
     pub files_seen: usize,
+    pub unchanged: usize,
     pub indexed: usize,
+    pub chunks: usize,
     pub removed: usize,
     pub failed: usize,
+    pub elapsed_ms: u64,
 }
 
-/// Incremental index of `root`, the same steps as `laya-codex index` (`laya-cli/src/indexer.rs`):
-/// walk, skip unchanged hashes, chunk changed files, put them, delete files that are gone.
+/// Incremental index of `root`: a verbatim copy of `index_repo` in `crates/laya-cli/src/indexer.rs`
+/// (`laya-codex index`), which lives in a binary crate and cannot be called from here. Walk, skip
+/// unchanged hashes, chunk changed files, put them, delete files that are gone. The test
+/// `index_repo_is_the_production_indexer_verbatim` fails when the two drift apart.
 pub fn index_repo(root: &Path, store: &dyn Store, repo: &str) -> laya_core::Result<IndexStats> {
+    let t0 = Instant::now();
     store.ensure_index(repo)?;
     let files: Vec<PathBuf> = laya_parse::walk_repo(root)
         .into_iter()
@@ -97,9 +107,10 @@ pub fn index_repo(root: &Path, store: &dyn Store, repo: &str) -> laya_core::Resu
     };
     let mut changed = Vec::new();
     for p in &files {
+        let r = rel(root, p);
         let current = std::fs::read(p).ok().map(|b| laya_parse::file_hash(&b));
-        match (current, store.file_hash(repo, &rel(root, p))?) {
-            (Some(c), Some(s)) if c == s => {}
+        match (current, store.file_hash(repo, &r)?) {
+            (Some(c), Some(s)) if c == s => stats.unchanged += 1,
             _ => changed.push(p.clone()),
         }
     }
@@ -108,6 +119,7 @@ pub fn index_repo(root: &Path, store: &dyn Store, repo: &str) -> laya_core::Resu
             Ok(f) => {
                 store.put_file(repo, &f.path, &f.hash, &f.chunks)?;
                 stats.indexed += 1;
+                stats.chunks += f.chunks.len();
             }
             Err(_) => stats.failed += 1,
         }
@@ -119,6 +131,7 @@ pub fn index_repo(root: &Path, store: &dyn Store, repo: &str) -> laya_core::Resu
             stats.removed += 1;
         }
     }
+    stats.elapsed_ms = t0.elapsed().as_millis() as u64;
     Ok(stats)
 }
 
@@ -147,7 +160,10 @@ mod tests {
             Ok(())
         }
         fn put_file(&self, _: &str, p: &str, h: &str, c: &[Chunk]) -> laya_core::Result<()> {
-            self.files.lock().unwrap().insert(p.into(), (h.into(), c.to_vec()));
+            self.files
+                .lock()
+                .unwrap()
+                .insert(p.into(), (h.into(), c.to_vec()));
             Ok(())
         }
         fn delete_file(&self, _: &str, p: &str) -> laya_core::Result<()> {
@@ -160,14 +176,22 @@ mod tests {
         fn list_files(&self, _: &str) -> laya_core::Result<Vec<String>> {
             Ok(self.files.lock().unwrap().keys().cloned().collect())
         }
-        fn bm25(&self, _: &str, terms: &[String], limit: usize) -> laya_core::Result<Vec<(String, f32)>> {
+        fn bm25(
+            &self,
+            _: &str,
+            terms: &[String],
+            limit: usize,
+        ) -> laya_core::Result<Vec<(String, f32)>> {
             let files = self.files.lock().unwrap();
             let mut hits: Vec<(String, f32)> = files
                 .values()
                 .flat_map(|(_, cs)| cs.iter())
                 .map(|c| {
                     let t = c.text.to_lowercase();
-                    (c.id(), terms.iter().filter(|q| t.contains(q.as_str())).count() as f32)
+                    (
+                        c.id(),
+                        terms.iter().filter(|q| t.contains(q.as_str())).count() as f32,
+                    )
                 })
                 .filter(|(_, s)| *s > 0.0)
                 .collect();
@@ -175,7 +199,12 @@ mod tests {
             hits.truncate(limit);
             Ok(hits)
         }
-        fn chunks_defining(&self, _: &str, _: &[String], _: usize) -> laya_core::Result<Vec<String>> {
+        fn chunks_defining(
+            &self,
+            _: &str,
+            _: &[String],
+            _: usize,
+        ) -> laya_core::Result<Vec<String>> {
             Ok(vec![])
         }
         fn get_chunks(&self, _: &str, ids: &[String]) -> laya_core::Result<Vec<Chunk>> {
@@ -187,7 +216,13 @@ mod tests {
                 .collect())
         }
         fn chunks_of_file(&self, _: &str, p: &str) -> laya_core::Result<Vec<Chunk>> {
-            Ok(self.files.lock().unwrap().get(p).map(|(_, c)| c.clone()).unwrap_or_default())
+            Ok(self
+                .files
+                .lock()
+                .unwrap()
+                .get(p)
+                .map(|(_, c)| c.clone())
+                .unwrap_or_default())
         }
         fn memo_get(&self, _: &str) -> laya_core::Result<Option<String>> {
             Ok(None)
@@ -216,7 +251,11 @@ mod tests {
         for i in 0..n {
             // chunk i matches (i % 3) + 1 of the query terms: a ranked, tied list
             let words = ["eviction", "cache", "capacity"][..(i % 3) + 1].join(" ");
-            let c = chunk(&format!("src/f{i}.rs"), 1, &format!("fn f{i}() {{ {words} }}"));
+            let c = chunk(
+                &format!("src/f{i}.rs"),
+                1,
+                &format!("fn f{i}() {{ {words} }}"),
+            );
             s.put_file("r", &c.path.clone(), "h", &[c]).unwrap();
         }
         s
@@ -228,7 +267,11 @@ mod tests {
         let got = candidates(&s, "r", "fix cache eviction when capacity is exceeded")
             .unwrap()
             .expect("candidates");
-        assert_eq!(got.chunks.len(), 24, "all k_candidates reach the scorer, not only score_top");
+        assert_eq!(
+            got.chunks.len(),
+            24,
+            "all k_candidates reach the scorer, not only score_top"
+        );
         // the three-term matches come first (lexical order preserved)
         assert!(got.chunks[..10].iter().all(|c| c.text.contains("capacity")));
         assert_eq!(got.focus, "fix cache eviction when capacity is exceeded");
@@ -245,7 +288,10 @@ mod tests {
     #[test]
     fn no_candidates_is_none() {
         let s = store_with(3);
-        assert_eq!(candidates(&s, "r", "unrelated words entirely").unwrap(), None);
+        assert_eq!(
+            candidates(&s, "r", "unrelated words entirely").unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -257,6 +303,70 @@ mod tests {
         assert_eq!(c.score_top, 0);
         assert_eq!(c.max_related, 0);
         assert!(c.use_laya);
+    }
+
+    /// `fn <name>(` ... the closing `}` at column 0, from a source file.
+    fn function_text(src: &str, signature: &str) -> String {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} not found"));
+        let end = src[start..].find("\n}\n").expect("function end") + start + 3;
+        src[start..end].to_string()
+    }
+
+    /// Drift guard: `index_repo` (and its `rel` helper) must stay the production indexer's code,
+    /// byte for byte. laya-cli is a binary crate, so its function cannot be called from here.
+    #[test]
+    fn index_repo_is_the_production_indexer_verbatim() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let prod = std::fs::read_to_string(root.join("../../crates/laya-cli/src/indexer.rs"))
+            .expect("crates/laya-cli/src/indexer.rs");
+        let ours = std::fs::read_to_string(root.join("src/lib.rs")).expect("src/lib.rs");
+        for sig in [
+            "pub fn index_repo(root: &Path, store: &dyn Store, repo: &str)",
+            "fn rel(root: &Path, p: &Path) -> String",
+        ] {
+            assert_eq!(
+                function_text(&ours, sig),
+                function_text(&prod, sig),
+                "{sig} drifted from crates/laya-cli/src/indexer.rs"
+            );
+        }
+    }
+
+    /// Behaviour on a fixture repo: the store holds exactly the files the production walk admits,
+    /// with exactly the chunks `laya_parse::parse_file` makes for them.
+    #[test]
+    fn index_repo_stores_the_parse_file_chunks_of_admitted_files() {
+        let dir = std::env::temp_dir().join(format!("candgen-fx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (p, text) in [
+            (
+                "src/a.rs",
+                "pub fn alpha(x: u32) -> u32 {\n    x + 1\n}\n\nfn beta() {}\n",
+            ),
+            (
+                "pkg/b.py",
+                "class B:\n    def run(self):\n        return 1\n",
+            ),
+            (".hidden/c.rs", "fn hidden() {}\n"),
+            ("ignored.rs", "fn ignored() {}\n"),
+            ("notes.bin", "\u{0}\u{1}"),
+            (".gitignore", "ignored.rs\n"),
+        ] {
+            std::fs::create_dir_all(dir.join(p).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(p), text).unwrap();
+        }
+        let s = Mem::default();
+        index_repo(&dir, &s, "r").unwrap();
+        let mut files = s.list_files("r").unwrap();
+        files.sort();
+        assert_eq!(files, ["pkg/b.py", "src/a.rs"]);
+        for f in &files {
+            let want = laya_parse::parse_file(&dir, &dir.join(f)).unwrap().chunks;
+            assert_eq!(s.chunks_of_file("r", f).unwrap(), want, "{f}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -272,7 +382,10 @@ mod tests {
         std::fs::remove_file(dir.join("src/b.rs")).unwrap();
         std::fs::write(dir.join("src/a.rs"), "fn a() {\n    let x = 3;\n}\n").unwrap();
         let second = index_repo(&dir, &s, "r").unwrap();
-        assert_eq!((second.files_seen, second.indexed, second.removed), (1, 1, 1));
+        assert_eq!(
+            (second.files_seen, second.indexed, second.removed),
+            (1, 1, 1)
+        );
         let third = index_repo(&dir, &s, "r").unwrap();
         assert_eq!(third.indexed, 0, "unchanged files are skipped");
         let _ = std::fs::remove_dir_all(&dir);

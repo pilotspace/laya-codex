@@ -38,15 +38,21 @@ fn handle(store: &MoonStore, req: &Value) -> anyhow::Result<Value> {
     match s("op")? {
         "index" => {
             let st = index_repo(&PathBuf::from(s("root")?), store, s("repo")?)?;
-            Ok(json!({"ok": true, "files": st.files_seen, "indexed": st.indexed,
-                      "removed": st.removed, "failed": st.failed}))
+            Ok(
+                json!({"ok": true, "files": st.files_seen, "indexed": st.indexed,
+                      "removed": st.removed, "failed": st.failed}),
+            )
         }
         "query" => {
             let got = candidates(store, s("repo")?, s("prompt")?)?;
             let (focus, cands) = match got {
                 Some(r) => (
                     r.focus,
-                    r.chunks.iter().enumerate().map(|(i, c)| chunk_json(i, c)).collect(),
+                    r.chunks
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| chunk_json(i, c))
+                        .collect(),
                 ),
                 None => (String::new(), Vec::new()),
             };
@@ -67,7 +73,8 @@ fn main() -> anyhow::Result<()> {
     let sup = MoonSupervisor::new(&moon_bin, port, home.join("moon"))
         .with_auth(password.clone(), &acl)
         .with_spawn_timeout(Duration::from_secs(120));
-    sup.ensure_running().map_err(|e| anyhow::anyhow!("moon: {e}"))?;
+    sup.ensure_running()
+        .map_err(|e| anyhow::anyhow!("moon: {e}"))?;
     let _guard = MoonGuard(sup);
     // Same client settings as the daemon, except a longer query timeout: a batch job would rather
     // wait than get a truncated candidate list.
@@ -83,7 +90,8 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
         let req: Value = serde_json::from_str(&line)?;
-        let resp = handle(&store, &req).unwrap_or_else(|e| json!({"id": req["id"], "error": e.to_string()}));
+        let resp = handle(&store, &req)
+            .unwrap_or_else(|e| json!({"id": req["id"], "error": e.to_string()}));
         writeln!(out, "{resp}")?;
         out.flush()?;
     }

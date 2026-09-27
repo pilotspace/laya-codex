@@ -62,3 +62,24 @@ jobs:
         run: sh scripts/test-install.sh
       - name: plugin
         run: sh scripts/test-plugin.sh
+
+  # finetune/candgen: the training-data tool that runs the production indexer and retriever. It is
+  # not a workspace member (own lock file); its tests include the drift guard against
+  # crates/laya-cli/src/indexer.rs.
+  candgen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: finetune/candgen
+      - name: fmt
+        run: cargo fmt --manifest-path finetune/candgen/Cargo.toml -- --check
+      - name: clippy
+        run: cargo clippy --manifest-path finetune/candgen/Cargo.toml --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --manifest-path finetune/candgen/Cargo.toml --locked
