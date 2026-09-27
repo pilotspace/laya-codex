@@ -34,9 +34,33 @@ open. Replayed offline on the 60 benchmark v2 tasks; not yet measured with Claud
 - An injection with no code blocks no longer ends with "Use the code above directly".
 
 ### Added
+- **`search` answers name lookups** (MCP tool, server `laya-codex`), so Claude can use it instead
+  of Grep for a definition, callers, uses or tests.
+  - Give one or more names (`generateDigest`, `iter_text|aiter_text`) and optionally a `path`.
+  - The answer lists every line containing the name, also inside longer names, as `line: text`
+    under each file and its enclosing function, class or test. The definition is marked, test files
+    are flagged, docs are only counted, and "complete" is claimed only when every file in scope was
+    searched. A description in words still returns ranked code spans.
+  - Limits: 6,000 characters and 40 lines per file per answer, one 3 s deadline covering walk, reads
+    and parsing, names up to 128 characters. A file is read only if the indexer would index it, so
+    `.env`, keys, ignored and vendored files are never returned, even when named in `path`.
+  - The tool description and server instructions say when to use it; each injection ends with one
+    line pointing to it.
+  - Why: in benchmark v3, sessions still made 2.85 Greps and called `search` 0.02 times. 72% of
+    those Greps looked up names Claude already had, and the old `search` only returned ranked spans.
+  - Paid pilots (10 sessions per arm, httpx and hono) against ranked spans only: Claude called
+    `search` in about half of the sessions. The first build cut Greps 37%, but tokens read plus
+    injected rose 8%. With trimmed answers, tokens fell 10.6%, wall-clock 2.9% and Greps 11%.
+    Recall held within one task.
 - **Rank mode in the hook log:** each prompt's line records `rank_mode` (`laya`, `laya-partial`
   when the time budget stopped the model early, or `lexical`), `scored`, `offered` and
   `candidates`. Query results carry `scored` and `offered` (additive fields).
+
+### Fixed
+- A `search` name lookup whose earlier files filled the size cap listed later files with empty lines
+  (` 213: `) and said they were "listed without enclosing functions". Those files are now only
+  counted in the "Not shown" tail. Each file is charged the size it is actually shown at, and docs
+  take no room.
 
 ### Removed
 Unused options, taken out to keep the ranking path to what the benchmarks measured. The injected
@@ -66,6 +90,18 @@ blended ranking gave byte-identical text for every prompt before and after.
 - `bench/replay_hooks.py` replays the benchmark's two prompts per task through the real hook
   without Claude; `bench/runs.py` holds the shared loaders; `bench/test_bench.py` tests them.
 - `stats.py` and `stats_pooled.py` report output tokens, which drive wall-clock time.
+- **The token metric counts injected code:** `stats.py`, `stats_pooled.py` and `headline.py` lead
+  with tokens read plus tokens injected, with code-reading tokens beside it. Reading tokens alone
+  hid that the injection can cancel the savings: benchmark v3 read 35.7% less, but read plus
+  injected came out 4.6% higher than stock.
+- `bench/ledger.py`: tool calls per session by tool (Grep, Read, Glob, laya-codex `search`,
+  other) and hook actions per session, also in every run's `summary.md`.
+- `bench/replay_decide.sh`: the offline gate for ranking changes.
+  - It replays the benchmark prompts through the real hook for keywords, the production blend and
+    the model alone, with gold inlined, gold in the top 2, injected characters and hook latency.
+  - `--candidate-model-dir` judges a retrained model in the production blend.
+- `run_bench.py run --pilot`: a fixed 3-task subset per repository. It refuses to start without
+  `--max-total-usd`.
 
 ## [0.3.0] — 2026-09-24
 

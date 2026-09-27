@@ -206,7 +206,11 @@ your prompt ─► laya-codex hook ─► local daemon ─► BM25 keyword searc
 - **Adding code without repeating it.** laya-codex remembers what the session has already seen, so a
   follow-up prompt doesn't get the same code twice, nor code from a file Claude already read whole.
   Claude's own Reads are never changed.
-- **Follow-up search.** Claude also gets an MCP tool, `search` (server `laya-codex`), for follow-up lookups.
+- **Lookups without Grep.** Claude also gets an MCP tool, `search` (server `laya-codex`). Given a
+  name (or `a|b`, optionally with a `path`), it returns every line that uses it, grouped by
+  function or test, with the definition marked and a note saying whether the list is complete. So
+  one call answers "where is it defined, who calls it, which tests cover it". Given a description in
+  words, it returns ranked code.
 
 What gets injected, when and why, with real hook input and output:
 [docs/how-it-works.md](docs/how-it-works.md). Design and decisions:

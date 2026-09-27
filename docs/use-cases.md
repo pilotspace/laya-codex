@@ -111,9 +111,14 @@ already found. The subagent starts with context instead of repeating the search.
 
 ## 8. Follow-up searches by Claude itself
 
-Claude can call the `search` MCP tool that laya-codex provides for follow-up lookups, such as
-"where is the retry budget configured?". It returns ranked code locations in one call, instead of
-a series of grep and Read calls.
+Claude can call the `search` MCP tool that laya-codex provides instead of Grep:
+
+- **"Who calls `generateDigest`, and which tests cover it?"** Claude asks `search` for
+  `generateDigest`. The answer lists every line that names it, under its function or test, with the
+  definition marked and test files flagged, and says whether the list is complete.
+- **"Where is the retry budget configured?"** A question in words returns ranked code locations.
+
+One call replaces a Grep and the Read that usually follows it.
 
 ## 9. Teams
 
