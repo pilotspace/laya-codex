@@ -111,10 +111,15 @@ of training, as before.
 - Loss: log loss on the two `noul` logits against the soft label (strictly proper, so the
   probabilities stay calibratable) plus a listwise softmax cross-entropy of the logit margins within
   each list (the order the production blend consumes), weight 1.
-- Hardware: M4 Pro 24 GB, PyTorch MPS, fp32 with activation checkpointing (peak about 11 GB).
-  550 updates (about one epoch) in 1.9 h of optimisation, about 3 s per list of 16.
+- Hardware: M4 Pro 24 GB, PyTorch MPS, fp32 with activation checkpointing (peak about 11 GB),
+  about 3 s per list of 16.
+- **Stopped early.** The run was planned for 1,084 updates (two passes over the training lists) and
+  was stopped by hand at update 550, after 1.9 h of optimisation, with the encoder learning rate at
+  1.04e-5, not yet decayed. The published weights are therefore not a converged schedule.
 - Selected checkpoint: update 540, the best on the validation monitor (292 lists): gold files among
   the first two chunks after the production blend, then the rank of the first changed chunk.
+- Seeds, repository HEADs, data hashes and every command: `finetune/runs/r1.json` and
+  `finetune/runs/r1-setup.md` in the laya-codex repository.
 
 ## Calibration
 
@@ -158,9 +163,13 @@ on it.
 | model only, this revision | 72 | 52 | 4,624 | 0.79–0.83 s |
 
 Per repository (blend, this revision vs previous vs keywords): hono 31 / 27 / 28 of 46, moon
-21 / 17 / 18 of 34, httpx 18 / 19 / 16 of 35. The production blend inlines 11% more gold files than
-before for 2.5% more injected characters. Model-only is a diagnostic; laya-codex ships the blend.
+21 / 17 / 18 of 34, httpx 18 / 19 / 16 of 35. Model-only is a diagnostic; laya-codex ships the blend.
 p95 ranges are across the three repositories on an M4 Pro (Metal, warmed).
+
+The gate has three clauses. Gold inlined ≥ 67 of 115 was met (70), and hook p95 within the 1.2 s
+budget was met (0.53–0.56 s). **The third, no more injected characters than the previous blend, was
+not met:** 4,513 against 4,403 characters per prompt (+2.5%). The owner waived it, accepting +2.5%
+characters for +11% gold files inlined (70 vs 63).
 
 ## Intended use
 
@@ -170,14 +179,26 @@ p95 ranges are across the three repositories on an M4 Pro (Metal, warmed).
 
 ## Out of scope and limitations
 
-- **Validation is in-repo.** Checkpoint selection and the temperature use a validation split of
-  the training repositories (different commits, same codebases), which flatters those numbers.
+- **Validation is in-repo and does double duty.** The validation split is a random 10% of the
+  commits of the training repositories (different commits, same codebases), and the same lists
+  pick the checkpoint and fit the temperature. Its numbers are therefore optimistic; the held-out
+  and replay results are the ones to rely on.
+- **Stopped early**, at about half of the planned schedule (see Training).
 - **The held-out evidence is small.** pilot-space contributes only 45 lists with a changed chunk
   among the candidates, and its intervals are wide. The replay is 60 tasks on 3 repositories, and
   the gain is not uniform: on httpx the new blend inlines one gold file fewer than the previous one.
 - **Weak labels.** A fix touching a file does not make every chunk of it relevant; a relevant chunk
   the fix did not touch counts as a negative. Commits that fix something are a narrower task mix
   than what users type.
+- **Prose and config positives.** Changed documentation and configuration chunks (Markdown, YAML,
+  JSON line windows) are labelled positive like code: 4.5% of the positives the model trained on
+  (9.2% across all lists), although laya-codex demotes such chunks for code tasks.
+- **Data-pipeline gaps, to be fixed with the next data build:** the vendored-copy leakage check
+  compares files at HEAD only, not across history; the list builder's reads from `laya-candgen`
+  have no timeout, so a hung candidate generator stalls the build instead of failing it; paths
+  that git quotes (unusual characters) are not unquoted when diffs are parsed, so such files get no
+  positive label; and the list evaluation scores all 24 candidates for its model-only row, while
+  production (and the blend rows) score the first 16.
 - **Low probabilities.** Mean P is about 0.09 and precision at P ≥ 0.5 is 0.24 on validation. Use
   rank or score fusion, not "P ≥ 0.5 means relevant".
 - **English prompts only.** Training covered Rust, Python, TypeScript and JavaScript; other
