@@ -363,7 +363,13 @@ contains your prompts and code, so review it before attaching it to an
 
 ## Roadmap
 
-- **v0.3.0, current:**
+- **v0.4.0, current:**
+  - `search` answers name lookups (definitions, callers, uses, tests), so Claude Greps 61% less;
+  - the reranker is retrained on the candidates laya-codex ranks, and the installer pins it;
+  - follow-up prompts get lists of tests and callers instead of more code;
+  - the benchmark counts code injected as well as code read;
+  - see the [CHANGELOG](CHANGELOG.md).
+- **v0.3.0:**
   - ranking uses the task, not the instructions around it;
   - the model ranks within its time budget even under load;
   - trust labels on inlined code, and at most two inlined files;
@@ -373,7 +379,8 @@ contains your prompts and code, so review it before attaching it to an
 - **v0.2.0:** one name everywhere: the CLI is `laya-codex` (was `laya`), env vars are
   `LAYA_CODEX_*`; a Homebrew formula; the plugin, crash isolation and daemon limits from 0.1.x.
 - **Next:**
-  - smaller injections, so code read plus code injected falls (the −50% token goal);
+  - less code read plus code injected (the −50% token goal): showing less of each block made
+    Claude read more (benchmark v11), so the next attempt has to cut Claude's reading;
   - fewer tool calls per session, so time falls further (the −30% time goal);
   - turning the retrained model's better offline ranking into an end-to-end gain (benchmark v10 shows none yet);
   - compacting Moon's data log automatically (it reached 4.1 GB during the benchmark);

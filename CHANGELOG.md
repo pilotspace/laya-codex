@@ -6,9 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Claude answers its own lookups with laya-codex `search` instead of Grep, follow-up prompts get
-answers instead of more code, unused sizing paths are gone, and the benchmark reports the honest
-token metric.
+## [0.4.0] — 2026-09-28
+
+Claude answers its own lookups with laya-codex `search` instead of Grep, the reranker is retrained
+on the candidates laya-codex actually ranks, follow-up prompts get answers instead of more code,
+unused sizing paths are gone, and the benchmark reports the honest token metric. No breaking
+changes.
 
 Benchmark v10 against stock Claude Code (51 paired tasks, with the retrained laya-code-r1):
 - 34% fewer turns and 41% fewer tool calls;
@@ -17,7 +20,9 @@ Benchmark v10 against stock Claude Code (51 paired tasks, with the retrained lay
 - first-question recall 0.76 → 0.90;
 - code read plus injected +6%, not significant.
 
-See [docs/RESULTS.md](docs/RESULTS.md).
+Benchmark v11 tested a smaller first-prompt injection (18-line windows) against this release.
+Claude read 23% more to make up for it, so it is not included. See
+[docs/RESULTS.md](docs/RESULTS.md).
 
 ### Changed
 - **The retrained laya-code, pinned.** The installer downloads laya-code revision `25f97e5` (the
