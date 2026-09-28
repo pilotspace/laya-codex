@@ -15,6 +15,7 @@ import random
 from collections import defaultdict
 
 import read_accuracy
+import stale_gold
 import stats_pooled as sp
 
 # reading_plus_injected (tokens Claude reads plus tokens laya-codex injects) is the VISION.md
@@ -64,6 +65,43 @@ def compare(runs, arm, base, keys, B=10000):
         q[label] = {base: round(sum(f(b) for _, b in allp) / len(allp), 3), arm: round(sum(f(t) for t, _ in allp) / len(allp), 3),
                     "diff": round(sp.mean_diff(allp, f), 3), "lo": round(lo, 3), "hi": round(hi, 3)}
     return pooled, per_repo, q, sum(len(p) for p in repos.values())
+
+
+def _named_hits(named, gold):
+    """Gold files an answer named, with bench/run_bench.py's grade() matching rule."""
+    return {g for g in gold if any(n == g or g.endswith("/" + n) or n.endswith(g) for n in named)}
+
+
+def findable_recall(findable, both_turns):
+    """Answer recall over the gold files still present in the checkout (bench/stale_gold.py)."""
+    def f(r):
+        gold = findable[r["task_id"]]
+        named = list(r.get("named") or [])
+        if both_turns:
+            named += (r.get("turn2") or {}).get("named") or []
+        return len(_named_hits(named, gold)) / len(gold)
+    return f
+
+
+def findable_pairs(pairs, findable):
+    """The paired tasks that still have a findable gold file."""
+    return [(a, b) for a, b in pairs if findable.get(a["task_id"])]
+
+
+def findable_quality(runs, arm, base, findable, B=10000):
+    """First-question and both-question recall on findable gold, paired bootstrap CI by repo."""
+    repos = {name: findable_pairs(sp.load(d, arm, base)[0], findable) for name, d in runs}
+    rng = random.Random(0)
+    idx = [{n: [rng.randrange(len(p)) for _ in p] for n, p in repos.items()} for _ in range(B)]
+    allp = [x for p in repos.values() for x in p]
+    out = {"n_tasks": len(allp), "gold_files": sum(len(findable[a["task_id"]]) for a, _ in allp)}
+    for label, both in (("answer_recall", False), ("answer_recall_both_turns", True)):
+        f = findable_recall(findable, both)
+        lo, hi = sp.ci([sp.mean_diff([repos[n][i] for n in repos for i in ix[n]], f) for ix in idx])
+        out[label] = {base: round(sum(f(b) for _, b in allp) / len(allp), 3),
+                      arm: round(sum(f(t) for t, _ in allp) / len(allp), 3),
+                      "diff": round(sp.mean_diff(allp, f), 3), "lo": round(lo, 3), "hi": round(hi, 3)}
+    return out
 
 
 def median_turn(turns):
@@ -134,6 +172,7 @@ def main():
     ap.add_argument("--lex", default="laya-lex", help="the same build with keyword-only ranking")
     ap.add_argument("--with-output", action="store_true", help="also report output tokens (runs from v9 on)")
     ap.add_argument("--title", default=CHART_TITLE)
+    ap.add_argument("--stale", help="bench/stale_gold.py output: also report recall on findable gold only")
     a = ap.parse_args()
     arm, lex_arm = a.arm, a.lex
     if a.with_output:
@@ -162,6 +201,8 @@ def main():
                            "answer_recall": lex_q["answer_recall"]},
            "lex_vs_baseline": {"pooled": {k: lexb[k] for k in ("reading_tokens", "total_input", "wall_clock", "cost")},
                                "answer_recall": lexb_q["answer_recall"]}}
+    if a.stale:
+        out["findable_gold"] = findable_quality(runs, arm, "baseline", stale_gold.findable(json.load(open(a.stale))))
     if a.raw_root:
         rows = {}
         for (name, _), (_, tasks) in zip(runs, a.run):
