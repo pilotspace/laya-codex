@@ -73,7 +73,7 @@ helping from the next prompt. To check the setup, run `laya-codex doctor --repo 
 |---|---|---|
 | **What Claude has before its first turn** | Only your prompt | Your prompt, plus the function that does the check (`check_target`), its code, and the line that calls it |
 | **What Claude does first** | Searches with grep and opens files until it finds the check | Reads the check it was given and starts fixing it |
-| **Turn at which a correct file is in context** (benchmark v2 median, 60 tasks) | 5.5 | **0** (46 of 60 tasks) |
+| **Turn at which a correct file is in context** (benchmark v10 median, 51 tasks) | 4 | **0** (43 of 51 tasks) |
 
 What laya-codex added to the prompt, trimmed from real output on this repository:
 
@@ -91,17 +91,17 @@ Definitions and uses:
 - crates/laya-cli/src/init.rs:472: check_target(root, &root_canon, path)?; — use of `check_target`
 ````
 
-Across the whole benchmark, stock Claude Code reached a correct file at turn 4 at the earliest.
+Across the whole benchmark, stock Claude Code reached a correct file at turn 2 at the earliest, and at turn 4 in the median task.
 laya-codex had one in context before Claude's first turn in most tasks:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-journey-dark.svg">
-  <img alt="Share of tasks with a correct file in Claude's context by turn: with laya-codex 77% before the first turn (median turn 0); stock Claude Code starts at turn 3 (median 5.5)" src="docs/assets/benchmark-journey-light.svg" width="760">
+  <img alt="Share of 51 tasks with a correct file in Claude's context by turn: with laya-codex 43 of 51 before the first turn (median turn 0); stock Claude Code starts at turn 2 (median 4); laya-codex's first correct Read has median 4" src="docs/assets/benchmark-journey-light.svg" width="760">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-reads-dark.svg">
-  <img alt="Read behaviour: precision 0.59 → 0.62, relevant code found 82% → 91%, first relevant Read at turn 5.9 → 3.3, wasted read tokens 2,005 → 1,187" src="docs/assets/benchmark-reads-light.svg" width="760">
+  <img alt="Finding the right code, 51 paired tasks, stock vs laya-codex: relevant code found 78% → 81%, median turn the right code arrives 4 → 0, Reads on relevant code 56% → 51%, wasted read tokens 1,267 → 938" src="docs/assets/benchmark-reads-light.svg" width="760">
 </picture>
 
 **More examples** in [docs/use-cases.md](docs/use-cases.md):
@@ -159,23 +159,23 @@ and hono the injected code costs more than that saves.
 
 | limit | why | next |
 |---|---|---|
-| **Tokens**: code read + injected +6.2%, not significant; our −50% goal is not met | The injection (about 1.7k tokens per session) is as large as the reading it saves | Inject less: fewer and shorter blocks when the model is confident. In progress, gated by the offline replay |
+| **Tokens**: code read + injected +6.2%, not significant; our −50% goal is not met | The injection (about 1.7k tokens per session) is as large as the reading it saves | Cut what Claude reads, not what it is shown: benchmark v11 showed less of each block, and Claude read 23% more |
 | **Time**: −12.0%; our −30% goal is not met | Claude now answers lookups with laya-codex `search` (1.0 per session) instead of Grep, but total tool calls stayed at about 5 per session, and time follows the tool calls and the output | Make one call answer more, so sessions need fewer of them |
 | **Model vs keywords**: no end-to-end difference | laya-code-r1 inlines more right files offline (70 of 115 vs 62 for keywords), but at 51 tasks the sessions show no significant difference (time −4%, tokens −2%) | A larger run once the injection shrinks |
 | **Scope**: tasks that find and explain code, not edits; one model (Sonnet) | — | Still open: an edit-task pilot |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/insight-time-dark.svg">
-  <img alt="Scatter of 180 benchmark sessions: wall-clock time rises about 10.7 s per 1,000 output tokens (R² 0.92), with stock and laya-codex sessions on the same line" src="docs/assets/insight-time-light.svg" width="760">
+  <img alt="Scatter of 153 benchmark v10 sessions: wall-clock time rises about 12.7 s per 1,000 output tokens (R² 0.84), with stock and laya-codex sessions on the same line" src="docs/assets/insight-time-light.svg" width="760">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/insight-followup-dark.svg">
-  <img alt="Characters added to the second prompt: moon 4,554 → 1,842, httpx 4,131 → 1,474, hono 3,926 → 1,443 (v0.3.0 → now)" src="docs/assets/insight-followup-light.svg" width="760">
+  <img alt="Characters added to the second prompt, offline replay: moon 4,554 → 1,964, httpx 4,131 → 1,650, hono 3,926 → 1,629 (v0.3.0 → v0.4.0)" src="docs/assets/insight-followup-light.svg" width="760">
 </picture>
 
 The report behind these, with every number and the plan for the next run:
-[docs/RESULTS.md](docs/RESULTS.md#at-a-glance).
+[docs/RESULTS.md](docs/RESULTS.md#benchmark-v10-2026-09-27-the-refocus-release).
 
 Full method, per-repository results, the model-vs-keywords comparison and raw data:
 [docs/RESULTS.md](docs/RESULTS.md). To regenerate the charts:
@@ -183,7 +183,9 @@ Full method, per-repository results, the model-vs-keywords comparison and raw da
 ```sh
 cd scripts
 python3 charts.py ../bench/results/headline-v10.json ../docs/assets
-python3 insight_charts.py ../bench/results/claude-v8 ../bench/results/replay-2026-09-24 ../docs/assets
+python3 insight_charts.py ../bench/results/claude-v10/nostall ../docs/assets --arm laya --run-label "benchmark v10" \
+    --before ../bench/results/replay-2026-09-24/ab-rank.jsonl v030 v0.3.0 \
+    --after ../bench/results/replay-2026-09-26-r1/replay.jsonl candidate v0.4.0
 ```
 
 ## How it works

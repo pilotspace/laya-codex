@@ -91,8 +91,24 @@ Data: `bench/results/claude-v10/` (as run) and `claude-v10/nostall/` (analysed).
 **laya-code-r1 vs keyword-only ranking** (same build): no significant difference on any metric.
 Wall −4.2% [−19.1, +12.3], code read + injected −1.6% [−11.1, +8.2], first-question recall
 −0.008. Offline, r1 inlines more of the right files than keywords (70 of 115 vs 62, see
-[docs/plans/2026-09-refocus.md](plans/2026-09-refocus.md#progress)); 51 tasks are too few to see
+[docs/plans/2026-09-refocus.md](plans/2026-09-refocus.md#progress); replay rows in
+`bench/results/replay-2026-09-26-r1/replay.jsonl`, label `candidate`); 51 tasks are too few to see
 that in sessions.
+
+**Finding the right code** (`bench/read_accuracy.py`, the same 51 paired tasks):
+
+| per session | stock | laya-codex (r1) |
+|---|---|---|
+| Gold files that reached Claude (Read or injected) | 78% | 81% |
+| Turn a gold file is first in context, median | 4 (5 tasks never) | **0** (4 never; 43 of 51 at turn 0) |
+| Turn of the first gold Read, median | 4 (5 never) | 4 (18 never: the injection already carried it) |
+| Reads that hit a gold file, pooled over all Reads | 56% | 51% |
+| Tokens spent reading non-gold files | 1,267 | 938 |
+
+The read charts first published for v10 averaged 55 unpaired tasks, stalled ones included, and
+averaged the first-Read turn only over sessions that made one. That showed 4.9 → 3.4 for a
+median that is 4 in both arms. `bench/headline.py` now keeps only the paired tasks, takes medians
+with "never" counted as last, and pools precision over Reads.
 
 **What it means.**
 - **Claude now uses `search`.** It calls laya-codex `search` about once per session, where v9 saw
@@ -103,9 +119,27 @@ that in sessions.
   still as large as the reading it saves. Shrinking it was the next lever, and v11 above shows
   that cutting the blocks made Claude read more.
 
+**Where the time goes** (the same 51 paired tasks; the follow-up chart is the offline replay):
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-time-dark.svg">
+  <img alt="Scatter of 153 benchmark v10 sessions: wall-clock time rises about 12.7 s per 1,000 output tokens (R² 0.84), with stock and laya-codex sessions on the same line" src="assets/insight-time-light.svg" width="760">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-turns-dark.svg">
+  <img alt="Turns per session fell on every repository (moon 18.1 → 11.9, httpx 8.8 → 6.2, hono 9.3 → 5.8) while output tokens per turn rose (313 → 373, 283 → 345, 304 → 372)" src="assets/insight-turns-light.svg" width="760">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-followup-dark.svg">
+  <img alt="Characters added to the second prompt, offline replay: moon 4,554 → 1,964, httpx 4,131 → 1,650, hono 3,926 → 1,629 (v0.3.0 → v0.4.0)" src="assets/insight-followup-light.svg" width="760">
+</picture>
+
 ## At a glance (benchmark v2)
 
-*Updated 2026-09-24. Superseded by benchmark v10 above; kept for the history of the limits.*
+*Updated 2026-09-24. Superseded by benchmark v10 above; kept for the history of the limits. The
+figures below are benchmark v2's; the README's charts of the same three views now show v10.*
 
 **Summary.**
 - **What benchmark v2 showed:** with laya-codex, Claude reads 38% less code, takes 21% fewer
@@ -130,11 +164,6 @@ that in sessions.
 
 ### 1. Session time follows output tokens
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-time-dark.svg">
-  <img alt="Scatter of 180 benchmark sessions: wall-clock time rises about 10.7 s per 1,000 output tokens (R² 0.92), with stock and laya-codex sessions on the same line" src="assets/insight-time-light.svg" width="760">
-</picture>
-
 | arm (60 sessions each) | output tokens per session | wall-clock per session | turns |
 |---|---|---|---|
 | stock Claude Code | 4,145 | 49.0 s | 14.2 |
@@ -147,11 +176,6 @@ interval.
 
 ### 2. Fewer turns, but each turn writes more
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-turns-dark.svg">
-  <img alt="Turns per session fell on every repository (moon 18.8 → 16.8, httpx 12.7 → 9.3, hono 11.2 → 7.6) while output tokens per turn rose (302 → 363, 261 → 348, 312 → 436)" src="assets/insight-turns-light.svg" width="760">
-</picture>
-
 | repo | turns per session, stock → laya-codex | output tokens per turn, stock → laya-codex |
 |---|---|---|
 | moon | 18.8 → 16.8 | 302 → 363 |
@@ -159,11 +183,6 @@ interval.
 | hono | 11.2 → 7.6 | 312 → 436 |
 
 ### 3. The follow-up prompt now gets answers, not more code
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-followup-dark.svg">
-  <img alt="Characters added to the second prompt: moon 4,554 → 1,842, httpx 4,131 → 1,474, hono 3,926 → 1,443 (v0.3.0 → now)" src="assets/insight-followup-light.svg" width="760">
-</picture>
 
 | repo | second prompt, characters (v0.3.0 → now) | whole session | test files named in the second prompt |
 |---|---|---|---|

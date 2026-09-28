@@ -340,6 +340,103 @@ class TokenMetricIsPrimary(unittest.TestCase):
         self.assertNotIn("reads less code", headline.CHART_TITLE.lower())
 
 
+class ReadSummary(unittest.TestCase):
+    """The read charts describe the same paired tasks as the savings chart, and no task drops out
+    of a figure because the thing it measures never happened."""
+
+    def rrow(self, task, reads=1, precision=1.0, recall=1.0, wasted=0, read_turn=None, seen_turn=None):
+        return {"task_id": task, "reads": reads, "read_precision": precision, "read_recall": recall,
+                "wasted_read_tokens": wasted, "first_gold_read_turn": read_turn, "first_gold_seen_turn": seen_turn}
+
+    def test_only_paired_tasks_count(self):
+        import headline
+        rows = {"moon": {"baseline": [self.rrow("a", seen_turn=4), self.rrow("stalled", seen_turn=1)],
+                         "laya": [self.rrow("a", seen_turn=0), self.rrow("stalled", seen_turn=0)],
+                         "laya-lex": [self.rrow("a", seen_turn=0)]}}
+        s = headline.read_summary(rows, {("moon", "a")}, "laya", "baseline", "laya-lex")
+        self.assertEqual(s["n"], 1)
+        self.assertEqual(s["journey"]["baseline"], [4])
+        self.assertEqual(s["journey"]["laya_seen"], [0])
+
+    def test_precision_pools_reads_so_sessions_without_reads_do_not_shift_it(self):
+        import headline
+        rows = {"r": {"baseline": [self.rrow("a", reads=1, precision=1.0), self.rrow("b", reads=3, precision=0.0),
+                                   self.rrow("c", reads=0, precision=None)],
+                      "laya": [self.rrow(t) for t in "abc"], "laya-lex": []}}
+        s = headline.read_summary(rows, {("r", t) for t in "abc"}, "laya", "baseline", "laya-lex")
+        self.assertAlmostEqual(s["reads"]["read_precision"]["baseline"], 0.25)
+
+    def test_turn_is_a_median_where_never_counts_as_last(self):
+        import headline
+        rows = {"r": {"baseline": [self.rrow("a", seen_turn=2), self.rrow("b", seen_turn=None), self.rrow("c", seen_turn=None)],
+                      "laya": [self.rrow("a", seen_turn=0), self.rrow("b", seen_turn=0), self.rrow("c", seen_turn=None)],
+                      "laya-lex": []}}
+        s = headline.read_summary(rows, {("r", t) for t in "abc"}, "laya", "baseline", "laya-lex")
+        seen = s["reads"]["seen_turn"]
+        self.assertIsNone(seen["baseline"])  # the middle task never saw gold code
+        self.assertEqual(seen["laya"], 0)
+        self.assertEqual((seen["never_baseline"], seen["never_laya"]), (2, 1))
+
+    def test_first_read_turn_reports_the_tasks_that_never_read_gold(self):
+        import headline
+        rows = {"r": {"baseline": [self.rrow("a", read_turn=5), self.rrow("b", read_turn=4)],
+                      "laya": [self.rrow("a", read_turn=3), self.rrow("b", read_turn=None)], "laya-lex": []}}
+        s = headline.read_summary(rows, {("r", "a"), ("r", "b")}, "laya", "baseline", "laya-lex")
+        self.assertEqual(s["first_gold_read_turn"]["laya"], {"median": None, "never": 1})
+        self.assertEqual(s["first_gold_read_turn"]["baseline"], {"median": 4.5, "never": 0})
+
+    def test_an_arm_missing_a_paired_task_is_refused(self):
+        import headline
+        rows = {"r": {"baseline": [self.rrow("a")], "laya": [], "laya-lex": []}}
+        with self.assertRaises(ValueError):
+            headline.read_summary(rows, {("r", "a")}, "laya", "baseline", "laya-lex")
+
+
+class ReadsChart(unittest.TestCase):
+    def test_subtitle_states_the_paired_task_count_and_never_is_drawn_as_text(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+        import charts
+        d = {"n_tasks": 51, "reads": {"seen_turn": {"label": "Turn right code arrives", "baseline": None,
+                                                    "laya": 0, "better": "lower", "fmt": "{:g}"},
+                                      "gold_seen": {"label": "Relevant code found", "baseline": 0.7, "laya": 0.8,
+                                                    "better": "higher", "fmt": "{:.0%}"}}}
+        out = charts.reads(d, charts.THEMES["light"])
+        self.assertIn("51 paired tasks", out)
+        self.assertIn(">never<", out)
+
+
+class InsightCharts(unittest.TestCase):
+    """The insight charts name the run they come from, so they can't pass for a newer one."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+        import insight_charts
+        self.ic = insight_charts
+        self.dir = tempfile.mkdtemp()
+        for repo in insight_charts.REPOS:
+            os.makedirs(os.path.join(self.dir, repo))
+            with open(os.path.join(self.dir, repo, "runs.jsonl"), "w") as f:
+                for arm, wall, out in (("baseline", 40.0, 4000), ("laya", 30.0, 3000), ("laya-lex", 35.0, 3500)):
+                    f.write(json.dumps(row(arm, "t", wall_s=wall, output_tokens=out, num_turns=10)) + "\n")
+                f.write(json.dumps(row("laya-lex", "unpaired", wall_s=99.0, output_tokens=9000)) + "\n")
+
+    def test_time_and_turns_charts_name_the_run_and_use_the_given_arm(self):
+        t = self.ic.THEMES["light"]
+        time_svg = self.ic.time_chart(self.dir, "laya", "benchmark v10", t)
+        turns_svg = self.ic.turns_chart(self.dir, "laya", "benchmark v10", t)
+        self.assertIn("9 benchmark v10 sessions", time_svg)
+        self.assertIn("benchmark v10, 3 paired tasks", turns_svg)
+        self.assertNotIn("v2", time_svg + turns_svg)
+
+    def test_followup_chart_compares_the_two_labelled_replays(self):
+        rows = [{"label": lab, "repo": repo, "turn": 2, "chars": c}
+                for repo in self.ic.REPOS for lab, c in (("v030", 4000), ("candidate", 1000))]
+        before, after = write(rows), write(rows)
+        svg = self.ic.followup_chart((before, "v030", "v0.3.0"), (after, "candidate", "v0.4.0"), self.ic.THEMES["light"])
+        self.assertIn("v0.4.0", svg)
+        self.assertIn("(−75%)", svg)
+
+
 class StatsCliIsImportSafe(unittest.TestCase):
     """stats.py must be importable (for METRICS) without running its CLI as a side effect."""
 

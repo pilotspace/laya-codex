@@ -291,41 +291,52 @@
   }
  },
  "read_precision": {
-  "baseline": 0.61,
-  "laya": 0.597,
-  "lex": 0.633
+  "baseline": 0.562,
+  "laya": 0.509,
+  "lex": 0.553
  },
  "first_gold_read_turn": {
-  "baseline": 4.94,
-  "laya": 3.42,
-  "lex": 2.96
+  "baseline": {
+   "median": 4,
+   "never": 5
+  },
+  "laya": {
+   "median": 4,
+   "never": 18
+  },
+  "lex": {
+   "median": 3,
+   "never": 11
+  }
  },
  "reads": {
-  "read_precision": {
-   "label": "Read precision",
-   "baseline": 0.61,
-   "laya": 0.597,
-   "better": "higher",
-   "fmt": "{:.2f}"
-  },
   "gold_seen": {
    "label": "Relevant code found",
-   "baseline": 0.764,
-   "laya": 0.795,
+   "baseline": 0.775,
+   "laya": 0.814,
    "better": "higher",
    "fmt": "{:.0%}"
   },
-  "first_gold_turn": {
-   "label": "Turn of first relevant Read",
-   "baseline": 4.939,
-   "laya": 3.417,
+  "seen_turn": {
+   "label": "Turn right code arrives",
    "better": "lower",
-   "fmt": "{:.1f}"
+   "fmt": "{:g}",
+   "baseline": 4,
+   "laya": 0,
+   "never_baseline": 5,
+   "never_laya": 4
+  },
+  "read_precision": {
+   "label": "Reads on relevant code",
+   "baseline": 0.562,
+   "laya": 0.509,
+   "better": "higher",
+   "fmt": "{:.0%}"
   },
   "wasted_read_tokens": {
    "label": "Wasted read tokens",
-   "baseline": 1884,
-   "laya": 1130,
+   "baseline": 1267,
+   "laya": 938,
    "better": "lower",
    "fmt": "{:,.0f}"
   }
@@ -366,10 +377,7 @@
    4,
    4,
    4,
-   4,
    5,
-   6,
-   6,
    6,
    6,
    6,
@@ -386,14 +394,9 @@
    null,
    null,
    null,
-   null,
    null
   ],
   "laya_seen": [
-   0,
-   0,
-   0,
-   0,
    0,
    0,
    0,
@@ -465,8 +468,6 @@
    2,
    2,
    2,
-   2,
-   2,
    3,
    3,
    3,
@@ -482,8 +483,6 @@
    6,
    9,
    10,
-   14,
-   null,
    null,
    null,
    null,
@@ -504,11 +503,6 @@
    null
   ],
   "lex_seen": [
-   0,
-   0,
-   0,
-   0,
-   0,
    0,
    0,
    0,
