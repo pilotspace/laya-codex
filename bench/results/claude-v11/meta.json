@@ -1,0 +1,6 @@
+{"version": "v11", "date": "2026-09-28", "binaries": {"laya": "8196d67c1224fd03b7e9f279faa968dddb895a13 (main)", "laya-ws6": "afaef44b4068f7545f35f78eefdd12b02865167c (feat/smaller-injection, not merged)"},
+ "model": "laya-code-r1 (HF tindang/laya-code 25f97e5, T 0.8057)",
+ "claude_model": "sonnet", "claude_code": "2.1.281", "effort": "medium", "turns": 2,
+ "arms": {"laya": "laya-adaptive, main", "laya-ws6": "laya-adaptive, 18-line windows and no first-prompt uses"},
+ "caps_usd": {"httpx": 6, "hono": 6, "moon": 14}, "spent_usd": 26.45,
+ "notes": "all three repos stopped at their caps: 49 paired tasks (moon 18, httpx 19, hono 12); no session exited non-zero or had a prompt over 300 s, so none were dropped"}
