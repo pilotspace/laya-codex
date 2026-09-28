@@ -66,6 +66,64 @@ def compare(runs, arm, base, keys, B=10000):
     return pooled, per_repo, q, sum(len(p) for p in repos.values())
 
 
+def median_turn(turns):
+    """Median turn with a task that never got there counted as the latest; None when the median
+    task itself never got there. A mean over only the tasks that got there would favour the arm
+    that skips the step (laya-codex tasks whose gold code was injected never need to Read it)."""
+    s = sorted(float("inf") if x is None else x for x in turns)
+    if not s:
+        return None
+    m = s[len(s) // 2] if len(s) % 2 else (s[len(s) // 2 - 1] + s[len(s) // 2]) / 2
+    return None if m == float("inf") else m
+
+
+def read_summary(rows, paired, arm, base, lex_arm):
+    """Read accuracy (bench/read_accuracy.py rows, per repo and arm) over the paired tasks only --
+    the tasks the paired metrics compare -- so every chart describes the same sessions.
+
+    rows: {repo: {arm: [row]}}; paired: {(repo, task_id)}."""
+    by = {}
+    for a in (base, arm, lex_arm):
+        keep = [r for repo, arms in rows.items() for r in arms.get(a, []) if (repo, r["task_id"]) in paired]
+        if a != lex_arm and len(keep) != len(paired):
+            raise ValueError(f"{a}: read rows for {len(keep)} of {len(paired)} paired tasks")
+        by[a] = keep
+    b, l = by[base], by[arm]
+    mean = lambda rs, k: round(sum(r[k] for r in rs) / max(1, len(rs)), 3)
+    # Pooled over every Read: a session with no Reads adds nothing, instead of dropping out of a
+    # mean of per-session ratios.
+    precision = lambda rs: round(sum(r["reads"] * (r["read_precision"] or 0) for r in rs) / max(1, sum(r["reads"] for r in rs)), 3)
+    never = lambda rs, k: sum(1 for r in rs if r[k] is None)
+    turn = lambda rs, k: {"median": median_turn([r[k] for r in rs]), "never": never(rs, k)}
+    turns = lambda rs, k: sorted((r[k] for r in rs), key=lambda x: (x is None, x or 0))
+    return {
+        "n": len(b),
+        "read_precision": {"baseline": precision(b), "laya": precision(l), "lex": precision(by[lex_arm])},
+        "first_gold_read_turn": {"baseline": turn(b, "first_gold_read_turn"), "laya": turn(l, "first_gold_read_turn"),
+                                 "lex": turn(by[lex_arm], "first_gold_read_turn")},
+        "reads": {  # scripts/charts.py: reads chart
+            "gold_seen": {"label": "Relevant code found", "baseline": mean(b, "read_recall"),
+                          "laya": mean(l, "read_recall"), "better": "higher", "fmt": "{:.0%}"},
+            "seen_turn": {"label": "Turn right code arrives", "better": "lower", "fmt": "{:g}",
+                          "baseline": median_turn([r["first_gold_seen_turn"] for r in b]),
+                          "laya": median_turn([r["first_gold_seen_turn"] for r in l]),
+                          "never_baseline": never(b, "first_gold_seen_turn"), "never_laya": never(l, "first_gold_seen_turn")},
+            "read_precision": {"label": "Reads on relevant code", "baseline": precision(b), "laya": precision(l),
+                               "better": "higher", "fmt": "{:.0%}"},
+            "wasted_read_tokens": {"label": "Wasted read tokens", "baseline": round(mean(b, "wasted_read_tokens")),
+                                   "laya": round(mean(l, "wasted_read_tokens")), "better": "lower", "fmt": "{:,.0f}"},
+        },
+        "journey": {  # scripts/charts.py: journey chart
+            "note": "Assistant turn at which a gold (correct) file first entered Claude's context; 0 = before "
+                    "Claude's first turn (laya-codex injected its code with the prompt); null = never.",
+            "baseline": turns(b, "first_gold_seen_turn"),
+            "laya_seen": turns(l, "first_gold_seen_turn"),
+            "laya_read": turns(l, "first_gold_read_turn"),
+            "lex_seen": turns(by[lex_arm], "first_gold_seen_turn"),
+        },
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
@@ -105,38 +163,14 @@ def main():
            "lex_vs_baseline": {"pooled": {k: lexb[k] for k in ("reading_tokens", "total_input", "wall_clock", "cost")},
                                "answer_recall": lexb_q["answer_recall"]}}
     if a.raw_root:
-        pooled_rows = defaultdict(list)
+        rows = {}
         for (name, _), (_, tasks) in zip(runs, a.run):
-            read_accuracy.collect(os.path.join(a.raw_root, name), tasks, pooled_rows)
-        def mean(rs, k):
-            v = [r[k] for r in rs if r[k] is not None]
-            return round(sum(v) / max(1, len(v)), 3)
-        out["read_precision"] = {"baseline": mean(pooled_rows["baseline"], "read_precision"),
-                                 "laya": mean(pooled_rows[arm], "read_precision"),
-                                 "lex": mean(pooled_rows[lex_arm], "read_precision")}
-        out["first_gold_read_turn"] = {"baseline": round(mean(pooled_rows["baseline"], "first_gold_read_turn"), 2),
-                                       "laya": round(mean(pooled_rows[arm], "first_gold_read_turn"), 2),
-                                       "lex": round(mean(pooled_rows[lex_arm], "first_gold_read_turn"), 2)}
-        base, laya = pooled_rows["baseline"], pooled_rows[arm]
-        out["reads"] = {  # scripts/charts.py: reads chart
-            "read_precision": {"label": "Read precision", "baseline": mean(base, "read_precision"),
-                               "laya": mean(laya, "read_precision"), "better": "higher", "fmt": "{:.2f}"},
-            "gold_seen": {"label": "Relevant code found", "baseline": mean(base, "read_recall"),
-                          "laya": mean(laya, "read_recall"), "better": "higher", "fmt": "{:.0%}"},
-            "first_gold_turn": {"label": "Turn of first relevant Read", "baseline": mean(base, "first_gold_read_turn"),
-                                "laya": mean(laya, "first_gold_read_turn"), "better": "lower", "fmt": "{:.1f}"},
-            "wasted_read_tokens": {"label": "Wasted read tokens", "baseline": round(mean(base, "wasted_read_tokens")),
-                                   "laya": round(mean(laya, "wasted_read_tokens")), "better": "lower", "fmt": "{:,.0f}"},
-        }
-        turns = lambda rs, k: sorted((r[k] for r in rs), key=lambda x: (x is None, x or 0))
-        out["journey"] = {  # scripts/charts.py: journey chart
-            "note": "Assistant turn at which a gold (correct) file first entered Claude's context; 0 = before "
-                    "Claude's first turn (laya-codex injected its code with the prompt); null = never.",
-            "baseline": turns(base, "first_gold_seen_turn"),
-            "laya_seen": turns(laya, "first_gold_seen_turn"),
-            "laya_read": turns(laya, "first_gold_read_turn"),
-            "lex_seen": turns(pooled_rows[lex_arm], "first_gold_seen_turn"),
-        }
+            rows[name] = defaultdict(list)
+            read_accuracy.collect(os.path.join(a.raw_root, name), tasks, rows[name])
+        paired = {(name, t["task_id"]) for name, d in runs for t, _ in sp.load(d, arm, "baseline")[0]}
+        s = read_summary(rows, paired, arm, "baseline", lex_arm)
+        assert s["n"] == n, f"read rows cover {s['n']} tasks, the paired metrics {n}"
+        out.update({k: s[k] for k in ("read_precision", "first_gold_read_turn", "reads", "journey")})
     with open(a.out, "w") as f:
         f.write(json.dumps(out, indent=1) + "\n")
     print(json.dumps(out, indent=1))

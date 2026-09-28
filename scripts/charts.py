@@ -76,13 +76,16 @@ def savings(d, t):
 
 
 def reads(d, t):
-    """Small multiples: stock Claude Code vs laya-codex on read behaviour."""
+    """Small multiples: stock Claude Code vs laya-codex on read behaviour, over the paired tasks.
+
+    A value of None (the median task never got there) is drawn as the word "never", not a bar."""
     items = list(d["reads"].values())
     w, h = 760, 272
     pw = (w - 48) / len(items)
     body = [
-        text(24, 32, "Claude reads the right code sooner", 17, t["fg"], weight="600"),
-        text(24, 54, "Read behaviour per task, stock Claude Code vs with laya-codex", 12, t["muted"]),
+        text(24, 32, "Finding the right code: stock Claude Code vs laya-codex", 17, t["fg"], weight="600"),
+        text(24, 54, f"Per session · {d['n_tasks']} paired tasks · turn: median, a task that never got there counts as last",
+             12, t["muted"]),
     ]
     base_y, bar_max = 226, 110
     for i, it in enumerate(items):
@@ -90,13 +93,16 @@ def reads(d, t):
         body.append(text(x0 + pw / 2, 86, it["label"], 13, t["fg"], "middle", "600"))
         hint = "higher is better" if it["better"] == "higher" else "lower is better"
         body.append(text(x0 + pw / 2, 104, hint, 11, t["muted"], "middle"))
-        top = max(it["baseline"], it["laya"])
+        top = max((v for v in (it["baseline"], it["laya"]) if v is not None), default=0) or 1
         for j, (key, color, name) in enumerate((("baseline", t["base"], "stock"), ("laya", t["laya"], "laya-codex"))):
             v = it[key]
-            bh = bar_max * 0.72 * v / top
             bx = x0 + pw / 2 - 40 + j * 56
-            body.append(f'<rect x="{bx + 9:.1f}" y="{base_y - bh:.1f}" width="24" height="{bh:.1f}" rx="4" fill="{color}"/>')
-            body.append(text(bx + 21, base_y - bh - 6, it["fmt"].format(v), 12, t["fg"], "middle", "600"))
+            if v is None:
+                body.append(text(bx + 21, base_y - 6, "never", 12, t["fg"], "middle", "600"))
+            else:
+                bh = bar_max * 0.72 * v / top
+                body.append(f'<rect x="{bx + 9:.1f}" y="{base_y - bh:.1f}" width="24" height="{bh:.1f}" rx="4" fill="{color}"/>')
+                body.append(text(bx + 21, base_y - bh - 6, it["fmt"].format(v), 12, t["fg"], "middle", "600"))
             body.append(text(bx + 21, base_y + 18, name, 11, t["muted"], "middle"))
     return svg(w, h, body, t, "laya-codex benchmark: read behaviour")
 
