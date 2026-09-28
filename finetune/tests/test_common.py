@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 
 import common  # noqa: E402
 
-BASE = os.path.expanduser("~/.cache/laya-codex/models/laya-base")
+BASE = common.BASE_MODEL
 
 
 def test_parse_diff_old_ranges_modify_insert_delete():
@@ -71,8 +71,35 @@ def test_task_text_uses_short_first_body_line_only():
     assert common.task_text("fix: handle empty frames in decoder", "x" * 300) == "fix: handle empty frames in decoder"
 
 
+def _model_dir(path):
+    os.makedirs(os.path.join(path, "tokenizer"))
+    open(os.path.join(path, "tokenizer", "tokenizer.json"), "w").write("{}")
+    open(os.path.join(path, "rl_common.py"), "w").write("")
+    return path
+
+
+def test_find_model_dir_prefers_env_then_base_then_laya_code(tmp_path):
+    home = str(tmp_path)
+    models = os.path.join(home, ".cache", "laya-codex", "models")
+    snap = _model_dir(os.path.join(home, ".cache", "huggingface", "hub", "models--tindang--laya-code", "snapshots", "abc"))
+    assert common.find_model_dir({}, home) == snap
+    code = _model_dir(os.path.join(models, "laya-code"))
+    assert common.find_model_dir({}, home) == code
+    base = _model_dir(os.path.join(models, "laya-base"))
+    assert common.find_model_dir({}, home) == base
+    assert common.find_model_dir({"LAYA_CODEX_FT_BASE": "/x/y"}, home) == "/x/y"
+
+
+def test_find_model_dir_without_any_model_is_the_laya_base_path(tmp_path):
+    home = str(tmp_path)
+    assert common.find_model_dir({}, home) == os.path.join(home, ".cache", "laya-codex", "models", "laya-base")
+
+
 @pytest.fixture(scope="module")
 def tok():
+    path = os.path.join(BASE, "tokenizer", "tokenizer.json")
+    if not os.path.isfile(path):
+        pytest.skip("no laya tokenizer (set LAYA_CODEX_FT_BASE, or install laya-base or laya-code)")
     from transformers import AutoTokenizer
     return AutoTokenizer.from_pretrained(os.path.join(BASE, "tokenizer"))
 
@@ -118,3 +145,69 @@ def test_bm25_score_doc_matches_index_scores():
     for i, s in bm.search(q, 10):
         assert abs(common.bm25_score_doc(bm, q, docs[i]) - s) < 1e-9
     assert common.bm25_score_doc(bm, q, tokenize("nothing matches here")) == 0.0
+
+
+# ----------------------------------------------------------------------------- production-shaped inputs
+def test_render_state_matches_rust_scorer():
+    assert common.render_state("src/a.rs", 3, 9, "fn a() {}") == "file: src/a.rs (lines 3-9)\nfn a() {}"
+
+
+def test_state_ids_truncate_tokens_like_rust(tok):
+    st = common.render_state("x.py", 1, 200, "\n".join("value_%d = compute(%d)" % (i, i) for i in range(200)))
+    ids = common.state_ids(tok, st)
+    assert len(ids) == common.STATE_TOKENS == 128
+    assert ids == tok(st, add_special_tokens=False)["input_ids"][:128]
+    # [MASK] in code is blanked so it cannot forge an option marker
+    assert tok.mask_token_id not in common.state_ids(tok, "a [MASK] b")
+
+
+def test_encode_ids_matches_reference_when_state_fits(tok):
+    sys.path.insert(0, BASE)
+    from rl_common import build_sequence
+    st = common.render_state("a.py", 1, 3, "def f():\n    return 1\n")
+    q = common.QUESTIONS[0].format(task="fix f")
+    ids, markers = common.encode_ids(tok, q, common.state_ids(tok, st))
+    ref_ids, ref_markers = build_sequence(tok, st, {"t": "noul", "ins": q, "crit": None}, 512, 192)
+    assert (ids, markers) == (ref_ids, ref_markers)
+
+
+def test_encode_ids_keeps_only_the_state_budget(tok):
+    st = common.render_state("x.py", 1, 200, "\n".join("value_%d = compute(%d)" % (i, i) for i in range(200)))
+    q = common.QUESTIONS[0].format(task="fix compute")
+    ids, markers = common.encode_ids(tok, q, common.state_ids(tok, st))
+    head = common.encode_ids(tok, q, [])[0]
+    assert len(ids) == len(head) + 128 and len(markers) == 2
+
+
+def test_is_fix_commit():
+    assert common.is_fix("fix(tui): handle resize of the viewport", "")
+    assert common.is_fix("Handle empty frames in the decoder", "Fixes #123")
+    assert common.is_fix("Resolve crash when config is missing", "")
+    assert not common.is_fix("feat: add a new provider for gemini", "Adds the provider.")
+    assert not common.is_fix("docs: prefix for the readme", "")  # 'prefix' is not 'fix'
+
+
+def test_commit_task_strips_conventional_prefix_and_trailers():
+    assert common.commit_task("fix(tui): handle resize of the viewport (#412)", "", False) == \
+        "tui: handle resize of the viewport"
+    assert common.commit_task("fix: handle empty frames in decoder", "", False) == "handle empty frames in decoder"
+    assert common.commit_task("fix(16): prevent agent teleportation", "", False) == "prevent agent teleportation"
+    body ="Frames of length 0 crashed the reader.\n\nSigned-off-by: x <x@y>\n- [x] tests"
+    assert common.commit_task("fix: handle empty frames in decoder", body, True) == \
+        "handle empty frames in decoder. Frames of length 0 crashed the reader."
+    long_body = "word " * 200
+    assert len(common.commit_task("fix: handle empty frames in decoder", long_body, True)) <= 400
+
+
+def test_label_candidates_hunk_file_other():
+    diff = {"src/a.rs": {"new_path": "src/a.rs", "new_file": False, "old_lines": {15}}}
+    cands = [{"path": "src/a.rs", "start": 10, "end": 20}, {"path": "src/a.rs", "start": 30, "end": 40},
+             {"path": "src/b.rs", "start": 10, "end": 20}]
+    labels = common.label_candidates(cands, diff)
+    assert labels == [(1.0, "hunk"), (common.FILE_SOFT, "file"), (0.0, "other")]
+
+
+def test_label_candidates_uses_old_path_of_a_rename():
+    diff = {"old.go": {"new_path": "new.go", "new_file": False, "old_lines": {5}}}
+    labels = common.label_candidates([{"path": "old.go", "start": 1, "end": 9}], diff)
+    assert labels == [(1.0, "hunk")]

@@ -1,7 +1,9 @@
 """Re-fit the noul temperature of an exported model dir on the validation split (min NLL) and write it into
 rl_agent_config.json (`temperature_by_options["noul:2"]` and `temperature[2]`).
 
-Fit on the EXPORTED weights (F16-rounded), so the temperature matches exactly what the Rust port will load.
+Fit on the EXPORTED weights (F16-rounded), so the temperature matches exactly what the Rust port will load, over
+what production scores: the first 16 candidates of every validation list (with or without a positive), built by
+build_data.py with the production retriever and encoded like the Rust scorer.
 
     python3 finetune/calibrate.py --model ~/.cache/laya-codex/models/laya-code
 """
@@ -72,9 +74,9 @@ def fit_temperature_k(logits, y):
     return float(np.exp((lo + hi) / 2))
 
 
-def report(logits, rows, T):
+def report(logits, y, T):
     from rl_common import auroc, ece_score
-    y = np.array([float(r["label"]) for r in rows])
+    y = np.asarray(y, dtype=np.float64)
     p = probs(logits, T)
     hard = (y == 0) | (y == 1)
     hi = p >= 0.5
@@ -89,19 +91,23 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=os.path.expanduser("~/.cache/laya-codex/models/laya-code"))
     ap.add_argument("--device", default=None)
-    ap.add_argument("--val", default=os.path.join(common.WORK, "val.jsonl"))
+    ap.add_argument("--data", default=None, help="dir of build_data.py lists (default WORK/data_v3)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     import torch
-    from train import load_base_model, predict  # same loader + same input path as training
+    import listwise
+    from train import encode_lists, load_base_model, predict_lists  # same loader + same input path as training
     device = torch.device(args.device or ("mps" if torch.backends.mps.is_available() else "cpu"))
-    rows = [json.loads(l) for l in open(args.val)]
+    lists = listwise.load_lists("val", data_dir=args.data, with_pos_only=False)
     model, tok, cfg, _ = load_base_model(args.model, device)
-    logits = predict(model, tok, rows, device, amp=False)
+    enc = encode_lists(tok, lists, limit=listwise.SCORE_TOP)
+    logits = np.concatenate(predict_lists(model, enc, device, tok.pad_token_id))
+    y = np.concatenate([lab for _, lab in enc])
     np.save(os.path.join(common.WORK, "val_logits_%s.npy" % os.path.basename(args.model.rstrip("/"))), logits)
     T_old = cfg.get("temperature_by_options", {}).get("noul:2", cfg["temperature"][2])
-    T = fit_temperature(logits, np.array([float(r["label"]) for r in rows]))
-    before, after = report(logits, rows, T_old), report(logits, rows, T)
+    T = fit_temperature(logits, y)
+    before, after = report(logits, y, T_old), report(logits, y, T)
+    print("lists %d, candidates %d" % (len(lists), len(y)))
     print("before", before)
     print("after ", after)
     if args.dry_run:
@@ -111,8 +117,10 @@ def main():
     cfg["temperature"][2] = T
     cfg.setdefault("temperature_by_options", {})["noul:2"] = T
     cfg["model_name"] = "laya-code"
-    cfg["finetune"] = {"base": "laya-base (convaiinnovations/laya)", "task": "code relevance (noul)",
-                       "noul_temperature_fit": {"split": "val", "before": before, "after": after}}
+    cfg["finetune"] = {"base": "laya-code (tindang/laya-code), itself fine-tuned from laya-base (convaiinnovations/laya)",
+                       "task": "code relevance (noul) as the production reranker",
+                       "noul_temperature_fit": {"split": "val, first %d candidates of every list" % listwise.SCORE_TOP,
+                                                "lists": len(lists), "before": before, "after": after}}
     tmp = path + ".tmp"
     json.dump(cfg, open(tmp, "w"), indent=2)
     os.replace(tmp, path)

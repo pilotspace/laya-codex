@@ -203,7 +203,7 @@ your prompt ─► laya-codex hook ─► local daemon ─► BM25 keyword searc
   laya-codex runs for you, stores the chunks. Edits are re-indexed as Claude makes them.
 - **Ranking.** Keyword search picks the 24 best candidates, and laya-codex re-ranks the top 16 with the
   [Laya](https://huggingface.co/convaiinnovations/laya) model:
-  [laya-code](https://huggingface.co/tindang/laya-code), a code-tuned Laya fine-tune running on the
+  [laya-code](https://huggingface.co/tindang/laya-code/tree/r1), a code-tuned Laya fine-tune running on the
   Metal GPU, scores how relevant each one is to your task, and the two rankings are blended. The
   model scores the candidates best-first and stops inside its time budget, so a slow or busy
   machine re-ranks fewer of them rather than none; the rest keep their keyword order below. Only
@@ -237,15 +237,23 @@ server is trusted. Picking the right piece of code needs a judgment about the ta
   model scores the top 16 of those, in about 0.5 s on the Metal GPU. Indexing needs no model and no
   vector database, so a repository indexes in seconds (Moon's source: 485 files in about 1.2 s).
 - **It has to be tuned for code.** Laya was trained for triage, moderation and routing, not code,
-  and out of the box it ranks code no better than keywords. laya-code is Laya fine-tuned on the
-  git history of 8 open-source repositories, where each commit's changed files are the right
-  answers for its message. The two repositories used for evaluation were excluded from training.
+  and out of the box it ranks code no better than keywords. laya-code is Laya fine-tuned on git
+  history, where the code a commit changed is the right answer for its message. The version this
+  release installs is revision `25f97e5` on the `r1` branch of
+  [tindang/laya-code](https://huggingface.co/tindang/laya-code/tree/r1): retrained on fixed commits
+  of 7 repositories, on the exact candidate lists laya-codex's retriever produces. The benchmark
+  repositories and a second evaluation repository were excluded from training. The installer
+  pins that revision; the repository's `main` branch still holds the first model.
 - **The two rankings are blended, not replaced.** The final score is
   `0.5 × keyword rank + 0.5 × model probability`. The keyword rank keeps documentation and prose
   from crowding out code, and the model reorders the code candidates.
 
 How well each stage ranks the files a real change touched, over the 40 most recent Moon commits
-(24 keyword candidates per task, [model card](https://huggingface.co/tindang/laya-code)):
+(24 keyword candidates per task), measured for the **first** laya-code (revision `f3d6bd2`, its
+[model card](https://huggingface.co/tindang/laya-code/tree/f3d6bd2344e4750dd917f95d40ceacfa81bb81db)).
+The retrained revision's evaluation, including the offline replay where it inlines 70 of 115 gold
+files against 63 for the first model and 62 for keywords, is in
+[its model card](https://huggingface.co/tindang/laya-code/blob/r1/README.md):
 
 | ranking | MRR (higher is better) | share of the top 10 that is right (P@10) | calibration error (lower is better) |
 |---|---|---|---|
@@ -450,7 +458,7 @@ and `.mcp.json`: `{"mcpServers": {"laya-codex": {"command": "laya-codex", "args"
 Requirements:
 - **Rust:** 1.90+ (edition 2024).
 - **Moon:** a [Moon](https://github.com/pilotspace/moon) binary built with its `text-index` feature. laya-codex uses `LAYA_CODEX_MOON_BIN` if set, else looks beside the (symlink-resolved) `laya-codex` binary, then in `../libexec`, then on `PATH`.
-- **Model weights (optional):** `hf download tindang/laya-code --local-dir ~/.cache/laya-codex/models/laya-code`. Without them, laya-codex ranks by keywords alone.
+- **Model weights (optional):** `hf download tindang/laya-code --revision 25f97e5a2ec5f8cf7218a4f67504367d8832e1fe --local-dir ~/.cache/laya-codex/models/laya-code` (the revision `install.sh` pins; the repo's `main` branch holds the older model). Without them, laya-codex ranks by keywords alone.
 
 ```sh
 cargo build --release -p laya-cli        # target/release/laya-codex (fat LTO, mimalloc, Metal on macOS)

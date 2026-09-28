@@ -158,6 +158,10 @@ pub fn model_candidates(home: &Path) -> Vec<PathBuf> {
 pub const INSTALL_SH: &str =
     "https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh";
 
+/// The Hugging Face commit of `tindang/laya-code` this version uses: the retrained re-ranker, on the
+/// repo's `r1` branch. Must equal `MODEL_REVISION` in install.sh (scripts/test-install.sh checks).
+pub const LAYA_CODE_REVISION: &str = "25f97e5a2ec5f8cf7218a4f67504367d8832e1fe";
+
 /// How to get a Moon binary.
 pub const MOON_FIX: &str = "re-run the installer (https://github.com/pilotspace/laya-codex#install), which puts moon \
      beside laya-codex; or build moon (https://github.com/pilotspace/moon, `cargo build --release`) and put it on PATH, \

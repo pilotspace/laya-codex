@@ -2,7 +2,8 @@
 # Tests install.sh against a fake release and a fake model repo on local disk (file:// URLs), so it
 # runs offline and in CI. Checks: a clean install, an idempotent re-run, a tampered binary that
 # must be rejected without touching the existing install, an unsafe model manifest path, a stalled
-# download, and --model-only (model without binaries).
+# download, --model-only (model without binaries), a model manifest that is not the pinned one, and
+# that the installer's defaults pin a Hugging Face revision and the committed model manifest.
 #
 #   sh scripts/test-install.sh
 set -eu
@@ -43,6 +44,7 @@ echo '{}' >"$model/tokenizer/tokenizer.json"
 
 run() {
     LAYA_CODEX_RELEASES_URL="file://$T/releases" LAYA_CODEX_MODEL_URL="file://$model" LAYA_CODEX_HOME="$T/home" \
+        LAYA_CODEX_MODEL_MANIFEST_SHA256="$(sum "$model/MANIFEST.sha256")" \
         sh "$here/install.sh" --version "$V" --dir "$T/bin" "$@"
 }
 
@@ -132,6 +134,7 @@ fi
 rm -rf "$T/home2" "$T/bin2"
 grep -v escape "$model/MANIFEST.sha256" >"$T/manifest" && mv "$T/manifest" "$model/MANIFEST.sha256"
 LAYA_CODEX_RELEASES_URL="file://$T/nonexistent" LAYA_CODEX_MODEL_URL="file://$model" LAYA_CODEX_HOME="$T/home2" \
+    LAYA_CODEX_MODEL_MANIFEST_SHA256="$(sum "$model/MANIFEST.sha256")" \
     sh "$here/install.sh" --dir "$T/bin2" --model-only >"$T/out6" 2>&1 && rc=0 || rc=$?
 [ "$rc" -eq 0 ] || { cat "$T/out6"; fail "--model-only exited non-zero"; }
 [ -f "$T/home2/models/laya-code/tokenizer/tokenizer.json" ] || fail "--model-only did not fetch the model"
@@ -148,5 +151,31 @@ run --no-model >"$T/out7" 2>&1 || { cat "$T/out7"; fail "install over 0.1.x exit
 [ ! -e "$T/old-calls" ] || fail "the installer ran the 0.1.x laya binary"
 grep -q "rm $T/bin/laya" "$T/out7" || { cat "$T/out7"; fail "no hint to remove the 0.1.x laya binary"; }
 pass "upgrade over 0.1.x leaves a removal hint"
+
+# 8. A model manifest other than the pinned one is refused before any model file is fetched.
+rm -rf "$T/home3"
+LAYA_CODEX_RELEASES_URL="file://$T/nonexistent" LAYA_CODEX_MODEL_URL="file://$model" LAYA_CODEX_HOME="$T/home3" \
+    LAYA_CODEX_MODEL_MANIFEST_SHA256="0000000000000000000000000000000000000000000000000000000000000000" \
+    sh "$here/install.sh" --dir "$T/bin3" --model-only >"$T/out8" 2>&1 && rc=0 || rc=$?
+[ "$rc" -ne 0 ] || fail "a manifest that is not the pinned one was accepted"
+grep -q "model manifest checksum mismatch" "$T/out8" || { cat "$T/out8"; fail "no manifest checksum error"; }
+[ ! -e "$T/home3/models/laya-code/model.safetensors" ] || fail "a model file was fetched from an unpinned manifest"
+pass "unpinned model manifest refused"
+
+# 9. The defaults pin one Hugging Face revision of laya-code (a commit SHA, not a branch) and the
+#    manifest committed in release/hf-laya-code, so a later upload to the model repo cannot change
+#    what this installer downloads.
+# shellcheck disable=SC2016 # the ${...} below is install.sh's text, matched literally
+rev="$(sed -n 's/^MODEL_REVISION="${LAYA_CODEX_MODEL_REVISION:-\([^}]*\)}"$/\1/p' "$here/install.sh")"
+# shellcheck disable=SC2016
+pin="$(sed -n 's/^MODEL_MANIFEST_SHA256="${LAYA_CODEX_MODEL_MANIFEST_SHA256:-\([^}]*\)}"$/\1/p' "$here/install.sh")"
+[ "$pin" = "$(sum "$here/release/hf-laya-code/MANIFEST.sha256")" ] ||
+    fail "install.sh pins manifest '$pin', not the sha256 of release/hf-laya-code/MANIFEST.sha256"
+printf '%s' "$rev" | grep -Eq '^[0-9a-f]{40}$' ||
+    fail "install.sh does not pin a Hugging Face commit SHA of laya-code (MODEL_REVISION='$rev')"
+# `laya-codex doctor` tells users to download the same revision by hand.
+grep -q "^pub const LAYA_CODE_REVISION: &str = \"$rev\";" "$here/crates/laya-cli/src/config.rs" ||
+    fail "crates/laya-cli/src/config.rs LAYA_CODE_REVISION is not install.sh's revision $rev"
+pass "defaults pin revision $rev and the committed model manifest"
 
 echo "all installer tests passed"

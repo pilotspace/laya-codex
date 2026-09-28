@@ -10,7 +10,8 @@
 # Every download is retried, time-limited and checked against a SHA-256 before anything is
 # installed. Binaries are swapped in with a rename, so an interrupted run leaves the previous
 # install working. Environment overrides: LAYA_CODEX_VERSION, LAYA_CODEX_INSTALL_DIR, LAYA_CODEX_HOME, LAYA_CODEX_MODEL
-# (1 = download the model, 0 = skip), LAYA_CODEX_RELEASES_URL and LAYA_CODEX_MODEL_URL (mirrors and tests).
+# (1 = download the model, 0 = skip), LAYA_CODEX_RELEASES_URL and LAYA_CODEX_MODEL_URL (mirrors and tests),
+# LAYA_CODEX_MODEL_REVISION and LAYA_CODEX_MODEL_MANIFEST_SHA256 (another laya-code revision and its manifest).
 set -eu
 
 REPO="pilotspace/laya-codex"
@@ -18,7 +19,12 @@ VERSION="${LAYA_CODEX_VERSION:-latest}"
 INSTALL_DIR="${LAYA_CODEX_INSTALL_DIR:-$HOME/.local/bin}"
 LAYA_CODEX_HOME="${LAYA_CODEX_HOME:-$HOME/.cache/laya-codex}"
 RELEASES_URL="${LAYA_CODEX_RELEASES_URL:-https://github.com/$REPO/releases}"
-MODEL_URL="${LAYA_CODEX_MODEL_URL:-https://huggingface.co/tindang/laya-code/resolve/main}"
+# The laya-code revision this installer downloads: a Hugging Face commit of tindang/laya-code (never a
+# branch, so a later upload cannot change what this version installs), and the sha256 of its
+# MANIFEST.sha256, a copy of release/hf-laya-code/MANIFEST.sha256 (scripts/test-install.sh checks both).
+MODEL_REVISION="${LAYA_CODEX_MODEL_REVISION:-25f97e5a2ec5f8cf7218a4f67504367d8832e1fe}"
+MODEL_MANIFEST_SHA256="${LAYA_CODEX_MODEL_MANIFEST_SHA256:-c32745e3b27956d194bd49db2bc1e8d1f212d536fc45c738e431c7f302451b81}"
+MODEL_URL="${LAYA_CODEX_MODEL_URL:-https://huggingface.co/tindang/laya-code/resolve/$MODEL_REVISION}"
 MODEL="${LAYA_CODEX_MODEL:-auto}"
 MODEL_ONLY=0
 
@@ -87,6 +93,9 @@ get_model() {
     dest="$LAYA_CODEX_HOME/models/laya-code"
     say "fetching the laya-code re-ranker manifest"
     fetch "$MODEL_URL/MANIFEST.sha256" "$tmp/MANIFEST.sha256" 60 || die "could not fetch the model manifest"
+    # The manifest decides which checksums the files must match, so it must be the pinned one.
+    [ "$(sha256 "$tmp/MANIFEST.sha256")" = "$MODEL_MANIFEST_SHA256" ] ||
+        die "model manifest checksum mismatch (expected the manifest of laya-code revision $MODEL_REVISION)"
     mkdir -p "$dest"
     # One "<sha256>  <path>" line per file; download only what is missing or stale.
     while read -r want file; do
