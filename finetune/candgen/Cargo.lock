@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "laya-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "serde",
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "laya-parse"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "ignore",
@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "laya-rank"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "laya-core",
  "serde",
@@ -381,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "laya-store"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "fastrand",
