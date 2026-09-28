@@ -53,9 +53,11 @@ Why the two gaps exist (v10 `runs.jsonl`, `bench/ledger.py`):
 - **The injection cancels the reading savings.**
   - Claude reads 32% less, but the injected code (about 1.7k tokens per session) brings the total
     back above stock.
-  - Reaching −50% needs a smaller injection that still carries the right code.
-  - The retrained reranker (laya-code-r1) ranks the right code higher, 70 vs 62 of 115 offline,
-    and shrinking the injection with it is the current work.
+  - The retrained reranker (laya-code-r1) ranks the right code higher, 70 vs 62 of 115 offline.
+  - Showing less of each block does not help. v11 cut the injection 27% with 18-line windows, and
+    Claude read 23% more to see the rest: read + injected rose 10.6%.
+  - Each injected token that Claude needed saves more than a token of reading. So the next step has
+    to cut what Claude reads, not what laya-codex shows.
 
 ## The levers (the only work in scope)
 
@@ -97,3 +99,5 @@ Frozen (not developed unless this page changes):
 | 2026-09-25 | `search` answers name lookups (callers, uses, tests, definitions) with an exact, complete scan of the files on disk that the indexer admits; Laya orders the files and picks the definition shown. Descriptions of concepts keep the lexical + Laya ranking. Completeness is what Claude reaches for Grep to get, and no ranker can promise it |
 | 2026-09-25 | Merge name lookups (#18) although the pilot gate (≥ 1 `search` per session, Grep −⅓) was not met: Claude used `search` in half the sessions and read + injected fell 10.6%. Test lookups were dropped: Claude asked for them in 3 of 13 searches and tokens rose 8% |
 | 2026-09-26 | Accept laya-code-r1: 70 of 115 gold inlined in the production blend against 62 for keywords and 63 for v1, at the same latency. The "no more injected chars" clause (+2.5%) is waived. Laya alone now beats keywords (72 vs 62) |
+| 2026-09-27 | Release v0.4.0 with laya-code-r1, published as revision `25f97e5` on a separate `r1` branch of the Hugging Face repo (main keeps the first model) and pinned by the installer |
+| 2026-09-28 | Park the smaller injection (18-line windows, no first-prompt uses): it passed the offline replay but raised read + injected 10.6% in benchmark v11, because Claude read the rest of each block. Not merged; v0.4.0 ships without it |

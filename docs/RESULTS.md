@@ -1,8 +1,49 @@
-# laya-codex — results (updated 2026-09-27)
+# laya-codex — results (updated 2026-09-28)
 
 All numbers are reproducible from this repo; raw per-run rows are in `bench/results/`.
 Hardware: Apple M4 Pro, 24 GB. Agent: Claude Code 2.1.280, model `sonnet`, isolated from user
 settings/plugins/MCP (`--setting-sources project --strict-mcp-config`), tools Read/Grep/Glob.
+
+## Benchmark v11 (2026-09-28): a smaller injection made Claude read more
+
+**What ran.**
+- **Question:** does injecting less code on the first prompt lower the token target?
+- **Arms:** laya-codex main (`8196d67`) against a branch that injected less (`feat/smaller-injection`,
+  `afaef44`, not merged). Both arms used laya-code-r1. There was no stock arm.
+- **What the branch changed:**
+  - it showed an 18-line window of each inlined block instead of the whole block;
+  - it left the "Definitions and uses" list out of the first prompt;
+  - it shortened the header and footer.
+- **Offline replay:** it cut the first prompt's injection to 59% with the same 70 of 115 gold files
+  inlined.
+- **Tasks and cost:** the same 60 tasks, two prompts each, Sonnet at medium effort, $26.45.
+- **Tasks run:** every repo stopped at its cap, giving 49 paired tasks (moon 18, httpx 19, hono 12).
+  No session hung or failed, so none were dropped.
+
+Data: `bench/results/claude-v11/`.
+
+**Smaller injection vs main** (pooled, ratio of sums, 95% paired bootstrap CI):
+
+| metric | change |
+|---|---|
+| Code read + injected (the token target) | **+10.6%** [+0.5, +21.6] |
+| Tokens injected per session | 1,781 → 1,292 (−27%) |
+| Code-reading tokens per session | 5,308 → 6,545 (**+23.3%** [+9.0, +40.3]) |
+| Read calls per session | 3.88 → 4.80 |
+| Turns | +11.2% [+1.9, +21.7] |
+| Wall-clock time | +12.7% [−4.1, +29.9], n.s. |
+| Cost | +21.0% [+10.2, +32.8] |
+| Answer recall, first question | 0.857 vs 0.833 (+0.024, n.s.) |
+
+**What it means.**
+- **Each token cut from the injection added about 2.5 tokens of reading.** With part of a block
+  in view, Claude opened the file to see the rest. The offline replay can't show this: it
+  measures what reaches Claude, not what Claude does next.
+- **The branch was not merged.** Shrinking the blocks Claude is shown is not the way to the token
+  target.
+- **Runs drift.** The same main build, with the same Claude Code version (2.1.281), made 6–7 tool
+  calls per session on httpx and hono in v11 against about 4 in v10. Compare arms within one run,
+  never across runs.
 
 ## Benchmark v10 (2026-09-27): the refocus release
 
@@ -59,7 +100,8 @@ that in sessions.
 - **Tool calls did not fall further.** Total tool calls stayed at about 5 per session, the same
   as v9, so time did not move: −12%, against a goal of −30%.
 - **The token target is not met:** read + injected +6%, against a goal of −50%. The injection is
-  still as large as the reading it saves. Shrinking it is the next lever.
+  still as large as the reading it saves. Shrinking it was the next lever, and v11 above shows
+  that cutting the blocks made Claude read more.
 
 ## At a glance (benchmark v2)
 

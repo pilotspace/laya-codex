@@ -1,0 +1,36 @@
+{
+ "n_tasks_paired": 12,
+ "reference": "laya",
+ "arms": {
+  "laya": {
+   "reading_tokens": 4222.25,
+   "injected_tokens": 1570.25,
+   "total_input_tokens": 142799.66666666666,
+   "output_tokens": 3528.0,
+   "wall_s": 47.58833333333334,
+   "num_turns": 8.333333333333334,
+   "cost_usd": 0.18342841666666668,
+   "recall": 0.7638888888888888,
+   "precision": 0.6944444444444445,
+   "hit_any": 0.9166666666666666,
+   "recall_all_turns": 0.9166666666666666
+  },
+  "laya-ws6": {
+   "reading_tokens": 5409.583333333333,
+   "injected_tokens": 1122.25,
+   "total_input_tokens": 255638.5,
+   "output_tokens": 6796.5,
+   "wall_s": 83.71666666666667,
+   "num_turns": 11.083333333333334,
+   "cost_usd": 0.31771208333333334,
+   "recall": 0.8888888888888888,
+   "precision": 0.75,
+   "hit_any": 1.0,
+   "recall_all_turns": 1.0,
+   "reading_cost_change_pct": 12.8,
+   "wall_change_pct": 75.9,
+   "median_wall_ratio": 1.592,
+   "median_total_input_ratio": 1.589
+  }
+ }
+}

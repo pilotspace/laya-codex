@@ -1,6 +1,7 @@
 # Plan: refocus on the three levers (v0.4.0)
 
-Status: **in progress**. WS0–WS2 and WS4 are merged, WS3 and WS5 are being released as v0.4.0, WS6 is running.
+Status: **releasing**. WS0–WS4 are merged, and WS5 is being released as v0.4.0. WS6 was measured in
+benchmark v11 and parked.
 Proposed 2026-09-25. North star: [docs/VISION.md](../VISION.md)
 
 ## Progress
@@ -10,10 +11,10 @@ Proposed 2026-09-25. North star: [docs/VISION.md](../VISION.md)
 | WS0 | done | #15: benchmark fixes, v9 data. #16: this plan, VISION.md, CLAUDE.md. #9 (batch reads) closed | — |
 | WS1 | done | #17: read + injected as the token metric, tool-call ledger, `bench/replay_decide.sh`, `--pilot` | v9 reproduced exactly: 4,230 vs 4,424 tokens; 8.45 vs 5.10 tool calls; replay gold inlined 62 / 63 / 47 |
 | WS2 | done, gate not met | #18: `search` answers name lookups. #20: files past the size cap are counted instead of listed empty | see the pull pilots below |
-| WS3 | model accepted, waiting for upload | branch `feat/reranker-retrain`: production-shaped lists from fixed commits, leakage check, laya-code-r1 | see the precision gate below |
+| WS3 | done | branch `feat/reranker-retrain`: production-shaped lists from fixed commits, leakage check, laya-code-r1. The model is published as Hugging Face revision `25f97e5` on the `r1` branch, and the installer pins it | see the precision gate below |
 | WS4 | done | #19: scope classifier, threshold sizing, size caps and Read narrowing removed | injected text byte-identical on 600 of 600 replayed prompts |
 | WS5 | measured; release in progress | benchmark v10: stock vs main + laya-code-r1 vs keywords only ($32.40) | 51 paired tasks: wall −12.0%, turns −33.6%, tool calls 9.0 → 5.3, `search` 1.0 per session, read + injected +6.2% (n.s.), first-question recall +0.145. r1 vs keywords: no significant difference. See [docs/RESULTS.md](../RESULTS.md) |
-| WS6 | running | inject less using laya-code-r1's probabilities (branch `feat/smaller-injection`) | gate: ≥ 66/115 gold inlined at ≤ 60% of today's injected chars |
+| WS6 | parked, not merged | smaller first-prompt injection: 18-line windows, and uses only on follow-ups and caller questions. r1's probabilities were tested for sizing and not used (branch `feat/smaller-injection`) | offline gate passed: turn-1 chars 59% of main with gold inlined 70 → 70. Benchmark v11 ($26.45, 49 paired tasks) against main: injected −27%, but code read +23.3% [+9.0, +40.3], Reads 3.88 → 4.80, read + injected **+10.6%** [+0.5, +21.6]. See [docs/RESULTS.md](../RESULTS.md) |
 
 **Pull pilots** (sonnet, effort medium, 10 sessions per arm on httpx and hono):
 
