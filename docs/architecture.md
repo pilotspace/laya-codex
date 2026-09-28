@@ -178,7 +178,7 @@ Pipeline per prompt, as shipped. Evidence is in `docs/RESULTS.md` and
 prompt ─► signals: stoplisted BM25 terms · identifiers · path mentions
           (a follow-up with an explicit back-reference is replaced by the session topic plus its named code)
        ─► candidates: Moon OR-BM25 (rarest terms) + chunks_defining + path matches, RRF → top 24,
-          prose / non-code demoted
+          at most 3 per file, prose / non-code demoted
        ─► Laya: one noul question per candidate, 128-token state, calibrated P, 1.2 s budget,
           lexical fallback when busy or over budget, model warmed up at load
        ─► fusion: 0.5·(1 − lexical_rank/24) + 0.5·P ─► span shaping: top 10, ≤ 400 lines

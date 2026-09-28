@@ -38,6 +38,9 @@ fn default_score_top() -> usize {
 fn default_usage_lines() -> usize {
     10
 }
+fn default_max_per_file() -> usize {
+    3
+}
 fn default_usage_per_ident() -> usize {
     4
 }
@@ -105,6 +108,13 @@ pub struct RetrieverConfig {
     /// (`0` = none). The daemon turns this on for follow-ups that ask for tests.
     #[serde(default)]
     pub test_refs: usize,
+    /// Most candidates one file may hold in the `k_candidates` pool (`0` = no cap). Without it a
+    /// file with many matching chunks (a large test file) can fill the pool and push the file
+    /// the task changes out of it: one moon test file took 18 of 24 slots. Replaying the 60
+    /// benchmark tasks, a cap of 3 inlined one more correct file (71 vs 70, none lost) and named
+    /// three more (103 vs 100) at the same hook latency; 2 lost one, 4 named fewer.
+    #[serde(default = "default_max_per_file")]
+    pub max_per_file: usize,
 }
 
 impl Default for RetrieverConfig {
@@ -124,6 +134,7 @@ impl Default for RetrieverConfig {
             usage_lines: default_usage_lines(),
             usage_per_ident: default_usage_per_ident(),
             test_refs: 0,
+            max_per_file: default_max_per_file(),
         }
     }
 }
@@ -146,6 +157,7 @@ mod tests {
         assert_eq!(cfg.laya_weight, None);
         assert_eq!(cfg.max_related, 8);
         assert_eq!(cfg.score_top, 16);
+        assert_eq!(cfg.max_per_file, 3);
     }
 
     #[test]
