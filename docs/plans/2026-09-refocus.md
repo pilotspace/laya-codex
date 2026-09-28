@@ -1,7 +1,8 @@
 # Plan: refocus on the three levers (v0.4.0)
 
-Status: **releasing**. WS0–WS4 are merged, and WS5 is being released as v0.4.0. WS6 was measured in
-benchmark v11 and parked.
+Status: **done**. v0.4.0 was released on 2026-09-28 with WS0–WS5. WS6 was measured in benchmark v11
+and parked. The next lever is open: the token goal needs Claude to read less, not laya-codex to show
+less (see [docs/VISION.md](../VISION.md)).
 Proposed 2026-09-25. North star: [docs/VISION.md](../VISION.md)
 
 ## Progress
@@ -13,7 +14,7 @@ Proposed 2026-09-25. North star: [docs/VISION.md](../VISION.md)
 | WS2 | done, gate not met | #18: `search` answers name lookups. #20: files past the size cap are counted instead of listed empty | see the pull pilots below |
 | WS3 | done | branch `feat/reranker-retrain`: production-shaped lists from fixed commits, leakage check, laya-code-r1. The model is published as Hugging Face revision `25f97e5` on the `r1` branch, and the installer pins it | see the precision gate below |
 | WS4 | done | #19: scope classifier, threshold sizing, size caps and Read narrowing removed | injected text byte-identical on 600 of 600 replayed prompts |
-| WS5 | measured; release in progress | benchmark v10: stock vs main + laya-code-r1 vs keywords only ($32.40) | 51 paired tasks: wall −12.0%, turns −33.6%, tool calls 9.0 → 5.3, `search` 1.0 per session, read + injected +6.2% (n.s.), first-question recall +0.145. r1 vs keywords: no significant difference. See [docs/RESULTS.md](../RESULTS.md) |
+| WS5 | done | [v0.4.0](https://github.com/pilotspace/laya-codex/releases/tag/v0.4.0) (#24, the Homebrew formula in #25). Benchmark v10: stock vs main + laya-code-r1 vs keywords only ($32.40) | 51 paired tasks: wall −12.0%, turns −33.6%, tool calls 9.0 → 5.3, `search` 1.0 per session, read + injected +6.2% (n.s.), first-question recall +0.145. r1 vs keywords: no significant difference. See [docs/RESULTS.md](../RESULTS.md) |
 | WS6 | parked, not merged | smaller first-prompt injection: 18-line windows, and uses only on follow-ups and caller questions. r1's probabilities were tested for sizing and not used (branch `feat/smaller-injection`) | offline gate passed: turn-1 chars 59% of main with gold inlined 70 → 70. Benchmark v11 ($26.45, 49 paired tasks) against main: injected −27%, but code read +23.3% [+9.0, +40.3], Reads 3.88 → 4.80, read + injected **+10.6%** [+0.5, +21.6]. See [docs/RESULTS.md](../RESULTS.md) |
 
 **Pull pilots** (sonnet, effort medium, 10 sessions per arm on httpx and hono):
