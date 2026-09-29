@@ -21,6 +21,13 @@ All notable changes to this project are documented here. The format follows
   - **Turning it off:** `laya-codex capture off` stops it at once, including for the running daemon.
     `LAYA_CODEX_CAPTURE=0` also turns it off, and `laya-codex capture status` shows the state.
 
+### Changed
+- **One file can no longer fill the candidate pool.** The 24 lexical candidates hold at most 3
+  chunks from any one file, and the freed places go to the next files in order. One moon test
+  file used to take 18 of the 24. In the offline replay of the 60 benchmark tasks, one more
+  correct file was inlined (71 of 115, none lost) and three more were named (103), at the same
+  hook latency.
+
 ## [0.4.0] — 2026-09-28
 
 Claude answers its own lookups with laya-codex `search` instead of Grep, the reranker is retrained
