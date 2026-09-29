@@ -83,11 +83,13 @@ impl<'a> Retriever<'a> {
             return Ok(empty_result(start));
         }
         let fused_scores: HashMap<String, f32> = fused.iter().cloned().collect();
-        let top_ids: Vec<String> = fused
-            .into_iter()
-            .take(self.cfg.k_candidates)
-            .map(|(id, _)| id)
-            .collect();
+        // With a per-file cap, fetch the whole fused list so capped slots can be backfilled.
+        let depth = if self.cfg.max_per_file == 0 {
+            self.cfg.k_candidates
+        } else {
+            fused.len()
+        };
+        let top_ids: Vec<String> = fused.into_iter().take(depth).map(|(id, _)| id).collect();
 
         let fetched = self.store.get_chunks(repo_id, &top_ids)?;
         let mut by_id: HashMap<String, Chunk> = fetched.into_iter().map(|c| (c.id(), c)).collect();
@@ -106,6 +108,7 @@ impl<'a> Retriever<'a> {
             })
             .collect();
 
+        let candidates = cap_per_file(candidates, self.cfg.max_per_file, self.cfg.k_candidates);
         if candidates.is_empty() {
             return Ok(empty_result(start));
         }
@@ -337,6 +340,20 @@ pub fn asks_for_non_code(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
     let words: Vec<&str> = lower.split(|c: char| !c.is_ascii_alphanumeric()).collect();
     NON_CODE_INTENT.iter().any(|w| words.contains(w))
+}
+
+/// The first `k` candidates in fused order, with at most `cap` from any one file (`0` = no cap).
+pub(crate) fn cap_per_file(candidates: Vec<Candidate>, cap: usize, k: usize) -> Vec<Candidate> {
+    let mut per_file: HashMap<String, usize> = HashMap::new();
+    candidates
+        .into_iter()
+        .filter(|c| {
+            let n = per_file.entry(c.chunk.path.clone()).or_insert(0);
+            *n += 1;
+            cap == 0 || *n <= cap
+        })
+        .take(k)
+        .collect()
 }
 
 pub(crate) fn demote_non_code(mut candidates: Vec<Candidate>, prompt: &str) -> Vec<Candidate> {
@@ -780,6 +797,36 @@ mod tests {
             s["b"] > s["a"],
             "a confident Laya answer should overtake one lexical rank"
         );
+    }
+
+    #[test]
+    fn one_file_cannot_fill_the_candidate_pool() {
+        let paths = [
+            "tests/big.rs",
+            "tests/big.rs",
+            "tests/big.rs",
+            "src/a.rs",
+            "tests/big.rs",
+            "src/b.rs",
+        ];
+        let cands: Vec<Candidate> = paths.iter().map(|p| cand(p, Lang::Rust, 0.5)).collect();
+        let out = cap_per_file(cands, 2, 4);
+        let got: Vec<&str> = out.iter().map(|c| c.chunk.path.as_str()).collect();
+        assert_eq!(
+            got,
+            ["tests/big.rs", "tests/big.rs", "src/a.rs", "src/b.rs"]
+        );
+    }
+
+    #[test]
+    fn cap_zero_keeps_the_fused_order_up_to_k() {
+        let paths = ["a.rs", "a.rs", "a.rs", "b.rs"];
+        let cands: Vec<Candidate> = paths.iter().map(|p| cand(p, Lang::Rust, 0.5)).collect();
+        let got: Vec<String> = cap_per_file(cands, 0, 3)
+            .into_iter()
+            .map(|c| c.chunk.path)
+            .collect();
+        assert_eq!(got, ["a.rs", "a.rs", "a.rs"]);
     }
 
     #[test]
