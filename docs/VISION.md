@@ -33,13 +33,25 @@ Measured against stock Claude Code on the benchmark suite (3 repositories, 60 ta
 
 | target | definition | stock | laya-codex now | goal |
 |---|---|---|---|---|
-| **Tokens −50%** | code tokens reaching Claude per session: tokens Claude reads **plus** tokens laya-codex injects | 4,635 | 4,924 (+6.2%, n.s.) | ≤ 2,318 |
-| **Time −30%** | session wall-clock | 38.3 s | 33.7 s (−12.0%) | ≤ 26.8 s |
+| **Cost −50%** | dollars per session: every token Claude is billed for, including the code laya-codex injects | $0.176 | $0.160 (−8.8%) | ≤ $0.088 |
+| **Time −30%** (re-measured next) | session wall-clock | 38.3 s | 33.7 s (−12.0%) | ≤ 26.8 s |
 | **Quality: no loss** | answer recall of the gold files, turn 1 and both turns | 0.758 / 0.953 | 0.904 / 0.940 | not worse on either |
 
 The current figures are from benchmark v10 (2026-09-27, 51 paired tasks, laya-code-r1; see
 [docs/RESULTS.md](RESULTS.md)). The goals are relative, so their absolute values follow each run's
 stock baseline: v9 measured stock at 33.4 s and 4,230 tokens.
+
+**Why cost replaced code tokens (2026-09-29).** A re-baseline on Claude Code 2.1.284 (8 paired
+tasks, httpx and hono) found that stock Claude now reads about 2,035 code tokens per session, against
+4,635 in v10. Half of that is below what laya-codex injects on its own (about 1,570). That
+injection is what buys the rest of the result, stock → laya-codex:
+- first-answer recall 0.50 → 0.90;
+- tool calls −32%;
+- time −13%;
+- cost −36%.
+
+Code tokens read plus injected stay reported, next to cost, but they are no longer the goal. The
+time goal is re-measured on all 60 tasks with current Claude Code before it is kept or restated.
 
 Why the two gaps exist (v10 `runs.jsonl`, `bench/ledger.py`):
 
@@ -67,7 +79,8 @@ Why the two gaps exist (v10 `runs.jsonl`, `bench/ledger.py`):
    Success: the retrained model beats keyword ranking in the offline replay (more gold inlined at
    the same or smaller injection), then in the benchmark.
 3. **Honest measurement:** every claim comes from the paired benchmark or the offline replay,
-   with the rank mode recorded per prompt, and the token target counts injected code.
+   with the rank mode recorded per prompt, and reports quality, time, tool calls, cost and code
+   tokens (read plus injected) together, so a gain on one is weighed against the others.
 
 ## Out of scope
 
@@ -100,4 +113,5 @@ Frozen (not developed unless this page changes):
 | 2026-09-25 | Merge name lookups (#18) although the pilot gate (≥ 1 `search` per session, Grep −⅓) was not met: Claude used `search` in half the sessions and read + injected fell 10.6%. Test lookups were dropped: Claude asked for them in 3 of 13 searches and tokens rose 8% |
 | 2026-09-26 | Accept laya-code-r1: 70 of 115 gold inlined in the production blend against 62 for keywords and 63 for v1, at the same latency. The "no more injected chars" clause (+2.5%) is waived. Laya alone now beats keywords (72 vs 62) |
 | 2026-09-27 | Release v0.4.0 with laya-code-r1, published as revision `25f97e5` on a separate `r1` branch of the Hugging Face repo (main keeps the first model) and pinned by the installer |
+| 2026-09-29 | The token goal becomes cost per session −50% against stock, with no quality loss. Stock Claude Code 2.1.284 reads about half the code it did in v10, which puts −50% of read plus injected below laya-codex's injection alone. Read plus injected stays reported. The −30% time goal is kept until all 60 tasks are re-measured on current Claude Code. Every ranking is recorded locally by default (`laya-codex capture`). Answering Grep or Read through laya-codex may be explored again (reverses the 2026-09-24/25 rule). Stronger "answer from the shown code" wording failed a pilot (tokens −3%, a gold file lost) and is not merged |
 | 2026-09-28 | Park the smaller injection (18-line windows, no first-prompt uses): it passed the offline replay but raised read + injected 10.6% in benchmark v11, because Claude read the rest of each block. Not merged; v0.4.0 ships without it |

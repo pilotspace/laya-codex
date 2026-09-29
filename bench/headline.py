@@ -17,27 +17,28 @@ from collections import defaultdict
 import read_accuracy
 import stats_pooled as sp
 
-# reading_plus_injected (tokens Claude reads plus tokens laya-codex injects) is the VISION.md
-# token target and leads every report; reading_tokens stays right beside it for context, never
-# reported alone -- a smaller-reads/bigger-injection trade must show as the loss it is.
+# cost (dollars per session, every billed token including injected code) is the VISION.md goal
+# and leads every report. reading_plus_injected (tokens Claude reads plus tokens laya-codex
+# injects) sits right beside it, with reading_tokens never reported alone -- a
+# smaller-reads/bigger-injection trade must show as the loss it is.
 METRICS = {
+    "cost": sp.METRICS["cost usd"],
     "reading_plus_injected": sp.METRICS["reading+injected tokens"],
     "reading_tokens": sp.METRICS["code-reading tokens"],
     "total_input": sp.METRICS["total input tokens"],
     "wall_clock": sp.METRICS["wall seconds"],
     "turns": sp.METRICS["turns"],
-    "cost": sp.METRICS["cost usd"],
 }
 
 LABELS = {"reading_plus_injected": "Reading + injected", "reading_tokens": "Code-reading tokens",
           "total_input": "Total input tokens", "wall_clock": "Wall-clock time", "turns": "Turns", "cost": "Cost",
           "output_tokens": "Output tokens"}
 
-# Chart headline: reading_plus_injected first (the target), reading_tokens right beside it.
-CHART_METRICS = ["reading_plus_injected", "reading_tokens", "turns", "cost", "total_input", "wall_clock"]
-# Neutral by design: v9 shows reading+injected *up* 4.6% against stock even though reading_tokens
-# is down -- a title that always claims "reads less" would misstate a run where the target regresses.
-CHART_TITLE = "laya-codex vs stock Claude Code: code tokens reaching Claude, turns and cost"
+# Chart headline: cost first (the goal), code tokens read plus injected right beside it.
+CHART_METRICS = ["cost", "reading_plus_injected", "reading_tokens", "turns", "total_input", "wall_clock"]
+# Neutral by design: v10 shows reading+injected *up* against stock while cost is down -- a title
+# that always claims "reads less" would misstate a run where one of them regresses.
+CHART_TITLE = "laya-codex vs stock Claude Code: cost, code tokens reaching Claude and turns"
 
 
 def compare(runs, arm, base, keys, B=10000):
@@ -134,6 +135,10 @@ def main():
     ap.add_argument("--lex", default="laya-lex", help="the same build with keyword-only ranking")
     ap.add_argument("--with-output", action="store_true", help="also report output tokens (runs from v9 on)")
     ap.add_argument("--title", default=CHART_TITLE)
+    # The resolved model id from the transcripts (e.g. claude-sonnet-5), not the `sonnet` alias:
+    # the alias moves to newer models between runs.
+    ap.add_argument("--claude-model", default="sonnet", help="the Claude model id the run resolved to")
+    ap.add_argument("--effort", default="medium")
     a = ap.parse_args()
     arm, lex_arm = a.arm, a.lex
     if a.with_output:
@@ -143,9 +148,10 @@ def main():
     pooled, per_repo, q, n = compare(runs, arm, "baseline", keys)
     lex, lex_repo, lex_q, _ = compare(runs, arm, lex_arm, keys)
     lexb, _, lexb_q, _ = compare(runs, lex_arm, "baseline", keys)
-    out = {"version": a.version, "n_tasks": n, "repos": [r for r, _ in runs], "model": "sonnet", "arm": arm,
+    out = {"version": a.version, "n_tasks": n, "repos": [r for r, _ in runs], "model": a.claude_model, "effort": a.effort,
+           "arm": arm,
            "metrics": {k: {"label": LABELS[k], **v} for k, v in pooled.items()},
-           # reading_plus_injected leads (the VISION.md target), reading_tokens right beside it;
+           # cost leads (the VISION.md goal), reading_plus_injected and reading_tokens right beside it;
            # output_tokens (when reported) slots in just ahead of wall_clock, same as CHART_METRICS.
            "chart_metrics": CHART_METRICS[:-1] + (["output_tokens"] if a.with_output else []) + CHART_METRICS[-1:],
            "chart_title": a.title,

@@ -323,17 +323,16 @@ class TokenMetricIsPrimary(unittest.TestCase):
         import stats_pooled
         self.assertEqual(stats_pooled.METRICS["reading+injected tokens"]({}), 0)
 
-    def test_headline_metric_order_leads_with_reading_plus_injected(self):
+    def test_headline_metric_order_leads_with_cost_then_reading_plus_injected(self):
         import headline
         keys = list(headline.METRICS)
-        self.assertEqual(keys[0], "reading_plus_injected")
-        self.assertEqual(keys[1], "reading_tokens")
+        self.assertEqual(keys[:3], ["cost", "reading_plus_injected", "reading_tokens"])
         self.assertEqual(headline.LABELS["reading_plus_injected"], "Reading + injected")
 
-    def test_headline_chart_leads_with_reading_plus_injected(self):
+    def test_headline_chart_leads_with_cost_and_keeps_code_tokens_beside_it(self):
         import headline
-        self.assertEqual(headline.CHART_METRICS[0], "reading_plus_injected")
-        self.assertIn("reading_tokens", headline.CHART_METRICS)
+        self.assertEqual(headline.CHART_METRICS[:3], ["cost", "reading_plus_injected", "reading_tokens"])
+        self.assertEqual(headline.CHART_METRICS[-1], "wall_clock")
 
     def test_headline_title_does_not_assert_a_direction_the_data_may_not_show(self):
         import headline
@@ -403,6 +402,16 @@ class ReadsChart(unittest.TestCase):
         out = charts.reads(d, charts.THEMES["light"])
         self.assertIn("51 paired tasks", out)
         self.assertIn(">never<", out)
+
+    def test_savings_subtitle_names_the_resolved_model_and_effort(self):
+        # "sonnet" is an alias that moved from Sonnet 5 to Sonnet 5.5 between runs; the chart must
+        # name the model the run actually used.
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+        import charts
+        d = {"n_tasks": 51, "repos": ["httpx"], "model": "claude-sonnet-5", "effort": "medium",
+             "metrics": {"cost": {"label": "Cost", "pct": -8.8, "lo": -16.3, "hi": -1.9}}}
+        out = charts.savings(d, charts.THEMES["light"])
+        self.assertIn("claude-sonnet-5 · medium effort", out)
 
 
 class InsightCharts(unittest.TestCase):

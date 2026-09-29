@@ -50,7 +50,8 @@ def savings(d, t):
     body = [
         text(24, 32, title, 17, t["fg"], weight="600"),
         text(24, 54, f"Paired change vs stock Claude Code · {d['n_tasks']} tasks · {', '.join(d['repos'])} · "
-                     f"{d['model']} · 95% bootstrap CI" + (" · grey = no significant change" if more else ""),
+                     f"{d['model']}" + (f" · {d['effort']} effort" if d.get("effort") else "") +
+                     " · 95% bootstrap CI" + (" · grey = no significant change" if more else ""),
              12, t["muted"]),
     ]
     for tick in range(-int(more), int(less * 1.08) + 1):
