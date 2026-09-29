@@ -1,9 +1,10 @@
 # laya-codex roadmap
 
 laya-codex hands Claude Code the code a task needs before Claude goes looking for it. In benchmark v10
-(three repositories, 51 paired tasks), Claude takes **34% fewer turns** and **41% fewer tool
-calls**, finishes **12% sooner**, and its first answers name the right files more often. Code read
-plus code injected does not fall yet ([docs/RESULTS.md](docs/RESULTS.md)). The scope and the levers
+(three repositories, 51 paired tasks, Claude Sonnet 5), a session **costs 9% less**, Claude takes
+**34% fewer turns** and **41% fewer tool calls**, finishes **12% sooner**, and its first answers
+name the right files more often. Code read plus code injected does not fall yet
+([docs/RESULTS.md](docs/RESULTS.md)). The scope and the levers
 are fixed in [docs/VISION.md](docs/VISION.md):
 - **Pull:** Claude's lookups go to laya-codex `search`.
 - **Precision:** the Laya reranker puts the right code first, so less of it is needed.
@@ -13,7 +14,8 @@ are fixed in [docs/VISION.md](docs/VISION.md):
 
 | goal | target | v0.1.0 (v7: moon, 20 tasks) | v0.1.2 (v8: 3 repos, 60 tasks, pooled) | v10 (main + laya-code-r1, 51 tasks) | measured by |
 |---|---|---|---|---|---|
-| Code tokens reaching Claude (read + injected) | −50% | — | — | +6.2% [−11.3, +26.3], not met | `bench/stats_pooled.py` (paired bootstrap) |
+| Cost per session (goal since 2026-09-29) | −50% | −27.2% [−39.2, −11.1] | −9.9% [−18.7, −0.4] | −8.8% [−16.3, −1.9], not met | `bench/stats_pooled.py` (paired bootstrap) |
+| Code tokens reaching Claude (read + injected) | reported beside cost (the goal until 2026-09-29) | — | — | +6.2% [−11.3, +26.3] | same |
 | Code-reading tokens alone | (context only) | **−50.1%** [−61.6, −33.0] | −38.2% [−50.8, −21.8] | −32.0% [−47.0, −15.0] | same |
 | Task wall-clock | −30% | −17.4% [−31.5, −1.0] | +3.5% [−6.2, +14.8], no effect (moon did not replicate v7) | −12.0% [−19.1, −4.4], not met | same |
 | Answer quality | no loss | recall 0.933 vs 0.975, n.s. | recall 0.899 vs 0.815, +0.083 [+0.028, +0.144], met | first question 0.904 vs 0.758, both 0.940 vs 0.953 (n.s.), met | `bench/read_accuracy.py` |
@@ -126,7 +128,8 @@ Make the first five minutes painless and the tool visible where Claude Code user
 
 ## 1.0 — criteria, not a date
 
-- Both goals met with confidence intervals that exclude zero on benchmark v2.
+- The cost and time goals met, with no quality loss, on the benchmark suite, with confidence
+  intervals that exclude zero.
 - Answer quality non-inferior on every repo in the suite.
 - A plugin install and `install.sh` that work on all supported platforms, tested in CI.
 - A stable hook, MCP and CLI surface documented as a compatibility promise.

@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Benchmark reporting
+- **Cost leads every benchmark report.** The goal is now cost per session −50% against stock
+  Claude Code with no quality loss (docs/VISION.md). `bench/headline.py` and the savings chart put
+  cost first, with code tokens read plus injected beside it. They name the Claude model the run
+  resolved to (`claude-sonnet-5` for v10) instead of the `sonnet` alias, which has since moved to
+  Sonnet 5.5.
+- **The v10 read charts use the 51 paired tasks.** They had averaged 55 unpaired tasks, stalled
+  ones included, and skipped tasks where the event never happened. Turns are now medians with
+  "never" counted as last.
+
 ### Changed
 - **One file can no longer fill the candidate pool.** The 24 lexical candidates hold at most 3
   chunks from any one file, and the freed places go to the next files in order. One moon test

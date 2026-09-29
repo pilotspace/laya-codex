@@ -1,0 +1,4 @@
+{"id": "8bf03c377a", "task": "fix(cors): append Origin to Vary header on OPTIONS preflight", "gold": ["src/middleware/cors/index.test.ts", "src/middleware/cors/index.ts"]}
+{"id": "546eca0c40", "task": "fix(etag): avoid skipping headers when filtering 304 response headers", "gold": ["src/middleware/etag/index.test.ts", "src/middleware/etag/index.ts"]}
+{"id": "7195c24860", "task": "fix(etag): copy pending stream bytes", "gold": ["src/middleware/etag/digest.test.ts", "src/middleware/etag/digest.ts", "src/middleware/etag/index.test.ts"]}
+{"id": "4eb022de68", "task": "fix(client): prevent URL corruption when replaceUrlParam contains $ replacement tokens", "gold": ["src/client/utils.test.ts", "src/client/utils.ts"]}

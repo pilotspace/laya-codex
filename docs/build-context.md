@@ -8,9 +8,10 @@ Research: `docs/research/*.md`. Spike: `spike/`, results in `spike/results/`.
 chunks, stores them in **Moon** (Redis-compatible server, pilotspace/moon, run as a sidecar),
 retrieves candidates with BM25 (Moon `FT.SEARCH`) plus symbol matches, re-ranks them with the
 **Laya** model (ModernBERT-large typed-decision classifier, run in-process via candle), and hands
-the top-10 spans to Claude Code through hooks (UserPromptSubmit injection, guarded
-PreToolUse(Read) narrowing, PreToolUse(Agent|Task) handoff, PostToolUse re-index) and an MCP
-server. Goal: −50% codebase-reading tokens, −30% task time, no drop in task success.
+the top spans to Claude Code through hooks (UserPromptSubmit injection, PreToolUse(Read)
+observer, PreToolUse(Agent|Task) handoff, PostToolUse re-index) and an MCP server. Goal
+(docs/VISION.md): cost per session −50% and wall-clock −30% against stock Claude Code, with no
+quality loss; code tokens read plus injected are reported beside cost.
 
 ## Hard facts established so far (verified in this repo)
 - Rust 1.94 stable, macOS arm64 (M4 Pro, 24 GB). Edition 2024 workspace at repo root.
