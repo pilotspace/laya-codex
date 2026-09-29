@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **A local record of each ranking.** Every ranking the daemon serves appends one line to
+  `$LAYA_CODEX_HOME/capture/requests.jsonl`. A ranking is a hook prompt, a `search`, or a
+  `laya-codex query`.
+  - **What a line holds:** the prompt, the task focus the model saw, every candidate in keyword
+    order, the spans returned and the blocks inlined. Each candidate has its path, lines, keyword
+    rank, fused score and Laya probability.
+  - **What it never holds:** code text.
+  - **What it is for:** joined with Claude Code's session transcript by session id, it shows which
+    offered code Claude went on to read. It is evidence and training data that the benchmark cannot
+    give.
+  - **On by default and local only:** the folder is 0700 and the file 0600, rotated at 32 MB.
+  - **Turning it off:** `laya-codex capture off` stops it at once, including for the running daemon.
+    `LAYA_CODEX_CAPTURE=0` also turns it off, and `laya-codex capture status` shows the state.
+
 ### Changed
 - **One file can no longer fill the candidate pool.** The 24 lexical candidates hold at most 3
   chunks from any one file, and the freed places go to the next files in order. One moon test

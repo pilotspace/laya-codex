@@ -35,7 +35,7 @@ pub use render::{
     TRUST_LINE, render_compact, render_compact_opts, render_context, render_context_opts,
     render_matches, rendered_chars,
 };
-pub use retriever::{Retriever, asks_for_non_code};
+pub use retriever::{CandidateCapture, CapturedCandidate, Retriever, asks_for_non_code};
 pub use signals::{
     FollowUpIntent, PromptSignals, content_terms, extract_signals, follow_up_intent, is_follow_up,
 };

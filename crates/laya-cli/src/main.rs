@@ -17,6 +17,7 @@ macro_rules! out {
     }};
 }
 
+mod capture;
 mod client;
 mod config;
 mod daemon;
@@ -106,6 +107,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: TraceCmd,
     },
+    /// The local record of each ranking (prompt, candidates, Laya probabilities, inlined
+    /// blocks; never code text), kept to measure and retrain laya-codex. On by default.
+    Capture {
+        #[command(subcommand)]
+        cmd: CaptureCmd,
+    },
     /// Diagnose the install: Moon, model, LAYA_CODEX_HOME, daemon, index and hooks (exit 1 on failure).
     Doctor {
         /// Repository to check. Default: current directory.
@@ -117,6 +124,16 @@ enum Cmd {
         #[arg(long)]
         start: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum CaptureCmd {
+    /// Record each ranking again (LAYA_CODEX_CAPTURE=0 still overrides).
+    On,
+    /// Stop recording, at once and for the running daemon too; recorded requests are kept.
+    Off,
+    /// Whether capture is on, and how many requests are recorded.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -182,6 +199,11 @@ fn main() {
             let tracer = trace::Tracer::from_env(&cfg.home);
             mcp::serve(&c, root, INJECT_TOKENS, cfg.budget_ms, tracer.as_ref())
         }
+        Cmd::Capture { cmd } => match cmd {
+            CaptureCmd::On => capture::cmd_on(&cfg.home),
+            CaptureCmd::Off => capture::cmd_off(&cfg.home),
+            CaptureCmd::Status => capture::cmd_status(&cfg.home),
+        },
         Cmd::Trace { cmd } => match cmd {
             TraceCmd::On => trace::cmd_on(&cfg.home),
             TraceCmd::Off => trace::cmd_off(&cfg.home),
