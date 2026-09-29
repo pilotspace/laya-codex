@@ -110,6 +110,28 @@ averaged the first-Read turn only over sessions that made one. That showed 4.9 �
 median that is 4 in both arms. `bench/headline.py` now keeps only the paired tasks, takes medians
 with "never" counted as last, and pools precision over Reads.
 
+**Gold that no search can find** (`bench/stale_gold.py`, `bench/results/stale-gold-v8.json`):
+- **Why some gold is stale:** every task is a past commit, but the repo is checked out 40 or more
+  commits later. When that commit's change was later rewritten, or the commit only deleted code,
+  its gold file carries no trace of the task in the checkout.
+- **How much:**
+  - 10 of the 115 gold files: 7 rewritten since, 3 changes that only deleted code;
+  - 5 of the 60 tasks have no findable gold file at all, e.g. "Add support for Python 3.12" and
+    "Drop unnecessary `binascii` import": `binascii` no longer appears anywhere in httpx.
+- **Recall without it:** over the 46 paired tasks that keep a findable gold file (88 files):
+
+| answer recall | all gold | findable gold only |
+|---|---|---|
+| first question, stock → laya-codex | 0.758 → 0.904 (+0.145 [+0.065, +0.222]) | 0.754 → 0.928 (+0.174 [+0.083, +0.254]) |
+| both questions, stock → laya-codex | 0.953 → 0.940 (−0.013, n.s.) | 0.971 → 0.971 (±0.000 [−0.054, +0.043]) |
+
+- **What stale gold did to the headline:** it hid part of the first-question gain, and it
+  explains the small dip over both questions.
+- **Gold code that reached Claude** barely changes: 72 of 88 findable gold files (82%), against 78 of
+  98 over all gold (80%).
+- **The task set is unchanged,** so earlier runs stay comparable. `bench/headline.py --stale`
+  reports both views.
+
 **What it means.**
 - **Claude now uses `search`.** It calls laya-codex `search` about once per session, where v9 saw
   0.02, and Grep fell 61%.

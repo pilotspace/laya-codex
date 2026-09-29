@@ -291,6 +291,24 @@
    "hi": 0.229
   }
  },
+ "findable_gold": {
+  "n_tasks": 46,
+  "gold_files": 88,
+  "answer_recall": {
+   "baseline": 0.754,
+   "laya": 0.928,
+   "diff": 0.174,
+   "lo": 0.083,
+   "hi": 0.254
+  },
+  "answer_recall_both_turns": {
+   "baseline": 0.971,
+   "laya": 0.971,
+   "diff": 0.0,
+   "lo": -0.054,
+   "hi": 0.043
+  }
+ },
  "read_precision": {
   "baseline": 0.562,
   "laya": 0.509,
