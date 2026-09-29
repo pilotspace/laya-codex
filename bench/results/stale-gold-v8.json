@@ -1,0 +1,602 @@
+{
+ "note": "Which gold files can a search still find? Benchmark tasks are past commits (the task id is the\ncommit), run on a checkout pinned 40 or more commits later. A gold file whose change was since\nrewritten, or whose change only deleted code, carries no trace of the task in that checkout, so\nno tool can find it from the task text.",
+ "checkouts": {
+  "moon": "8bba3ced49abc43e656a62cbf142b3cb99a48d62",
+  "httpx": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254",
+  "hono": "6cadf7537385c6e3df9cbd6d05c9b84c82ae0361"
+ },
+ "gold_files": {
+  "present": 105,
+  "removal only": 3,
+  "drifted": 7
+ },
+ "tasks_without_findable_gold": 5,
+ "repos": {
+  "moon": {
+   "756db483ef": {
+    "src/vector/persistence/mmap_budget.rs": {
+     "kind": "present",
+     "present": 0.94
+    },
+    "src/vector/persistence/warm_search.rs": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/vector/store.rs": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "00e09dcce1": {
+    "src/shard/autovacuum.rs": {
+     "kind": "removal only",
+     "present": 0.0
+    },
+    "src/shard/spsc_handler.rs": {
+     "kind": "removal only",
+     "present": 0.0
+    }
+   },
+   "0242c67559": {
+    "src/shard/autovacuum.rs": {
+     "kind": "present",
+     "present": 0.96
+    }
+   },
+   "64395e3189": {
+    "src/server/conn/handler_monoio/txn.rs": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/server/conn/handler_sharded/txn.rs": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/vector/mvcc/manager.rs": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "tests/kill_snapshot.rs": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "624822d46e": {
+    "src/vector/mvcc/manager.rs": {
+     "kind": "present",
+     "present": 0.97
+    }
+   },
+   "ee1a737428": {
+    "src/shard/disk_monitor.rs": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/shard/persistence_tick.rs": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "cc1ac709d7": {
+    "src/shard/event_loop.rs": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/shard/persistence_tick.rs": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "192d1c0cc7": {
+    "src/shard/event_loop.rs": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "46a1e8b7bb": {
+    "src/shard/persistence_tick.rs": {
+     "kind": "present",
+     "present": 0.97
+    }
+   },
+   "a117f37f39": {
+    "src/config.rs": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "910ac2b93e": {
+    "src/admin/metrics_setup.rs": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "d757a7aa25": {
+    "src/persistence/wal_v3/mod.rs": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/persistence/wal_v3/segment.rs": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "2deb06c2a3": {
+    "src/command/info_reclamation.rs": {
+     "kind": "present",
+     "present": 0.99
+    },
+    "src/command/mod.rs": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "14ca4f0c12": {
+    "src/main.rs": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "tests/txn_kv_wiring.rs": {
+     "kind": "present",
+     "present": 0.65
+    }
+   },
+   "6217efadf6": {
+    "src/cdc/fanout.rs": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/cdc/mod.rs": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "b271e212e6": {
+    "src/persistence/wal_v3/mod.rs": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/persistence/wal_v3/tail.rs": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "a4964139c8": {
+    "src/persistence/recovery.rs": {
+     "kind": "present",
+     "present": 0.99
+    }
+   },
+   "048a8835a3": {
+    "src/persistence/wal_v3/mod.rs": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/persistence/wal_v3/replay.rs": {
+     "kind": "present",
+     "present": 0.98
+    }
+   },
+   "25ece4b9a1": {
+    "src/persistence/snapshot.rs": {
+     "kind": "present",
+     "present": 0.95
+    }
+   },
+   "ac3aa92a68": {
+    "src/persistence/wal_v3/segment.rs": {
+     "kind": "present",
+     "present": 0.99
+    }
+   }
+  },
+  "httpx": {
+   "1e11096473": {
+    "httpx/_decoders.py": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "httpx/_models.py": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "tests/test_decoders.py": {
+     "kind": "present",
+     "present": 0.88
+    }
+   },
+   "90538a3b46": {
+    "httpx/_transports/asgi.py": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "tests/test_asgi.py": {
+     "kind": "present",
+     "present": 0.88
+    }
+   },
+   "b471f01d66": {
+    "httpx/_urlparse.py": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "tests/models/test_url.py": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "1d73150c1f": {
+    "httpx/_models.py": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "httpx/_utils.py": {
+     "kind": "removal only",
+     "present": 0.0
+    },
+    "tests/test_utils.py": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "ad06741d1e": {
+    "httpx/_auth.py": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "9751f76186": {
+    "httpx/_multipart.py": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "7c9db49f0c": {
+    "httpx/_config.py": {
+     "kind": "drifted",
+     "present": 0.0
+    }
+   },
+   "59df8190a4": {
+    "httpx/_models.py": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "tests/models/test_responses.py": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "88e8431437": {
+    "httpx/_auth.py": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "tests/test_auth.py": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "9415af643f": {
+    "httpx/_models.py": {
+     "kind": "present",
+     "present": 0.5
+    },
+    "tests/client/test_async_client.py": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "tests/client/test_client.py": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "18d7721c38": {
+    "httpx/_models.py": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "tests/models/test_responses.py": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "920333ea98": {
+    "httpx/_urlparse.py": {
+     "kind": "drifted",
+     "present": 0.0
+    },
+    "tests/models/test_url.py": {
+     "kind": "drifted",
+     "present": 0.0
+    }
+   },
+   "733595037a": {
+    "httpx/_transports/default.py": {
+     "kind": "present",
+     "present": 0.8
+    }
+   },
+   "a682f6f1c7": {
+    "httpx/_transports/asgi.py": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "tests/test_asgi.py": {
+     "kind": "present",
+     "present": 0.71
+    }
+   },
+   "abb994c0c2": {
+    "httpx/_transports/wsgi.py": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "tests/test_wsgi.py": {
+     "kind": "present",
+     "present": 0.92
+    }
+   },
+   "ee432c0d30": {
+    "httpx/_urlparse.py": {
+     "kind": "drifted",
+     "present": 0.0
+    }
+   },
+   "472597fb6b": {
+    "httpx/_multipart.py": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "26dc39213a": {
+    "httpx/_urlparse.py": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "9ae170a936": {
+    "httpx/_urlparse.py": {
+     "kind": "drifted",
+     "present": 0.17
+    }
+   },
+   "15d09a3bbc": {
+    "httpx/_utils.py": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "tests/test_utils.py": {
+     "kind": "present",
+     "present": 1.0
+    }
+   }
+  },
+  "hono": {
+   "8bf03c377a": {
+    "src/middleware/cors/index.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/cors/index.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "546eca0c40": {
+    "src/middleware/etag/index.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/etag/index.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "7195c24860": {
+    "src/middleware/etag/digest.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/etag/digest.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/etag/index.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "4eb022de68": {
+    "src/client/utils.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/client/utils.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "6ea514d6ff": {
+    "src/middleware/secure-headers/index.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/secure-headers/permissions-policy.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "329b6f4686": {
+    "src/client/client.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/client/client.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "a1e4ac7d46": {
+    "src/middleware/cors/index.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/cors/index.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "d982f637eb": {
+    "src/utils/url.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/utils/url.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "26de73133b": {
+    "src/middleware/etag/digest.ts": {
+     "kind": "present",
+     "present": 0.97
+    },
+    "src/middleware/etag/index.test.ts": {
+     "kind": "present",
+     "present": 0.75
+    }
+   },
+   "f2a72d333a": {
+    "src/client/client.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/client/client.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "8a5852d4c1": {
+    "src/middleware/etag/digest.ts": {
+     "kind": "drifted",
+     "present": 0.09
+    },
+    "src/middleware/etag/index.test.ts": {
+     "kind": "present",
+     "present": 0.54
+    }
+   },
+   "765d13b009": {
+    "src/jsx/intrinsic-element/components.test.tsx": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/jsx/intrinsic-element/components.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "13a9481ee1": {
+    "src/middleware/secure-headers/index.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/secure-headers/secure-headers.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "f6aa913c3f": {
+    "src/middleware/etag/index.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/etag/index.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "cd31bc196e": {
+    "src/utils/stream.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/utils/stream.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "569b4191a2": {
+    "src/router/common.case.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/router/trie-router/node.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/router/trie-router/node.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "8f07028270": {
+    "src/middleware/compress/index.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/compress/index.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "8a0b18fd9b": {
+    "src/router/reg-exp-router/node.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/router/reg-exp-router/router.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/router/reg-exp-router/router.ts": {
+     "kind": "drifted",
+     "present": 0.47
+    },
+    "src/router/reg-exp-router/trie.ts": {
+     "kind": "present",
+     "present": 0.89
+    }
+   },
+   "30277aee0d": {
+    "src/middleware/jwk/index.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/jwk/jwk.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/jwt/index.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/jwt/jwt.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   },
+   "1f707c5637": {
+    "src/middleware/method-not-allowed/index.test.ts": {
+     "kind": "present",
+     "present": 1.0
+    },
+    "src/middleware/method-not-allowed/index.ts": {
+     "kind": "present",
+     "present": 1.0
+    }
+   }
+  }
+ }
+}

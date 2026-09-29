@@ -437,6 +437,42 @@ class InsightCharts(unittest.TestCase):
         self.assertIn("(−75%)", svg)
 
 
+class StaleGold(unittest.TestCase):
+    """Tasks are past commits run on a later checkout: a gold file whose change is gone from that
+    checkout can't be found by any search, so recall is also reported without it."""
+
+    def test_classify_by_how_much_of_the_added_code_is_still_there(self):
+        import stale_gold
+        added = ["let budget = mmap_budget(cfg);", "enforce_budget(&mut seg, budget)?;"]
+        self.assertEqual(stale_gold.classify(added, "fn f() {\n    let budget = mmap_budget(cfg);\n"
+                                                    "    enforce_budget(&mut seg, budget)?;\n}")[0], "present")
+        self.assertEqual(stale_gold.classify(added, "fn f() { rewritten_entirely(); }")[0], "drifted")
+        self.assertEqual(stale_gold.classify([], "import os\n")[0], "removal only")
+        self.assertEqual(stale_gold.classify(added, None)[0], "file gone")
+
+    def test_trivial_lines_do_not_count_as_evidence(self):
+        import stale_gold
+        self.assertEqual(stale_gold.meaningful_added(["}", "  });", "// note", "x = compute_total(a)"]),
+                         ["x = compute_total(a)"])
+
+    def test_recall_on_findable_gold_skips_stale_files_and_tasks(self):
+        import headline
+        findable = {"t1": {"src/a.py"}, "t2": set()}
+        rows = [(row("laya", "t1", named=["src/a.py"]), row("baseline", "t1", named=["src/b.py"])),
+                (row("laya", "t2", named=[]), row("baseline", "t2", named=[]))]
+        pairs = headline.findable_pairs(rows, findable)
+        self.assertEqual(len(pairs), 1)
+        f = headline.findable_recall(findable, both_turns=False)
+        self.assertEqual((f(pairs[0][0]), f(pairs[0][1])), (1.0, 0.0))
+
+    def test_both_turns_counts_the_second_answer(self):
+        import headline
+        findable = {"t1": {"src/a.py", "tests/test_a.py"}}
+        r = row("laya", "t1", named=["src/a.py"], turn2={"named": ["tests/test_a.py"]})
+        self.assertEqual(headline.findable_recall(findable, both_turns=True)(r), 1.0)
+        self.assertEqual(headline.findable_recall(findable, both_turns=False)(r), 0.5)
+
+
 class StatsCliIsImportSafe(unittest.TestCase):
     """stats.py must be importable (for METRICS) without running its CLI as a side effect."""
 
