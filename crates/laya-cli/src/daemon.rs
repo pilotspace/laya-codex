@@ -153,6 +153,8 @@ pub struct Daemon {
     pub sessions: Mutex<Sessions>,
     pub indexing: Mutex<HashSet<String>>,
     pub base_cfg: RetrieverConfig,
+    /// Where each ranking is recorded (see [`crate::capture`]); `None` = never (tests).
+    capture: Option<crate::capture::Capture>,
 }
 
 /// Whether `prompt` names identifiers or file paths.
@@ -168,13 +170,24 @@ const FOLLOW_UP_USAGE_PER_IDENT: usize = 6;
 const FOLLOW_UP_TEST_REFS: usize = 4;
 
 impl Daemon {
+    /// A daemon that records nothing (tests).
+    #[cfg(test)]
     pub fn new(store: Arc<dyn Store>, base_cfg: RetrieverConfig) -> Arc<Self> {
+        Daemon::with_capture(store, base_cfg, None)
+    }
+
+    pub fn with_capture(
+        store: Arc<dyn Store>,
+        base_cfg: RetrieverConfig,
+        capture: Option<crate::capture::Capture>,
+    ) -> Arc<Self> {
         Arc::new(Daemon {
             store,
             scorer: RwLock::new(None),
             sessions: Mutex::new(Sessions::default()),
             indexing: Mutex::new(HashSet::new()),
             base_cfg,
+            capture,
         })
     }
 
@@ -189,9 +202,10 @@ impl Daemon {
         result: &QueryResult,
         req: &RenderReq,
         follow_up: Option<FollowUpIntent>,
-    ) -> String {
+    ) -> (String, Vec<(String, u32, u32)>) {
         if !req.adaptive {
-            return laya_rank::render_compact_opts(result, 3, req.budget_tokens, req.related);
+            let text = laya_rank::render_compact_opts(result, 3, req.budget_tokens, req.related);
+            return (text, Vec::new());
         }
         let mut sessions = self.sessions();
         let already: Vec<SpanKey> = session
@@ -218,17 +232,17 @@ impl Daemon {
             ctx.related.clear();
         }
         if ctx.full.is_empty() && ctx.map.is_empty() && ctx.related.is_empty() {
-            return String::new(); // everything relevant is already in context
+            return (String::new(), Vec::new()); // everything relevant is already in context
         }
         let (text, keys) = laya_rank::render_sized_with_keys(&ctx, req.budget_tokens);
+        let keys: Vec<(String, u32, u32)> = keys
+            .into_iter()
+            .map(|k| (k.path, k.start_line, k.end_line))
+            .collect();
         if let Some(s) = session {
-            let keys: Vec<(String, u32, u32)> = keys
-                .into_iter()
-                .map(|k| (k.path, k.start_line, k.end_line))
-                .collect();
             sessions.mark_sent(s, &keys);
         }
-        text
+        (text, keys)
     }
 
     /// Inline code only from files whose bytes still match the index, so the render can vouch
@@ -339,8 +353,8 @@ impl Daemon {
                     Some(s) => self.sessions().effective_query(s, &prompt),
                     None => prompt.clone(),
                 };
-                match retriever.query(&id, &query) {
-                    Ok(result) => {
+                match retriever.query_with_capture(&id, &query) {
+                    Ok((result, capture)) => {
                         if let Some(s) = &session {
                             self.sessions().record_query(s, &result);
                         }
@@ -358,6 +372,27 @@ impl Daemon {
                                 follow_up,
                             )
                         });
+                        if let Some(t) = &self.capture {
+                            let source = match (&session, &render) {
+                                (None, _) => "direct",
+                                (Some(_), Some(_)) => "hook",
+                                (Some(_), None) => "query",
+                            };
+                            let no_keys = Vec::new();
+                            t.record(&crate::capture::entry(&crate::capture::Request {
+                                source,
+                                session: session.as_deref(),
+                                repo: &root,
+                                prompt: &prompt,
+                                query: &query,
+                                follow_up: follow_up.is_some(),
+                                result: &result,
+                                capture: &capture,
+                                inlined: rendered.as_ref().map_or(&no_keys, |(_, k)| k),
+                                rendered_chars: rendered.as_ref().map(|(t, _)| t.chars().count()),
+                            }));
+                        }
+                        let rendered = rendered.map(|(text, _)| text);
                         Response::Query {
                             result,
                             rendered,
@@ -764,7 +799,12 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     }
     let state_tokens = env_num::<usize>("LAYA_CODEX_STATE_TOKENS").unwrap_or(128);
     eprintln!("[laya-codex] retriever config {base:?} state_tokens={state_tokens}");
-    let daemon = Daemon::new(Arc::clone(&store), base);
+    let capture = crate::capture::Capture::from_env(&cfg.home);
+    match capture.target() {
+        Some(t) => eprintln!("[laya-codex] capturing requests to {}", t.path.display()),
+        None => eprintln!("[laya-codex] request capture off"),
+    }
+    let daemon = Daemon::with_capture(Arc::clone(&store), base, Some(capture));
 
     if let (true, Some(dir)) = (cfg.use_model, cfg.model_dir.clone()) {
         let d = Arc::clone(&daemon);
@@ -1329,6 +1369,45 @@ mod tests {
         let d = Daemon::new(store, cfg);
         *d.scorer.write().unwrap() = Some(Arc::new(LowScorer));
         d
+    }
+
+    #[test]
+    fn every_ranked_prompt_is_captured_with_its_candidates_and_inlined_blocks() {
+        let (d0, repo) = daemon_with_files(WAL_FILES);
+        let file =
+            std::env::temp_dir().join(format!("laya-capture-daemon-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        let cfg = RetrieverConfig {
+            laya_weight: Some(0.5),
+            p_threshold: 0.0,
+            ..RetrieverConfig::default()
+        };
+        let d = Daemon::with_capture(
+            d0.store.clone(),
+            cfg,
+            Some(crate::capture::Capture::new(
+                std::env::temp_dir(),
+                Some(file.display().to_string()),
+            )),
+        );
+        *d.scorer.write().unwrap() = Some(Arc::new(LowScorer));
+        let (_, rendered) = ask_ranked(&d, &repo, "s1", "where is the wal segment replayed");
+        let records: Vec<serde_json::Value> = std::fs::read_to_string(&file)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(records.len(), 1);
+        let e = &records[0];
+        assert_eq!(e["source"], "hook");
+        assert_eq!(e["session"], "s1");
+        assert!(e["candidates"][0]["p"].is_number(), "{e}");
+        assert_eq!(
+            e["inlined"].as_array().unwrap().is_empty(),
+            !rendered.contains("\n### "),
+            "inlined blocks match the rendered context: {e}"
+        );
+        let _ = std::fs::remove_file(&file);
     }
 
     fn ask_ranked(

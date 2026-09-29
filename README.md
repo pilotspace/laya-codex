@@ -316,6 +316,17 @@ requires a password that laya-codex generates. The code snippets laya-codex adds
 Anthropic as part of your Claude Code conversation, exactly like code Claude reads with its own
 tools.
 
+**What laya-codex records locally.** Each time it ranks code for a prompt or a `search`, it appends one
+line to `~/.cache/laya-codex/capture/requests.jsonl`, readable only by you. The line holds:
+- the prompt and the session id;
+- the file and line range of each candidate, with its keyword rank and the Laya model's score;
+- which blocks it inlined.
+
+It never holds the code itself. The records stay on your machine and are never uploaded. They exist
+so laya-codex can be measured on real sessions and its model retrained. To stop recording, run
+`laya-codex capture off`; it takes effect at once, and `laya-codex capture status` shows the state.
+Delete the folder to remove what was recorded.
+
 </details>
 
 <details>

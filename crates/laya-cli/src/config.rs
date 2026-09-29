@@ -10,6 +10,7 @@
 //! | `LAYA_CODEX_NO_MODEL` | unset (set to `1` for lexical-only ranking) |
 //! | `LAYA_CODEX_BUDGET_MS` | `1200` (Laya time budget per query) |
 //! | `LAYA_CODEX_HOOK_LOG` | unset (JSONL log of hook actions, used by the benchmark) |
+//! | `LAYA_CODEX_CAPTURE` | unset: record each ranking in `$LAYA_CODEX_HOME/capture/` unless `laya-codex capture off`; `0` = off, `1` = on, else a file |
 
 use std::path::{Path, PathBuf};
 

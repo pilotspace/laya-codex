@@ -46,6 +46,18 @@ impl<'a> Retriever<'a> {
     /// return `Err` only for `Store` failures (index/BM25/get_chunks), matching the "design for
     /// failure" rule: callers decide the fail-open policy (e.g. an empty hook response).
     pub fn query(&self, repo_id: &str, prompt: &str) -> Result<QueryResult> {
+        self.query_with_capture(repo_id, prompt)
+            .map(|(result, _)| result)
+    }
+
+    /// [`Retriever::query`], plus what the ranking saw: the task focus and every candidate in
+    /// lexical order with the model's probability (`None` = not scored). Nothing here is sent to
+    /// clients; the daemon records it for offline analysis.
+    pub fn query_with_capture(
+        &self,
+        repo_id: &str,
+        prompt: &str,
+    ) -> Result<(QueryResult, CandidateCapture)> {
         let start = Instant::now();
         // BM25 terms and the Laya scorer see the task, not the instructions wrapped around it;
         // identifiers and path mentions still come from the whole prompt.
@@ -54,7 +66,7 @@ impl<'a> Retriever<'a> {
         signals.terms = extract_signals(&focus).terms;
 
         if signals.terms.is_empty() && signals.identifiers.is_empty() && signals.paths.is_empty() {
-            return Ok(empty_result(start));
+            return Ok((empty_result(start), CandidateCapture::none(&focus)));
         }
 
         self.store.ensure_index(repo_id)?;
@@ -80,7 +92,7 @@ impl<'a> Retriever<'a> {
 
         let fused = fuse_ranked_lists(&[&bm25_ids, &defining_ids, &path_ids], self.cfg.rrf_k);
         if fused.is_empty() {
-            return Ok(empty_result(start));
+            return Ok((empty_result(start), CandidateCapture::none(&focus)));
         }
         let fused_scores: HashMap<String, f32> = fused.iter().cloned().collect();
         let top_ids: Vec<String> = fused
@@ -107,12 +119,32 @@ impl<'a> Retriever<'a> {
             .collect();
 
         if candidates.is_empty() {
-            return Ok(empty_result(start));
+            return Ok((empty_result(start), CandidateCapture::none(&focus)));
         }
         let candidates = demote_non_code(candidates, &focus);
         let n_candidates = candidates.len();
+        let mut captured: Vec<CapturedCandidate> = candidates
+            .iter()
+            .enumerate()
+            .map(|(rank, c)| CapturedCandidate {
+                chunk_id: c.chunk_id.clone(),
+                path: c.chunk.path.clone(),
+                start_line: c.chunk.start_line,
+                end_line: c.chunk.end_line,
+                lexical_rank: rank,
+                fused: c.fused,
+                p: None,
+            })
+            .collect();
 
         let (scored, mode, n_scored, n_offered) = self.laya_gate(&focus, candidates);
+        let p_by_id: HashMap<String, f32> = scored
+            .iter()
+            .filter_map(|s| s.p_relevant.map(|p| (s.chunk.id(), p)))
+            .collect();
+        for c in &mut captured {
+            c.p = p_by_id.get(&c.chunk_id).copied();
+        }
         // Seeds for one-hop expansion are the top 3 *scored chunks*, captured before shaping
         // merges same-file spans together (a merge loses `defines`/`refs`).
         let seeds: Vec<Chunk> = scored.iter().take(3).map(|s| s.chunk.clone()).collect();
@@ -143,7 +175,7 @@ impl<'a> Retriever<'a> {
             related.splice(0..0, tests);
         }
 
-        Ok(QueryResult {
+        let result = QueryResult {
             spans,
             mode,
             elapsed_ms: elapsed_ms(start),
@@ -151,7 +183,14 @@ impl<'a> Retriever<'a> {
             scored: n_scored,
             offered: n_offered,
             related,
-        })
+        };
+        Ok((
+            result,
+            CandidateCapture {
+                focus,
+                candidates: captured,
+            },
+        ))
     }
 
     /// Resolve path mentions against the index (`list_files`, suffix match, cached in this one
@@ -363,6 +402,37 @@ fn path_matches(file: &str, mention: &str) -> bool {
     false
 }
 
+/// What one query ranked, for the daemon's request record (see [`Retriever::query_with_capture`]).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CandidateCapture {
+    /// The task text the lexical terms and the model saw.
+    pub focus: String,
+    /// Every candidate in lexical order (after the prose demotion), as offered to the model.
+    pub candidates: Vec<CapturedCandidate>,
+}
+
+impl CandidateCapture {
+    fn none(focus: &str) -> Self {
+        Self {
+            focus: focus.to_string(),
+            candidates: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CapturedCandidate {
+    pub chunk_id: String,
+    pub path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    /// 0-based position in the lexical order the model was offered.
+    pub lexical_rank: usize,
+    pub fused: f32,
+    /// The model's probability, or `None` when it did not score this candidate.
+    pub p: Option<f32>,
+}
+
 fn empty_result(start: Instant) -> QueryResult {
     QueryResult {
         spans: Vec::new(),
@@ -524,6 +594,42 @@ mod tests {
         let paths: Vec<&str> = out.spans.iter().map(|s| s.path.as_str()).collect();
         assert_eq!(paths, ["src/b.rs", "src/a.rs", "src/c.rs"]);
         assert_eq!(out.spans[2].p_relevant, None, "c was not scored");
+    }
+
+    #[test]
+    fn the_capture_keeps_every_candidate_with_its_lexical_rank_and_probability() {
+        let store = FakeStore::new(abc_chunks());
+        let scorer = Arc::new(PartialScorer::new(vec![Some(0.1), Some(0.9), None]));
+        let r = Retriever::new(&store, Some(scorer), weighted_cfg());
+        let (out, cap) = r
+            .query_with_capture("repo", "Explain this change: \"alpha beta gamma\"")
+            .unwrap();
+        assert_eq!(cap.focus, "alpha beta gamma");
+        let got: Vec<(&str, usize, Option<f32>)> = cap
+            .candidates
+            .iter()
+            .map(|c| (c.path.as_str(), c.lexical_rank, c.p))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("src/a.rs", 0, Some(0.1)),
+                ("src/b.rs", 1, Some(0.9)),
+                ("src/c.rs", 2, None)
+            ]
+        );
+        assert_eq!(
+            out.spans[0].path, "src/b.rs",
+            "capture does not change the ranking"
+        );
+    }
+
+    #[test]
+    fn an_empty_query_captures_no_candidates() {
+        let store = FakeStore::new(abc_chunks());
+        let r = Retriever::new(&store, None, RetrieverConfig::default());
+        let (_, cap) = r.query_with_capture("repo", "the a an").unwrap();
+        assert!(cap.candidates.is_empty());
     }
 
     #[test]
