@@ -324,13 +324,82 @@ def _claude(prompt, arm, args, cfg_dir, env, session_flags):
     return lines, rc, time.time() - t0
 
 
+def _claude_session(prompts, arm, args, cfg_dir, env, sid, popen=subprocess.Popen):
+    """Run `prompts` as one live Claude session: one `claude -p --input-format stream-json`
+    process, each prompt sent only after the previous one's result, as a user types them.
+    Resuming the session per prompt (`--resume`) rebuilt the first message differently when
+    prompt 1 was answered in one API call, so the follow-up rewrote the whole prompt cache.
+    Returns [(stream lines, rc, wall seconds)] per prompt; a prompt past `args.timeout` kills the
+    session, and it and every later prompt get rc "timeout"."""
+    import threading
+    cmd = ["claude", "-p", "--input-format", "stream-json", "--model", args.model, "--output-format", "stream-json",
+           "--verbose", "--include-hook-events", "--max-budget-usd", str(args.max_usd),
+           "--session-id", sid] + arm_flags(arm, cfg_dir)
+    p = popen(cmd, cwd=args.repo, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+              text=True, env=env)
+    out, dead = [], None
+    for prompt in prompts:
+        if dead is not None:
+            out.append(([], dead, 0.0))
+            continue
+        fired = []
+
+        def kill():
+            fired.append(True)
+            p.kill()
+        timer = threading.Timer(args.timeout, kill)
+        timer.start()
+        t0 = time.time()
+        lines, rc = [], None
+        try:
+            p.stdin.write(json.dumps({"type": "user", "message": {"role": "user", "content": prompt}}) + "\n")
+            p.stdin.flush()
+            for line in p.stdout:
+                lines.append(line.rstrip("\n"))
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if e.get("type") == "result":
+                    rc = 1 if e.get("is_error") else 0
+                    break
+        except (BrokenPipeError, OSError):
+            pass
+        timer.cancel()
+        if rc is None:
+            dead = rc = "timeout" if fired else "exited"
+        out.append((lines, rc, time.time() - t0))
+    try:
+        p.stdin.close()
+        p.wait(timeout=60)
+    except Exception:
+        p.kill()
+    return out
+
+
+def claude_md_above(repo, stop=None):
+    """CLAUDE.md files in the directories above `repo` (up to `stop`, else the filesystem root).
+    Claude Code loads each of them into every session, so a benchmark repo below one (a checkout
+    under ~/.claude, say) feeds the operator's own instructions to every arm."""
+    found = []
+    d = os.path.dirname(os.path.abspath(repo))
+    while True:
+        for name in ("CLAUDE.md", "CLAUDE.local.md"):
+            f = os.path.join(d, name)
+            if os.path.isfile(f):
+                found.append(f)
+        if (stop and os.path.abspath(d) == os.path.abspath(stop)) or os.path.dirname(d) == d:
+            return found
+        d = os.path.dirname(d)
+
+
 def run_name(task_id, arm, rep):
     """File stem of a session's raw transcript and hook log; repeat 0 keeps the pre-repeat name."""
     return "%s_%s" % (task_id, arm) + ("_r%d" % rep if rep else "")
 
 
 def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None, versions=None, claude_version=None):
-    """One task = one Claude session of `args.turns` prompts (turn 2+ resume the same session)."""
+    """One task = one live Claude session of `args.turns` prompts (one process; see _claude_session)."""
     import uuid
     hook_log = os.path.join(args.out, "hooklogs", run_name(task["id"], arm, rep) + ".jsonl")
     os.makedirs(os.path.dirname(hook_log), exist_ok=True)
@@ -348,9 +417,11 @@ def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None, versions=None, clau
     agg = {"reading_tokens": 0, "total_in": 0, "output": 0, "cost": 0.0, "turns": 0, "tool_calls": {}}
     answers = []
     prompt_output_tokens, prompt_answer_chars, prompt_turns, prompt_wall_s = [], [], [], []
-    for k, prompt in enumerate(prompts):
-        flags = (["--no-session-persistence"] if args.turns == 1 else ["--session-id", sid]) if k == 0 else ["--resume", sid]
-        lines, rc, w = _claude(prompt, arm, args, cfg_dir, env, flags)
+    if len(prompts) == 1:
+        per_prompt = [_claude(prompts[0], arm, args, cfg_dir, env, ["--no-session-persistence"])]
+    else:
+        per_prompt = _claude_session(prompts, arm, args, cfg_dir, env, sid)
+    for lines, rc, w in per_prompt:
         all_lines += lines
         wall += w
         rcs.append(rc)
@@ -413,6 +484,10 @@ def run(args):
         sys.exit("duplicate arm names in --arms")
     os.makedirs(os.path.join(args.out, "raw"), exist_ok=True)
     res_path = os.path.join(args.out, "runs.jsonl")
+    above = claude_md_above(args.repo)
+    if above:
+        sys.exit("refusing %s: Claude Code would load %s into every session; move the repo to a directory "
+                 "with no CLAUDE.md above it" % (args.repo, ", ".join(above)))
     done, spent = done_set(res_path, args.rerun_unhealthy)
     cfg_dir = render_configs(args.out, specs)
     envs = arm_env(args.out, specs)

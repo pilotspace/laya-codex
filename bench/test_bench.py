@@ -725,5 +725,102 @@ class DropStalls(unittest.TestCase):
             self.assertEqual({(r["arm"], r["task_id"]) for r in kept}, {("baseline", "ok"), ("laya", "ok")})
 
 
+class OneProcessSession(unittest.TestCase):
+    """A task's prompts run as one live Claude session, as a user types them. Resuming the
+    session per prompt (`claude -p --resume`) rebuilt the first message differently when prompt 1
+    was answered in one API call, so the follow-up rewrote the whole prompt cache -- a charge only
+    the arm that answers without tools (laya-codex) ever paid."""
+
+    class FakeProc:
+        def __init__(self, cmd, **kw):
+            self.cmd, self.sent, self.returncode = cmd, [], None
+            outer = self
+
+            class In:
+                def write(self, s):
+                    outer.sent.append(json.loads(s))
+
+                def flush(self):
+                    pass
+
+                def close(self):
+                    pass
+
+            self.stdin = In()
+            self.stdout = self._out()
+
+        def _out(self):
+            # Output for prompt k appears only once prompt k has been sent.
+            for k in range(2):
+                while len(self.sent) <= k:
+                    yield json.dumps({"type": "never"}) + "\n"  # would mean a prompt was sent late
+                yield json.dumps({"type": "assistant", "message": {"id": "m%d" % k, "content": []}}) + "\n"
+                yield json.dumps({"type": "result", "result": "answer %d" % k, "total_cost_usd": 0.01}) + "\n"
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+        def kill(self):
+            pass
+
+    def test_two_prompts_run_in_one_process_without_resume(self):
+        import run_bench
+        procs = []
+
+        def popen(cmd, **kw):
+            procs.append(self.FakeProc(cmd, **kw))
+            return procs[-1]
+
+        class Args:
+            model, effort, max_usd, timeout, repo = "claude-sonnet-5-5", "medium", 2.0, 60, "/tmp"
+        out = run_bench._claude_session(["first?", "second?"], "baseline", Args, "/cfg", {}, "sid-1", popen=popen)
+        self.assertEqual(len(procs), 1)
+        cmd = procs[0].cmd
+        self.assertNotIn("--resume", cmd)
+        self.assertEqual(cmd[cmd.index("--input-format") + 1], "stream-json")
+        self.assertEqual(cmd[cmd.index("--session-id") + 1], "sid-1")
+        self.assertEqual([m["message"]["content"] for m in procs[0].sent], ["first?", "second?"])
+        self.assertEqual(len(out), 2)
+        for k, (lines, rc, wall) in enumerate(out):
+            self.assertEqual(json.loads(lines[-1])["result"], "answer %d" % k)
+            self.assertNotIn("never", "".join(lines))
+            self.assertEqual(rc, 0)
+
+    def test_grep_intents_splits_a_one_process_session_at_each_result(self):
+        import grep_intents
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t_baseline.jsonl")
+            events = [{"type": "system", "subtype": "init"}]
+            for k in range(2):
+                events += [{"type": "assistant", "message": {"id": "m%d" % k, "content": [
+                              {"type": "tool_use", "id": "u%d" % k, "name": "Grep", "input": {"pattern": "x"}}]}},
+                           {"type": "result", "result": "answer %d" % k}]
+            open(p, "w").write("".join(json.dumps(e) + "\n" for e in events))
+            prompts = grep_intents.sessions(p)
+        self.assertEqual([len(q["calls"]) for q in prompts], [1, 1])
+        self.assertEqual([q["answer"] for q in prompts], ["answer 0", "answer 1"])
+
+
+class RepoOutsideClaudeHome(unittest.TestCase):
+    """Claude Code loads every CLAUDE.md above the working directory, so a benchmark repo under a
+    directory holding one (such as ~/.claude) feeds the operator's personal instructions to both arms."""
+
+    def test_a_claude_md_above_the_repo_is_reported(self):
+        import run_bench
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "jobs", "repo"))
+            open(os.path.join(d, "CLAUDE.md"), "w").write("personal rules")
+            open(os.path.join(d, "jobs", "repo", "CLAUDE.md"), "w").write("the repo's own file is fine")
+            found = run_bench.claude_md_above(os.path.join(d, "jobs", "repo"))
+        self.assertEqual([os.path.basename(os.path.dirname(f)) for f in found], [os.path.basename(d)])
+
+    def test_a_clean_path_reports_nothing(self):
+        import run_bench
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "repo"))
+            self.assertEqual(run_bench.claude_md_above(os.path.join(d, "repo"), stop=d), [])
+
+
 if __name__ == "__main__":
     unittest.main()
