@@ -77,6 +77,15 @@ impl Tracer {
         Tracer::resolve(home, std::env::var(ENV).ok().as_deref())
     }
 
+    /// A private, size-rotated JSON-lines writer to `path`, for other records (the request capture).
+    pub fn to_file(path: PathBuf, max_bytes: u64) -> Tracer {
+        Tracer {
+            path,
+            source: Source::Env,
+            max_bytes,
+        }
+    }
+
     /// Append `entry` as one JSON line (one write, so concurrent hooks don't interleave).
     pub fn record(&self, entry: &Value) {
         let _ = self.try_record(entry);

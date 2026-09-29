@@ -6,7 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Benchmark reporting
+### Added
+- **A local record of each ranking.** Every ranking the daemon serves appends one line to
+  `$LAYA_CODEX_HOME/capture/requests.jsonl`. A ranking is a hook prompt, a `search`, or a
+  `laya-codex query`.
+  - **What a line holds:** the prompt, the task focus the model saw, every candidate in keyword
+    order, the spans returned and the blocks inlined. Each candidate has its path, lines, keyword
+    rank, fused score and Laya probability.
+  - **What it never holds:** code text.
+  - **What it is for:** joined with Claude Code's session transcript by session id, it shows which
+    offered code Claude went on to read. It is evidence and training data that the benchmark cannot
+    give.
+  - **On by default and local only:** the folder is 0700 and the file 0600, rotated at 32 MB.
+  - **Turning it off:** `laya-codex capture off` stops it at once, including for the running daemon.
+    `LAYA_CODEX_CAPTURE=0` also turns it off, and `laya-codex capture status` shows the state.
+
+### Changed
+- **One file can no longer fill the candidate pool.** The 24 lexical candidates hold at most 3
+  chunks from any one file, and the freed places go to the next files in order. One moon test
+  file used to take 18 of the 24. In the offline replay of the 60 benchmark tasks, one more
+  correct file was inlined (71 of 115, none lost) and three more were named (103), at the same
+  hook latency.
 - **Cost leads every benchmark report.** The goal is now cost per session −50% against stock
   Claude Code with no quality loss (docs/VISION.md). `bench/headline.py` and the savings chart put
   cost first, with code tokens read plus injected beside it. They name the Claude model the run
@@ -15,13 +35,6 @@ All notable changes to this project are documented here. The format follows
 - **The v10 read charts use the 51 paired tasks.** They had averaged 55 unpaired tasks, stalled
   ones included, and skipped tasks where the event never happened. Turns are now medians with
   "never" counted as last.
-
-### Changed
-- **One file can no longer fill the candidate pool.** The 24 lexical candidates hold at most 3
-  chunks from any one file, and the freed places go to the next files in order. One moon test
-  file used to take 18 of the 24. In the offline replay of the 60 benchmark tasks, one more
-  correct file was inlined (71 of 115, none lost) and three more were named (103), at the same
-  hook latency.
 
 ## [0.4.0] — 2026-09-28
 
