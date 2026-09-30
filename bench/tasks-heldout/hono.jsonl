@@ -1,0 +1,20 @@
+{"id": "2df0b47659", "task": "feat(jsx): add React-compatible overloads to useRef", "gold": ["src/jsx/dom/index.test.tsx", "src/jsx/dom/intrinsic-element/components.ts", "src/jsx/hooks/index.ts"]}
+{"id": "3bc96ba915", "task": "feat(cache): add first-class support for QUERY requests", "gold": ["src/middleware/cache/index.test.ts", "src/middleware/cache/index.ts"]}
+{"id": "75b8a4932a", "task": "feat(cors): allow QUERY by default as a first-class method", "gold": ["src/middleware/cors/index.test.ts", "src/middleware/cors/index.ts"]}
+{"id": "2159deb4bd", "task": "feat(etag): support conditional requests for the QUERY method", "gold": ["src/middleware/etag/index.test.ts", "src/middleware/etag/index.ts"]}
+{"id": "5fc8aadf7a", "task": "perf(context): restore the `env` field initializer", "gold": ["src/context.ts"]}
+{"id": "3b3ee4b766", "task": "perf(hono-base): restore the rest parameter in `fetch`", "gold": ["src/hono-base.ts"]}
+{"id": "fc8bd834dd", "task": "perf(request): probe the body cache without allocating", "gold": ["src/request.ts"]}
+{"id": "b2070d0ddd", "task": "perf(request): allocate `#validatedData` lazily", "gold": ["src/request.ts"]}
+{"id": "3fbbd96ace", "task": "perf(context): drop the throwaway `env` field initializer", "gold": ["src/context.ts"]}
+{"id": "3098a3ab23", "task": "perf(urls): refactor `tryDecodeURIComponent`", "gold": ["src/request.ts", "src/utils/cookie.ts", "src/utils/url.ts"]}
+{"id": "2739eb5c52", "task": "perf(context): skip Headers creation when there are no headers to merge", "gold": ["src/context.ts"]}
+{"id": "62edfe2cb9", "task": "perf(url): replace regex tests with indexOf", "gold": ["src/request.ts", "src/utils/url.ts"]}
+{"id": "600a8ccdb8", "task": "perf(context): iterate the header record with for..in", "gold": ["src/context.ts"]}
+{"id": "640b756ffa", "task": "perf(hono-base): avoid rest parameter in `fetch`", "gold": ["src/hono-base.ts"]}
+{"id": "224d2f5cbf", "task": "fix(jsx): handle useSyncExternalStore subscription and snapshot changes", "gold": ["src/jsx/hooks/dom.test.tsx", "src/jsx/hooks/index.ts"]}
+{"id": "09cf01c0a8", "task": "fix(cookie): relax name validation when parsing Cookie header", "gold": ["src/utils/cookie.test.ts", "src/utils/cookie.ts"]}
+{"id": "402eb3abe5", "task": "fix(secure-headers): keep CSP callbacks scoped to their header", "gold": ["src/middleware/secure-headers/index.test.ts", "src/middleware/secure-headers/secure-headers.ts"]}
+{"id": "44f884321a", "task": "fix(sse): emit empty id field to reset Last-Event-ID", "gold": ["src/helper/streaming/sse.test.tsx", "src/helper/streaming/sse.ts"]}
+{"id": "e36f57dac0", "task": "fix(aws-lambda): add jwt and lambda authorizer types for API Gateway v2", "gold": ["src/adapter/aws-lambda/handler.test.ts", "src/adapter/aws-lambda/types.ts"]}
+{"id": "aeba9ece77", "task": "fix(sse): emit retry feild when retry is `0`", "gold": ["src/helper/streaming/sse.test.tsx", "src/helper/streaming/sse.ts"]}

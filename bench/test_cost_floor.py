@@ -18,8 +18,9 @@ def result(write, read, out, cost):
                       "output_tokens": out}}
 
 
+# total_cost_usd is the session's running total: 0.06 after prompt 1, 0.10 after prompt 2.
 SESSION = [assistant(5000, 4000), result(6000, 20000, 600, 0.06),
-           assistant(700, 10000), result(900, 12000, 500, 0.04)]
+           assistant(700, 10000), result(900, 12000, 500, 0.10)]
 
 
 class Session(unittest.TestCase):
@@ -29,6 +30,12 @@ class Session(unittest.TestCase):
         self.assertEqual(s["cache_write"], 6906)          # summed over the prompts' result usage
         self.assertEqual(s["output"], 1100)
         self.assertAlmostEqual(s["reported_usd"], 0.10)
+
+    def test_prices_are_the_shared_claude_list_prices(self):
+        import runs
+        self.assertEqual(cf.PRICES, {"cache_write": runs.PRICES_PER_M["cache_creation_input_tokens"],
+                                     "cache_read": runs.PRICES_PER_M["cache_read_input_tokens"],
+                                     "output": runs.PRICES_PER_M["output_tokens"]})
 
     def test_usd_uses_list_prices(self):
         usd = cf.usd({"cache_write": 1_000_000, "cache_read": 1_000_000, "output": 1_000_000})

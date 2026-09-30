@@ -13,6 +13,15 @@ import re
 METRICS = ("wall_s", "reading_tokens", "injected_tokens", "total_input_tokens", "output_tokens", "num_turns",
            "cost_usd", "recall", "precision", "hit_any", "recall_all_turns")
 ARM_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# claude-sonnet-5-5 list prices, dollars per million tokens; Claude Code writes the one-hour cache.
+# They reproduce every v13 and v14 result's modelUsage costUSD exactly.
+PRICES_PER_M = {"input_tokens": 2.0, "cache_creation_input_tokens": 4.0, "cache_read_input_tokens": 0.20,
+                "output_tokens": 10.0}
+
+
+def priced(usage):
+    """Dollars for an API `usage` dict at PRICES_PER_M."""
+    return sum((usage.get(k) or 0) * p for k, p in PRICES_PER_M.items()) / 1e6
 
 
 def tok_estimate(chars):

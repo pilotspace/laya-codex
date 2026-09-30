@@ -162,6 +162,33 @@ class RunBench(unittest.TestCase):
         self.assertEqual(self.rb.run_name("t1", "laya", 0), "t1_laya")
         self.assertEqual(self.rb.run_name("t1", "laya", 2), "t1_laya_r2")
 
+    def test_every_arm_runs_first_equally_often_and_each_pair_in_both_orders(self):
+        arms = ["baseline", "laya", "gate"]
+        tasks = [{"id": "t%d" % i} for i in range(20)]
+        plan = self.rb.make_plan(tasks, arms, 1)
+        orders = [[a for a, t, _ in plan if t is task] for task in tasks]
+        self.assertTrue(all(sorted(o) == sorted(arms) for o in orders))
+        firsts = [sum(o[0] == a for o in orders) for a in arms]
+        self.assertLessEqual(max(firsts) - min(firsts), 1, firsts)
+        for a in arms:
+            for b in arms:
+                if a < b:
+                    before = sum(o.index(a) < o.index(b) for o in orders)
+                    self.assertLessEqual(abs(before - 10), 2, (a, b, before))
+
+    def test_each_arm_and_repeat_gets_its_own_prompt_cache_prefix(self):
+        # Identical first requests from two arms share Anthropic's prompt cache, so whichever arm
+        # ran second was billed cache reads for the first arm's writes.
+        tags = {}
+        for arm in ("baseline", "laya", "gate"):
+            for rep in (0, 1):
+                flags = self.rb.arm_flags(arm, "/cfg", rep)
+                tag = flags[flags.index("--append-system-prompt") + 1]
+                self.assertNotIn(arm, tag)  # neutral: the arm name must not steer the model
+                tags[(arm, rep)] = tag
+        self.assertEqual(len(set(tags.values())), 6)
+        self.assertEqual(self.rb.arm_flags("laya", "/cfg", 1), self.rb.arm_flags("laya", "/cfg", 1))
+
     def test_only_arms_with_their_own_binary_get_their_own_home_and_port(self):
         specs = [("baseline", None, None), ("laya-adaptive", "laya-adaptive", None),
                  ("v030", "laya-adaptive", "/x/v030"), ("new", "laya-adaptive", "/x/new")]
@@ -831,12 +858,36 @@ class OneProcessSession(unittest.TestCase):
         self.assertNotIn("--resume", cmd)
         self.assertEqual(cmd[cmd.index("--input-format") + 1], "stream-json")
         self.assertEqual(cmd[cmd.index("--session-id") + 1], "sid-1")
+        self.assertIn("--append-system-prompt", cmd)
         self.assertEqual([m["message"]["content"] for m in procs[0].sent], ["first?", "second?"])
         self.assertEqual(len(out), 2)
         for k, (lines, rc, wall) in enumerate(out):
             self.assertEqual(json.loads(lines[-1])["result"], "answer %d" % k)
             self.assertNotIn("never", "".join(lines))
             self.assertEqual(rc, 0)
+
+    def test_a_live_sessions_cost_is_its_last_cumulative_total_not_the_sum(self):
+        # In one live session each result's total_cost_usd is the session's running total
+        # (v13: 120 of 120 second results), so summing them counted prompt 1 twice.
+        import run_bench
+
+        def result(cost, out):
+            return json.dumps({"type": "result", "result": "FILES: a.py", "total_cost_usd": cost, "num_turns": 1,
+                               "usage": {"output_tokens": out}})
+
+        class Args:
+            model, effort, max_usd, timeout, repo, turns = "claude-sonnet-5-5", "medium", 2.0, 60, "/tmp", 2
+        with tempfile.TemporaryDirectory() as d:
+            Args.out = d
+            real = run_bench._claude_session
+            run_bench._claude_session = lambda *a, **k: [([result(0.08, 100)], 0, 1.0), ([result(0.11, 50)], 0, 1.0)]
+            try:
+                row, _ = run_bench.run_one("baseline", {"id": "t1", "task": "x", "gold": ["a.py"]}, Args, d)
+            finally:
+                run_bench._claude_session = real
+        self.assertAlmostEqual(row["cost_usd"], 0.11)
+        self.assertEqual(row["prompt_cost_usd"], [0.08, 0.03])
+        self.assertEqual(row["output_tokens"], 150)  # usage stays per prompt
 
     def test_grep_intents_splits_a_one_process_session_at_each_result(self):
         import grep_intents
