@@ -195,6 +195,9 @@ def sessions(raw_path):
                 cur = {"injection": "", "calls": [], "answer": ""}
                 prompts.append(cur)
         elif t == "assistant" and cur is not None:
+            if cur["answer"]:  # one-process sessions: the next prompt starts after a result, with no init
+                cur = {"injection": "", "calls": [], "answer": ""}
+                prompts.append(cur)
             m = e["message"]
             for i, b in enumerate(m.get("content") or []):
                 key = (m.get("id"), b.get("id") or i, b.get("type"))
