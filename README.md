@@ -25,29 +25,10 @@ Trade-off: code read + injected +10% (not significant). <a href="#benchmark">Det
 
 ## What changes for Claude
 
-```mermaid
-flowchart TB
-    subgraph stock["Stock Claude Code"]
-        direction LR
-        s1(["Your prompt"]) --> s2["Grep ×4"] --> s3["Read, open files"] --> s4(["Answer"])
-    end
-    subgraph laya["With laya-codex"]
-        direction LR
-        l1(["Your prompt<br/>+ the ranked code it needs"]) --> l2["about 2 lookups<br/>(search, Grep or Read)"] --> l4(["Answer"])
-    end
-    stock ~~~ laya
-    classDef stockNode stroke:#8b949e,stroke-width:2px
-    classDef layaNode stroke:#2da44e,stroke-width:2px
-    class s1,s2,s3,s4 stockNode
-    class l1,l2,l4 layaNode
-```
-
-| per session (benchmark v13) | stock | laya-codex |
-|---|---|---|
-| Claude starts with | your prompt | your prompt + the ranked code, definitions and callers |
-| Tool calls | 5.9 (4.2 Grep) | **2.3** (0.8 Grep, 0.8 `search`) |
-| Right file in context by turn (median) | 4; never in 19 of 60 tasks | **0**; before the first turn in 52 of 60 |
-| Cost / time | $0.128 / 23.2 s | **$0.110 / 18.7 s** |
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagram-session-dark.svg">
+  <img alt="One task, two sessions (benchmark v13 means, bar length = wall-clock time): stock Claude Code takes 23.2 s and $0.128 with 5.9 tool calls (Grep, Grep, Read, Grep, Grep, Read) and has the right file at turn 4 (median), never in 19 of 60 tasks; with laya-codex the prompt arrives with the ranked code, so the right file is in context before turn 1 in 52 of 60 tasks, and the session takes 18.7 s and $0.110 with 2.3 tool calls (search, Grep)" src="docs/assets/diagram-session-light.svg" width="760">
+</picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-journey-dark.svg">
@@ -132,18 +113,10 @@ prompt. Check the setup with `laya-codex doctor --repo .`.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    repo[("Your repository")] -->|"tree-sitter<br/>14 languages"| chunks["10–50-line chunks<br/>along functions and classes"]
-    chunks --> moon[("Moon<br/>local keyword index")]
-    prompt(["Your prompt"]) --> hook["laya-codex hook"]
-    hook --> lex["Keyword search<br/>BM25 + symbol + path matches<br/>24 candidates"]
-    moon --> lex
-    lex --> rerank["Laya re-ranker<br/>'is this code relevant to this task?'<br/>top 16 in about 0.5 s"]
-    rerank --> inject["Up to 9,500 characters added to the prompt<br/>ranked map · code of the top 2 files<br/>definitions, uses, callers and callees"]
-    inject --> claude(["Claude Code"])
-    claude -.->|"MCP search:<br/>where is X, who calls X"| lex
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagram-pipeline-dark.svg">
+  <img alt="How laya-codex picks the code: once, then on every edit, your repository is split by tree-sitter into 10–50-line chunks (14 languages) and stored in Moon, a local keyword index. On every prompt, keyword search (BM25 + symbols + paths) finds 24 candidates, the Laya re-ranker scores the top 16 in about 0.5 s, and up to 9,500 characters (the top 2 files' code and a map) are added to the prompt before Claude Code starts. Claude's own lookups go through the MCP search tool" src="docs/assets/diagram-pipeline-light.svg" width="760">
+</picture>
 
 - **Index:** [tree-sitter](https://tree-sitter.github.io/) chunks stored in Moon, a local search
   server laya-codex runs for you; edits are re-indexed as Claude makes them.
@@ -162,12 +135,10 @@ Keywords rank by shared words: a function that mentions `password` five times be
 decides whether a server is trusted. [Laya](https://huggingface.co/convaiinnovations/laya) judges
 relevance instead, on the few candidates keywords find:
 
-```mermaid
-flowchart LR
-    all["Whole repository"] -->|"keyword search"| k["24 candidates"]
-    k -->|"Laya scores the top 16<br/>about 0.5 s on Metal"| blend["final score =<br/>0.5 × keyword rank<br/>+ 0.5 × model probability"]
-    blend --> top["the code Claude gets"]
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagram-rerank-dark.svg">
+  <img alt="Keywords find the candidates, Laya orders them: keyword search narrows the whole repository to 24 candidate blocks, the Laya re-ranker scores the top 16 in about 0.5 s, and the code of the top 2 files is inlined in the prompt with a map of the rest; final score = 0.5 × keyword rank + 0.5 × model probability" src="docs/assets/diagram-rerank-light.svg" width="760">
+</picture>
 
 - **Direct judgment:** a cross-encoder reads task and code together and returns *P(relevant)*,
   more precise than comparing separate embeddings.
@@ -299,6 +270,7 @@ Regenerate:
 ```sh
 cd scripts
 python3 charts.py ../bench/results/headline-v13.json ../docs/assets
+python3 diagrams.py ../docs/assets
 python3 insight_charts.py ../bench/results/claude-v13 ../docs/assets --arm laya --run-label "benchmark v13" \
     --before ../bench/results/replay-2026-09-24/ab-rank.jsonl v030 v0.3.0 \
     --after ../bench/results/replay-2026-09-26-r1/replay.jsonl candidate v0.4.0
