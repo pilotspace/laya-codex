@@ -1,0 +1,4 @@
+{"id": "1e11096473", "task": "Fixed `iter_text` adding an empty string", "gold": ["httpx/_decoders.py", "httpx/_models.py", "tests/test_decoders.py"]}
+{"id": "90538a3b46", "task": "Ensure that ASGI 'raw_path' does not include query component of URL.", "gold": ["httpx/_transports/asgi.py", "tests/test_asgi.py"]}
+{"id": "b471f01d66", "task": "Allow URLs where username or password contains unescaped '@'.", "gold": ["httpx/_urlparse.py", "tests/models/test_url.py"]}
+{"id": "1d73150c1f", "task": "Cleanup response.json() method", "gold": ["httpx/_models.py", "httpx/_utils.py", "tests/test_utils.py"]}

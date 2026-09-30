@@ -323,17 +323,16 @@ class TokenMetricIsPrimary(unittest.TestCase):
         import stats_pooled
         self.assertEqual(stats_pooled.METRICS["reading+injected tokens"]({}), 0)
 
-    def test_headline_metric_order_leads_with_reading_plus_injected(self):
+    def test_headline_metric_order_leads_with_cost_then_reading_plus_injected(self):
         import headline
         keys = list(headline.METRICS)
-        self.assertEqual(keys[0], "reading_plus_injected")
-        self.assertEqual(keys[1], "reading_tokens")
+        self.assertEqual(keys[:3], ["cost", "reading_plus_injected", "reading_tokens"])
         self.assertEqual(headline.LABELS["reading_plus_injected"], "Reading + injected")
 
-    def test_headline_chart_leads_with_reading_plus_injected(self):
+    def test_headline_chart_leads_with_cost_and_keeps_code_tokens_beside_it(self):
         import headline
-        self.assertEqual(headline.CHART_METRICS[0], "reading_plus_injected")
-        self.assertIn("reading_tokens", headline.CHART_METRICS)
+        self.assertEqual(headline.CHART_METRICS[:3], ["cost", "reading_plus_injected", "reading_tokens"])
+        self.assertEqual(headline.CHART_METRICS[-1], "wall_clock")
 
     def test_headline_title_does_not_assert_a_direction_the_data_may_not_show(self):
         import headline
@@ -391,6 +390,16 @@ class ReadSummary(unittest.TestCase):
         with self.assertRaises(ValueError):
             headline.read_summary(rows, {("r", "a")}, "laya", "baseline", "laya-lex")
 
+    def test_a_run_without_a_keyword_only_arm_reports_no_lex_figures(self):
+        # v13 ran stock and laya-codex only; the lex fields are left out, not zero-filled.
+        import headline
+        rows = {"r": {"baseline": [self.rrow("a", seen_turn=3)], "laya": [self.rrow("a", seen_turn=0)]}}
+        s = headline.read_summary(rows, {("r", "a")}, "laya", "baseline", None)
+        self.assertNotIn("lex", s["read_precision"])
+        self.assertNotIn("lex", s["first_gold_read_turn"])
+        self.assertNotIn("lex_seen", s["journey"])
+        self.assertEqual(s["journey"]["laya_seen"], [0])
+
 
 class ReadsChart(unittest.TestCase):
     def test_subtitle_states_the_paired_task_count_and_never_is_drawn_as_text(self):
@@ -403,6 +412,35 @@ class ReadsChart(unittest.TestCase):
         out = charts.reads(d, charts.THEMES["light"])
         self.assertIn("51 paired tasks", out)
         self.assertIn(">never<", out)
+
+    def test_journey_legend_says_never_when_the_median_task_never_got_there(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+        import charts
+        d = {"n_tasks": 3, "journey": {"baseline": [2, 3, 4], "laya_seen": [0, 0, None],
+                                       "laya_read": [2, None, None], "lex_seen": []}}
+        out = charts.journey(d, charts.THEMES["light"])
+        self.assertIn("first correct Read (median never)", out)
+        self.assertNotIn("inf", out)
+
+    def test_savings_subtitle_fits_the_chart_width(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+        import charts
+        import re
+        d = {"n_tasks": 60, "repos": ["moon", "httpx", "hono"], "model": "claude-sonnet-5-5", "effort": "medium",
+             "metrics": {"cost": {"label": "Cost", "pct": -13.7, "lo": -17.8, "hi": -9.1},
+                         "tok": {"label": "Tokens", "pct": 9.5, "lo": -1.6, "hi": 22.6}}}
+        sub = [s for s in re.findall(r">([^<]+)</text>", charts.savings(d, charts.THEMES["light"])) if "tasks" in s][0]
+        self.assertLessEqual(len(sub), 110, sub)  # about 6 px per character at 12 px, 760 px wide
+
+    def test_savings_subtitle_names_the_resolved_model_and_effort(self):
+        # "sonnet" is an alias that moved from Sonnet 5 to Sonnet 5.5 between runs; the chart must
+        # name the model the run actually used.
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+        import charts
+        d = {"n_tasks": 51, "repos": ["httpx"], "model": "claude-sonnet-5", "effort": "medium",
+             "metrics": {"cost": {"label": "Cost", "pct": -8.8, "lo": -16.3, "hi": -1.9}}}
+        out = charts.savings(d, charts.THEMES["light"])
+        self.assertIn("claude-sonnet-5 · medium effort", out)
 
 
 class InsightCharts(unittest.TestCase):
@@ -427,6 +465,19 @@ class InsightCharts(unittest.TestCase):
         self.assertIn("9 benchmark v10 sessions", time_svg)
         self.assertIn("benchmark v10, 3 paired tasks", turns_svg)
         self.assertNotIn("v2", time_svg + turns_svg)
+
+    def test_time_legend_counts_the_laya_arms_the_run_has(self):
+        t = self.ic.THEMES["light"]
+        self.assertIn("laya-codex (both arms)", self.ic.time_chart(self.dir, "laya", "benchmark v10", t))
+        one = tempfile.mkdtemp()
+        for repo in self.ic.REPOS:
+            os.makedirs(os.path.join(one, repo))
+            with open(os.path.join(one, repo, "runs.jsonl"), "w") as f:
+                for arm, wall, out in (("baseline", 40.0, 4000), ("laya", 30.0, 3000)):
+                    f.write(json.dumps(row(arm, "t", wall_s=wall, output_tokens=out, num_turns=10)) + "\n")
+        svg_one = self.ic.time_chart(one, "laya", "benchmark v13", t)
+        self.assertIn(">laya-codex<", svg_one)
+        self.assertNotIn("both arms", svg_one)
 
     def test_followup_chart_compares_the_two_labelled_replays(self):
         rows = [{"label": lab, "repo": repo, "turn": 2, "chars": c}

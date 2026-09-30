@@ -16,6 +16,10 @@ reads less and decides faster.
 
 Savings figures without a success-rate check are meaningless, so we always report both.
 
+*Superseded 2026-09-29: the goal is cost per session −50% against stock Claude Code with no
+quality loss, with code tokens read plus injected, time and answer recall reported beside it. See
+[VISION.md](VISION.md#targets).*
+
 ## 2. What the research changed in the draft
 
 1. **Laya is not a code model.** It is a ModernBERT-large (421M) *typed-decision*

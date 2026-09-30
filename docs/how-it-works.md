@@ -221,7 +221,7 @@ laya-codex ranks the session's **topic** (its last self-contained prompt) instea
 identifiers or paths the follow-up names.
 
 Since the topic's best code was sent with the first prompt, a follow-up that names no code gets
-less code of its own (unreleased; the capture below is from v0.3.0, which inlined three blocks):
+less code of its own (since v0.4.0; the capture below is from v0.3.0, which inlined three blocks):
 - **It asks for tests or callers** ("identify the tests that cover this and the call sites"): no
   code blocks. It gets up to 6 locations not sent yet, the tests that use the task's identifiers
   (`` - tests/test_decoders.py:331-355 def test_line_decoder_crnl — test using `iter_lines` ``,
@@ -270,29 +270,29 @@ Earlier versions narrowed the first whole-file Read of a large file to its most 
 plus an outline. In benchmark v3 that fired on no Read at all, because Claude reads with
 `offset`/`limit` after a Grep, so it was removed.
 
-## 6. Why this saves tokens
+## 6. What this saves, and what it costs
 
 Without laya-codex, Claude Code finds code by searching: Grep, Glob, then whole-file Reads, many of
 them of the wrong file. laya-codex front-loads a small, ranked answer (about 1.5–2.5k tokens), so
-fewer of those steps happen. From [RESULTS.md](RESULTS.md) (benchmark v2: v0.1.2 defaults vs
-stock Claude Code, 60 tasks on moon, httpx and hono, two prompts per session, paired, Claude
-Sonnet):
+fewer of those steps happen. From [RESULTS.md](RESULTS.md) (benchmark v13: laya-codex with
+laya-code-r1 vs stock Claude Code, 60 paired tasks on moon, httpx and hono, two prompts in one
+session, Claude Sonnet 5.5 at medium effort):
 
-| | stock Claude Code | with laya-codex |
+| per session | stock Claude Code | with laya-codex |
 |---|---|---|
-| code-reading tokens (Read/Grep/Glob output) | 100% | **−38.2%** (95% CI −50.8%…−21.8%) |
-| turns | 100% | −20.9% (CI −27.7%…−13.7%) |
-| total input tokens | 100% | −3.7% (not significant) |
-| wall-clock | 100% | +3.5% (not significant) |
-| correct code in context before the first turn | 0 of 60 tasks | 46 of 60 tasks |
-| read precision | 0.595 | 0.624 |
-| first Read of a gold file | turn 5.9 | turn 3.3 |
-| wasted Read tokens per task | 2,005 | 1,187 |
-| answer recall, first prompt | 0.815 | 0.899 (+0.083, significant) |
+| cost | $0.128 | $0.110 (−13.7%, CI −17.8%…−9.1%) |
+| code read + injected | 2,755 tokens | 3,017 (+9.5%, not significant) |
+| code-reading tokens (Read/Grep/Glob/`search` output) | 2,755 | 1,184 (−57.0%, CI −65.2%…−47.8%) |
+| wall-clock | 23.2 s | 18.7 s (−19.2%, CI −23.3%…−14.7%) |
+| turns | 7.9 | 4.3 (−45.5%) |
+| tool calls | 5.9 | 2.3 |
+| correct code in context before the first turn | 0 of 60 tasks | 52 of 60 tasks |
+| answer recall, first prompt / both prompts | 0.726 / 0.954 | 0.881 / 0.931 |
 
-The injected text itself costs tokens. On small repositories, where stock Claude reads little,
-it roughly cancels the reading it saves (reading plus injected tokens: +7%, not significant,
-pooled). That is why the injection is capped at 9,500 characters and adaptive mode never re-sends
+The injected text itself costs tokens. It roughly replaces the reading it saves (reading plus
+injected tokens: +9.5% pooled, not significant; higher on httpx and hono, lower on moon). Cost
+still falls, because the saving is in API calls (3.7 per session instead of 5.9): each call
+avoided saves a re-read of the cached conversation and an answer. That is why the injection is capped at 9,500 characters and adaptive mode never re-sends
 code. Inlining more saved little and cost more.
 
 ## 7. Tuning
@@ -339,7 +339,7 @@ WARN  mcp     no laya-codex server in /home/me/laya-codex/.mcp.json (the search 
 | `home` | `LAYA_CODEX_HOME` (default `~/.cache/laya-codex`) is not writable | Make it writable, or set `LAYA_CODEX_HOME` to a writable directory. The daemon socket lives there, so keep the path short. A very long path fails with "path must be shorter than SUN_LEN". |
 | `moon` | `moon binary not found; tried …` or `not runnable` | laya-codex looks for `moon` beside its own binary (after resolving symlinks), then in `../libexec` next to it (the Homebrew layout), then on `PATH`. Re-run the installer, which puts both in one directory, or `brew reinstall laya-codex`. You can also set `LAYA_CODEX_MOON_BIN=/path/to/moon`. |
 | `auth` | port served by another Moon, or `cannot load laya-codex's Moon password` | Another server holds laya-codex's port (default 16379): stop it, or set `LAYA_CODEX_MOON_PORT` to a free port. For a password error, delete `$LAYA_CODEX_HOME/moon.acl` and run `laya-codex stop`; both are recreated. A Moon started by an older laya-codex without a password is replaced at the next daemon start. |
-| `model` | `no model found` (lexical-only), `incomplete`, or `runs on CPU here` | Get the re-ranker with `curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh \| sh -s -- --model-only`, which fetches and verifies it into `$LAYA_CODEX_HOME/models/laya-code` (or `hf download tindang/laya-code --local-dir ~/.cache/laya-codex/models/laya-code`), or set `LAYA_CODEX_MODEL_DIR`. On Linux the model runs on CPU and is too slow for interactive use, so set `LAYA_CODEX_NO_MODEL=1`. laya-codex still works lexically. |
+| `model` | `no model found` (lexical-only), `incomplete`, or `runs on CPU here` | Get the re-ranker with `curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh \| sh -s -- --model-only`, which fetches and verifies it into `$LAYA_CODEX_HOME/models/laya-code` (or `hf download tindang/laya-code --revision 25f97e5a2ec5f8cf7218a4f67504367d8832e1fe --local-dir ~/.cache/laya-codex/models/laya-code`), or set `LAYA_CODEX_MODEL_DIR`. On Linux the model runs on CPU and is too slow for interactive use, so set `LAYA_CODEX_NO_MODEL=1`. laya-codex still works lexically. |
 | `daemon` | `not running` (WARN), or `running daemon is vX, this binary is vY` | The daemon starts on demand at the first hook, and `laya-codex doctor --start` starts it now. After an upgrade, run `laya-codex stop` so the next hook starts the new build. If it won't come up, see `$LAYA_CODEX_HOME/daemon.log`. |
 | `index` | `has no indexed files` or `cannot read the index` | Run `laya-codex index /path/to/repo`. `SessionStart` indexes git repositories in the background, and edits are re-indexed file by file. |
 | `hooks` | hooks missing, or `a laya-codex hook runs …, which is not an executable` | Run `laya-codex init --repo …` or install the plugin. If the hook points at a path that no longer exists (for example a versioned Homebrew Cellar path written by an older release), re-run `laya-codex init`; with `laya-codex` on `PATH` it writes the bare command. Hooks written by 0.1.x (`laya hook`) are not recognised: delete them. |

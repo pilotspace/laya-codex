@@ -80,7 +80,9 @@ def time_chart(run, arm, run_label, t):
         text(24, 54, f"Wall-clock vs output tokens · {len(rows)} {run_label} sessions (3 repos, 2 prompts each) · "
                      f"line: {a_label} s + {b:.1f} s per 1k tokens, R² {r2:.2f}", 12, t["muted"]),
     ]
-    body += legend(t, left, 80, ((t["base"], "stock Claude Code"), (t["laya"], "laya-codex (both arms)")))
+    laya_arms = {r["arm"] for r in rows if r["arm"] != "baseline"}
+    laya_label = "laya-codex (both arms)" if len(laya_arms) > 1 else "laya-codex"
+    body += legend(t, left, 80, ((t["base"], "stock Claude Code"), (t["laya"], laya_label)))
     for v in range(0, ymax + 1, 30):
         body += hgrid(t, left, w - right, sy(v), f"{v} s", left - 8)
     for v in range(0, xmax + 1, 2):

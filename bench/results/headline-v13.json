@@ -1,0 +1,446 @@
+{
+ "version": "v13",
+ "n_tasks": 60,
+ "repos": [
+  "moon",
+  "httpx",
+  "hono"
+ ],
+ "model": "claude-sonnet-5-5",
+ "effort": "medium",
+ "arm": "laya",
+ "metrics": {
+  "cost": {
+   "label": "Cost",
+   "pct": -13.7,
+   "lo": -17.8,
+   "hi": -9.1
+  },
+  "reading_plus_injected": {
+   "label": "Reading + injected",
+   "pct": 9.5,
+   "lo": -1.6,
+   "hi": 22.6
+  },
+  "reading_tokens": {
+   "label": "Code-reading tokens",
+   "pct": -57.0,
+   "lo": -65.2,
+   "hi": -47.8
+  },
+  "total_input": {
+   "label": "Total input tokens",
+   "pct": -31.7,
+   "lo": -37.3,
+   "hi": -25.0
+  },
+  "wall_clock": {
+   "label": "Wall-clock time",
+   "pct": -19.2,
+   "lo": -23.3,
+   "hi": -14.7
+  },
+  "turns": {
+   "label": "Turns",
+   "pct": -45.5,
+   "lo": -49.8,
+   "hi": -40.7
+  },
+  "output_tokens": {
+   "label": "Output tokens",
+   "pct": -25.6,
+   "lo": -28.9,
+   "hi": -22.2
+  }
+ },
+ "chart_metrics": [
+  "cost",
+  "reading_plus_injected",
+  "reading_tokens",
+  "turns",
+  "total_input",
+  "output_tokens",
+  "wall_clock"
+ ],
+ "chart_title": "laya-codex vs stock Claude Code: cost, code tokens reaching Claude and turns",
+ "per_repo": {
+  "moon": {
+   "cost": {
+    "pct": -22.3,
+    "lo": -28.0,
+    "hi": -15.4
+   },
+   "reading_plus_injected": {
+    "pct": -22.6,
+    "lo": -36.2,
+    "hi": -5.4
+   },
+   "reading_tokens": {
+    "pct": -72.0,
+    "lo": -82.1,
+    "hi": -59.2
+   },
+   "total_input": {
+    "pct": -43.7,
+    "lo": -51.8,
+    "hi": -32.7
+   },
+   "wall_clock": {
+    "pct": -28.7,
+    "lo": -34.7,
+    "hi": -21.5
+   },
+   "turns": {
+    "pct": -58.9,
+    "lo": -65.4,
+    "hi": -50.3
+   },
+   "output_tokens": {
+    "pct": -33.5,
+    "lo": -38.7,
+    "hi": -27.8
+   }
+  },
+  "httpx": {
+   "cost": {
+    "pct": 4.2,
+    "lo": -4.3,
+    "hi": 13.9
+   },
+   "reading_plus_injected": {
+    "pct": 58.2,
+    "lo": 32.4,
+    "hi": 93.7
+   },
+   "reading_tokens": {
+    "pct": -38.1,
+    "lo": -53.7,
+    "hi": -19.1
+   },
+   "total_input": {
+    "pct": -11.1,
+    "lo": -22.1,
+    "hi": 1.7
+   },
+   "wall_clock": {
+    "pct": -4.5,
+    "lo": -14.9,
+    "hi": 8.0
+   },
+   "turns": {
+    "pct": -27.6,
+    "lo": -36.9,
+    "hi": -17.4
+   },
+   "output_tokens": {
+    "pct": -12.9,
+    "lo": -20.0,
+    "hi": -4.4
+   }
+  },
+  "hono": {
+   "cost": {
+    "pct": -11.0,
+    "lo": -18.1,
+    "hi": -2.7
+   },
+   "reading_plus_injected": {
+    "pct": 28.9,
+    "lo": 9.3,
+    "hi": 53.8
+   },
+   "reading_tokens": {
+    "pct": -44.9,
+    "lo": -61.6,
+    "hi": -25.4
+   },
+   "total_input": {
+    "pct": -26.3,
+    "lo": -33.9,
+    "hi": -18.0
+   },
+   "wall_clock": {
+    "pct": -20.5,
+    "lo": -25.0,
+    "hi": -15.9
+   },
+   "turns": {
+    "pct": -45.7,
+    "lo": -51.6,
+    "hi": -39.5
+   },
+   "output_tokens": {
+    "pct": -26.1,
+    "lo": -31.1,
+    "hi": -21.0
+   }
+  }
+ },
+ "answer_recall": {
+  "baseline": 0.726,
+  "laya": 0.881,
+  "diff": 0.154,
+  "lo": 0.078,
+  "hi": 0.228
+ },
+ "answer_recall_both_turns": {
+  "baseline": 0.954,
+  "laya": 0.931,
+  "diff": -0.024,
+  "lo": -0.081,
+  "hi": 0.024
+ },
+ "findable_gold": {
+  "n_tasks": 55,
+  "gold_files": 105,
+  "answer_recall": {
+   "baseline": 0.72,
+   "laya": 0.909,
+   "diff": 0.189,
+   "lo": 0.103,
+   "hi": 0.27
+  },
+  "answer_recall_both_turns": {
+   "baseline": 0.97,
+   "laya": 0.945,
+   "diff": -0.024,
+   "lo": -0.088,
+   "hi": 0.027
+  }
+ },
+ "read_precision": {
+  "baseline": 0.703,
+  "laya": 0.761
+ },
+ "first_gold_read_turn": {
+  "baseline": {
+   "median": 4.0,
+   "never": 19
+  },
+  "laya": {
+   "median": null,
+   "never": 37
+  }
+ },
+ "reads": {
+  "gold_seen": {
+   "label": "Relevant code found",
+   "baseline": 0.496,
+   "laya": 0.778,
+   "better": "higher",
+   "fmt": "{:.0%}"
+  },
+  "seen_turn": {
+   "label": "Turn right code arrives",
+   "better": "lower",
+   "fmt": "{:g}",
+   "baseline": 4.0,
+   "laya": 0.0,
+   "never_baseline": 19,
+   "never_laya": 6
+  },
+  "read_precision": {
+   "label": "Reads on relevant code",
+   "baseline": 0.703,
+   "laya": 0.761,
+   "better": "higher",
+   "fmt": "{:.0%}"
+  },
+  "wasted_read_tokens": {
+   "label": "Wasted read tokens",
+   "baseline": 278,
+   "laya": 102,
+   "better": "lower",
+   "fmt": "{:,.0f}"
+  }
+ },
+ "journey": {
+  "note": "Assistant turn at which a gold (correct) file first entered Claude's context; 0 = before Claude's first turn (laya-codex injected its code with the prompt); null = never.",
+  "baseline": [
+   1,
+   1,
+   2,
+   2,
+   2,
+   2,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   6,
+   6,
+   7,
+   8,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "laya_seen": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   4,
+   7,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "laya_read": [
+   1,
+   1,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   2,
+   3,
+   3,
+   3,
+   3,
+   3,
+   4,
+   4,
+   5,
+   7,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ }
+}

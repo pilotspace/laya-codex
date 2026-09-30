@@ -6,9 +6,16 @@
   "httpx",
   "hono"
  ],
- "model": "sonnet",
+ "model": "claude-sonnet-5",
+ "effort": "medium",
  "arm": "laya",
  "metrics": {
+  "cost": {
+   "label": "Cost",
+   "pct": -8.8,
+   "lo": -16.3,
+   "hi": -1.9
+  },
   "reading_plus_injected": {
    "label": "Reading + injected",
    "pct": 6.2,
@@ -39,12 +46,6 @@
    "lo": -40.4,
    "hi": -26.5
   },
-  "cost": {
-   "label": "Cost",
-   "pct": -8.8,
-   "lo": -16.3,
-   "hi": -1.9
-  },
   "output_tokens": {
    "label": "Output tokens",
    "pct": -19.8,
@@ -53,17 +54,22 @@
   }
  },
  "chart_metrics": [
+  "cost",
   "reading_plus_injected",
   "reading_tokens",
   "turns",
-  "cost",
   "total_input",
   "output_tokens",
   "wall_clock"
  ],
- "chart_title": "laya-codex vs stock Claude Code: code tokens reaching Claude, turns and cost",
+ "chart_title": "laya-codex vs stock Claude Code: cost, code tokens reaching Claude and turns",
  "per_repo": {
   "moon": {
+   "cost": {
+    "pct": -15.6,
+    "lo": -29.0,
+    "hi": -3.1
+   },
    "reading_plus_injected": {
     "pct": -6.7,
     "lo": -36.7,
@@ -89,11 +95,6 @@
     "lo": -48.4,
     "hi": -17.6
    },
-   "cost": {
-    "pct": -15.6,
-    "lo": -29.0,
-    "hi": -3.1
-   },
    "output_tokens": {
     "pct": -21.6,
     "lo": -37.1,
@@ -101,6 +102,11 @@
    }
   },
   "httpx": {
+   "cost": {
+    "pct": 0.3,
+    "lo": -8.5,
+    "hi": 9.2
+   },
    "reading_plus_injected": {
     "pct": 21.8,
     "lo": 5.8,
@@ -126,11 +132,6 @@
     "lo": -40.6,
     "hi": -17.9
    },
-   "cost": {
-    "pct": 0.3,
-    "lo": -8.5,
-    "hi": 9.2
-   },
    "output_tokens": {
     "pct": -13.8,
     "lo": -22.7,
@@ -138,6 +139,11 @@
    }
   },
   "hono": {
+   "cost": {
+    "pct": -5.5,
+    "lo": -12.9,
+    "hi": 3.3
+   },
    "reading_plus_injected": {
     "pct": 15.7,
     "lo": 1.0,
@@ -162,11 +168,6 @@
     "pct": -37.1,
     "lo": -44.9,
     "hi": -29.1
-   },
-   "cost": {
-    "pct": -5.5,
-    "lo": -12.9,
-    "hi": 3.3
    },
    "output_tokens": {
     "pct": -23.1,

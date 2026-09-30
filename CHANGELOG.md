@@ -27,6 +27,24 @@ All notable changes to this project are documented here. The format follows
   file used to take 18 of the 24. In the offline replay of the 60 benchmark tasks, one more
   correct file was inlined (71 of 115, none lost) and three more were named (103), at the same
   hook latency.
+- **Cost leads every benchmark report.** The goal is now cost per session −50% against stock
+  Claude Code with no quality loss (docs/VISION.md). `bench/headline.py` and the savings chart put
+  cost first, with code tokens read plus injected beside it. They name the Claude model the run
+  resolved to (`claude-sonnet-5` for v10) instead of the `sonnet` alias, which has since moved to
+  Sonnet 5.5.
+- **The v10 read charts use the 51 paired tasks.** They had averaged 55 unpaired tasks, stalled
+  ones included, and skipped tasks where the event never happened. Turns are now medians with
+  "never" counted as last.
+
+### Fixed
+- **The benchmark runs each task as one live session.** Resuming the session for the second
+  prompt (`claude -p --resume`) rebuilt the first message differently when prompt 1 was answered in
+  one API call, so the follow-up rewrote the whole prompt cache: 31 of 60 laya-codex sessions and
+  0 of 60 stock sessions in benchmark v12. Benchmark v13, with the fix: cost −13.7% against stock
+  (v12: +0.6%), time −19.2%, first-question recall 0.73 → 0.88.
+- **The benchmark keeps the operator's CLAUDE.md out.** Claude Code reads `<dir>/.claude/CLAUDE.md`
+  in every directory above the repo, so repos under the home directory loaded the operator's
+  global file in every session of every arm. `run_bench` now refuses such a repo.
 
 ## [0.4.0] — 2026-09-28
 

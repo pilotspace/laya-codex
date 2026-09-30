@@ -1,0 +1,7 @@
+{"date": "2026-09-29", "claude_model": "sonnet", "claude_model_resolved": "claude-sonnet-5-5", "effort": "medium",
+ "claude_code": "2.1.284", "turns": 2, "laya_model": "laya-code-r1",
+ "tasks": "first 4 tasks with a findable gold file per repo (bench/results/stale-gold-v8.json), httpx and hono",
+ "rebaseline": {"arms": {"baseline": "stock Claude Code", "main": "laya-codex 00e4b87 (v0.4.0 + #27)"}},
+ "steer": {"arms": {"main": "laya-codex 00e4b87", "steer": "stronger 'answer from the shown code' wording, 5b5cafe, not merged"}},
+ "spent_usd": 2.75,
+ "notes": "The `sonnet` alias resolved to claude-sonnet-5-5 here and to claude-sonnet-5 in benchmark v10."}

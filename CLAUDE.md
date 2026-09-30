@@ -36,8 +36,11 @@ them; keep both. Hooks always fail open.
 
 - Claims about speed, tokens or quality come from the paired benchmark (`bench/run_bench.py`,
   `bench/stats_pooled.py`) or the offline replay, never from a single session.
-- The token target is tokens read **plus** tokens injected. Report both.
+- The token goal is cost per session (−50% vs stock). Also report code tokens read **plus**
+  injected, quality (answer recall) and time: one table, so a gain on one is weighed against the others.
 - Record the rank mode (`laya`, `laya-partial`, `lexical`) for every prompt you compare.
+- Pin Claude by model id (e.g. `--model claude-sonnet-5-5`), not the `sonnet` alias: the alias moves
+  to newer models between runs, and runs on different models are not comparable.
 - Paid benchmark runs need the owner's approval, with the cost estimate stated.
 
 ## Commands

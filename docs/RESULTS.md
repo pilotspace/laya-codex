@@ -1,8 +1,137 @@
-# laya-codex — results (updated 2026-09-28)
+# laya-codex — results (updated 2026-09-30)
 
 All numbers are reproducible from this repo; raw per-run rows are in `bench/results/`.
-Hardware: Apple M4 Pro, 24 GB. Agent: Claude Code 2.1.280, model `sonnet`, isolated from user
+Hardware: Apple M4 Pro, 24 GB. Agent: Claude Code (version per run), model `sonnet` alias at
+medium effort unless stated; the alias resolved to `claude-sonnet-5` through v11 and to
+`claude-sonnet-5-5` from 2026-09-29. Isolated from user
 settings/plugins/MCP (`--setting-sources project --strict-mcp-config`), tools Read/Grep/Glob.
+In every run we could check (benchmarks v10 to v13), every session in every arm also loaded the
+operator's `~/.claude/CLAUDE.md` (see v13 below); from 2026-09-30 `bench/run_bench.py` refuses such a repo.
+
+## Benchmark v13 (2026-09-30): Sonnet 5.5, one live session per task
+
+**What ran.**
+- **Build:** laya-codex `806abbc` (v0.4.0 plus the per-file candidate cap and request capture),
+  laya-code-r1.
+- **Model:** Claude Sonnet 5.5 pinned by id (`claude-sonnet-5-5`), medium effort, Claude Code
+  2.1.284.
+- **Arms:** stock Claude Code and laya-codex (no keyword-only arm).
+- **Tasks:** all 60, two prompts each, no stalls, no failed sessions. Every laya-codex prompt was
+  ranked by the model.
+- **Harness:** both prompts of a task in one live `claude -p --input-format stream-json` session
+  (#32). **Cost:** $14.29.
+- **Caveat:** the operator's `~/.claude/CLAUDE.md` still reached every session of both arms (found
+  after this run; fixed in #32 by moving the repos out of the home directory).
+
+Data: `bench/results/claude-v13/`. Headline: `bench/results/headline-v13.json`.
+
+**laya-codex vs stock Claude Code** (per session, pooled ratio of sums, 95% paired bootstrap CI):
+
+| metric | stock | laya-codex | change | moon | httpx | hono |
+|---|---|---|---|---|---|---|
+| Cost | $0.128 | $0.110 | **−13.7%** [−17.8, −9.1] (repo-balanced −9.7% [−13.9, −4.9]) | −22.3% | +4.2%, n.s. | −11.0% |
+| Code read + injected | 2,755 | 3,017 | +9.5% [−1.6, +22.6], n.s. (repo-balanced +21.5% [+9.5, +36.8]) | −22.6% | +58.2% | +28.9% |
+| Code-reading tokens | 2,755 | 1,184 | −57.0% [−65.2, −47.8] | −72.0% | −38.1% | −44.9% |
+| Total input tokens | | | −31.7% [−37.3, −25.0] | −43.7% | −11.1%, n.s. | −26.3% |
+| Output tokens | | | −25.6% [−28.9, −22.2] | −33.5% | −12.9% | −26.1% |
+| Wall-clock time | 23.2 s | 18.7 s | **−19.2%** [−23.3, −14.7] | −28.7% | −4.5%, n.s. | −20.5% |
+| Turns | 7.9 | 4.3 | −45.5% [−49.8, −40.7] | −58.9% | −27.6% | −45.7% |
+| Tool calls (Grep, Read, Glob, `search`) | 5.9 (4.2, 1.5, 0.2, –) | 2.3 (0.8, 0.8, 0, 0.8) | | | | |
+| API calls (both prompts) | 5.9 | 3.7 | | | | |
+| Answer recall, first question | 0.726 | 0.881 | **+0.154** [+0.078, +0.228] | −0.029, n.s. | +0.158, n.s. | +0.333 |
+| Answer recall, both questions | 0.954 | 0.931 | −0.024 [−0.081, +0.024], n.s. | ±0.000, n.s. | −0.050, n.s. | −0.021, n.s. |
+
+On findable gold only (`bench/stale_gold.py`, 55 tasks): first question 0.720 → 0.909 (+0.189
+[+0.103, +0.270]); both questions 0.970 → 0.945 (−0.024, n.s.).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-time-dark.svg">
+  <img alt="Scatter of 120 benchmark v13 sessions: wall-clock time rises about 7.6 s per 1,000 output tokens (R² 0.82), with stock and laya-codex sessions on the same line" src="assets/insight-time-light.svg" width="760">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-turns-dark.svg">
+  <img alt="Benchmark v13: turns per session fell on every repository (moon 8.8 → 3.6, httpx 6.7 → 4.8, hono 8.2 → 4.5) while output tokens per turn rose (317 → 512, 271 → 326, 262 → 357)" src="assets/insight-turns-light.svg" width="760">
+</picture>
+
+**Finding the right code** (`bench/read_accuracy.py`): gold files that reached Claude 50% → 78%;
+a gold file in context before Claude's first turn in 52 of 60 tasks (stock: median turn 4, never
+in 19 tasks); Reads on gold 70% → 76%; tokens spent reading non-gold files 278 → 102.
+
+**Where the dollars go** (the `result` usage of every prompt; shares at list prices per million
+tokens: $6 per cache write (Claude Code uses the one-hour cache), $0.30 per cache read, $15 per
+output; these prices come within about 6–7% of the reported costs):
+
+| part of the bill, per session | stock | laya-codex | change | share of laya-codex's cost |
+|---|---|---|---|---|
+| Cache writes (new text each turn) | 11,337 | 10,973 | −3.2% | 64% |
+| Cache reads | 65,273 | 41,357 | −36.6% | 12% |
+| Output | 2,244 | 1,670 | −25.6% | 24% |
+
+- **The saving is in API calls:** 1.6 against 3.0 on the first prompt and 2.1 against 2.9 on the
+  follow-up. The injected code replaces tool output roughly one for one, so cache writes barely
+  move; every call avoided saves a re-read of the conversation and an answer, about $0.008.
+- **Cost levers checked offline after this run** (v12 and v13 transcripts, request captures):
+  - dropping the code when Laya's top probability is below 0.1 (8 of 120 first prompts, all
+    httpx; from the request captures) loses no gold file (0 of 142) but saves about 0.3% of cost;
+  - injecting the callers and tests of the names in Claude's first answer on the follow-up would
+    replace the `search` Claude makes there (0.7 calls per follow-up on average; 95% of the files
+    it returns were not injected), but choosing the 2–3 names Claude looks up out of the ~9 it mentions covers every
+    lookup in only 30 of 80 follow-ups: under 1% net;
+  - re-reads of already-inlined lines are rare (5 of 89 sessions).
+
+## Benchmark v12 (2026-09-29): superseded, the harness charged laya-codex for cache misses
+
+The same build and model as v13, three arms (stock, laya-codex, keyword-only), 60 tasks, $23.15,
+with the old harness: the second prompt resumed the session with `claude -p --resume`.
+
+- **What went wrong:** when prompt 1 was answered in a single API call, which only happens when
+  the injected code is enough, the resumed request no longer matched the prompt cache, and the
+  follow-up paid to rewrite the whole conversation. It hit 31 of 60 laya-codex sessions, 28 of 60
+  keyword-only sessions and 0 of 60 stock sessions (stock always calls tools first).
+- **Size:** on the same task, $0.092 per session resumed against $0.037 in one live session.
+- **Result as measured:** laya-codex vs stock cost +0.6% [−4.1, +5.6], wall −16.9%, first-question
+  recall 0.717 → 0.897. v13 re-measured it with the fix: stock's cost per session stayed at $0.128
+  while laya-codex's fell from $0.129 to $0.110.
+- **laya-codex vs keyword-only** (both arms hit alike): no significant difference in cost (−0.2%
+  [−3.1, +2.9]) or first-question recall (0.897 vs 0.879); wall +5.3% [+1.0, +9.9].
+
+Data: `bench/results/claude-v12/` (`meta.json` records the harness).
+
+## Pilots (2026-09-29): stock Claude Code now reads half as much; stronger steering fails
+
+**What ran.**
+- **Model:** the `sonnet` alias now resolved to Claude Sonnet 5.5 (`claude-sonnet-5-5`), on
+  Claude Code 2.1.284, medium effort. v10 ran on Sonnet 5 and Claude Code 2.1.281, so either
+  change, or both, may explain the new stock behaviour.
+- **Tasks:** the first 4 tasks per repository with a findable gold file, on httpx and hono (8
+  tasks), two prompts each.
+- **Arms:** stock Claude Code; laya-codex at `00e4b87` (v0.4.0 plus the read-chart fix); and a
+  branch with stronger "answer from the code above, Read one function at most" wording
+  (`5b5cafe`, not merged).
+- **Cost:** $2.75. Data: `bench/results/pilot-2026-09-29/` (`rebaseline/`, `steer/`).
+- **Recall** is on findable gold files (`bench/stale_gold.py`). Eight tasks is a small sample:
+  these are directions, not headlines.
+
+**Re-baseline: stock → laya-codex** (pooled means per session):
+
+| answer recall, turn 1 / both turns | tool calls | turns | wall-clock | code read + injected | code read | cost |
+|---|---|---|---|---|---|---|
+| 0.50 → 0.90 / 1.00 → 0.94 | 5.0 → 3.4 | 7.0 → 5.4 | 23 s → 20 s (−13%) | 2,035 → 3,008 (+48%) | 2,035 → 1,442 (−29%) | $0.10 → $0.06 (−36%) |
+
+- Stock Claude read 2,035 code tokens per session here, against 4,635 in v10. Half of that is less
+  than laya-codex injects on its own (about 1,570), so −50% of code read plus injected is out of
+  reach while the injection carries the gains.
+- The owner moved the token goal to cost per session (docs/VISION.md, 2026-09-29).
+
+**Steering: main → stronger wording** (pooled means per session):
+
+| answer recall, turn 1 / both turns | tool calls | wall-clock | code read + injected | cost |
+|---|---|---|---|---|
+| 0.94 → 0.90 / 0.94 → 0.94 | 2.6 → 2.5 | +4% | 2,721 → 2,642 (−3%) | +8% |
+
+The gate was −30% code read plus injected, no gold file lost, and no rise in time. It failed on
+all three: −3%, one gold file lost (httpx `1e11096473`), and time +4%. The branch is not merged.
 
 ## Benchmark v11 (2026-09-28): a smaller injection made Claude read more
 
@@ -51,7 +180,8 @@ Data: `bench/results/claude-v11/`.
 - **Build:** laya-codex at `1d55bf3`, which adds name lookups in `search`, the honest token metric
   and the removal of unused sizing paths. It ran with the retrained model laya-code-r1.
 - **Arms:** stock Claude Code, laya-codex, and the same laya-codex build with keyword-only ranking.
-- **Tasks:** the same 60 tasks, the same two prompts per task. Sonnet, medium effort.
+- **Tasks:** the same 60 tasks, the same two prompts per task. Claude Sonnet 5 (`claude-sonnet-5`,
+  via the `sonnet` alias), medium effort, Claude Code 2.1.281.
 - **Cost:** $32.40.
 
 Data: `bench/results/claude-v10/` (as run) and `claude-v10/nostall/` (analysed). Headline:
@@ -70,15 +200,30 @@ Data: `bench/results/claude-v10/` (as run) and `claude-v10/nostall/` (analysed).
 
 | metric | v10 | v9 (same tasks, 2026-09-24) |
 |---|---|---|
-| Code read + injected (the token target) | +6.2% [−11.3, +26.3], n.s. | +4.6% [−5.3, +16.1], n.s. |
+| Cost (the cost target) | −8.8% [−16.3, −1.9] | −10.1% [−14.0, −6.1] |
+| Code read + injected (reported beside cost; the token target until 2026-09-29) | +6.2% [−11.3, +26.3], n.s. | +4.6% [−5.3, +16.1], n.s. |
 | Code-reading tokens | −32.0% [−47.0, −15.0] | −35.7% [−44.0, −26.8] |
 | Total input tokens | −21.7% [−35.1, −6.4] | −23.5% [−30.1, −17.2] |
 | Wall-clock time (the time target) | −12.0% [−19.1, −4.4] | −11.4% [−15.0, −7.9] |
 | Turns | −33.6% [−40.4, −26.5] | −32.1% [−37.1, −27.1] |
 | Output tokens | −19.8% [−26.8, −12.3] | −16.3% [−20.3, −12.3] |
-| Cost | −8.8% [−16.3, −1.9] | −10.1% [−14.0, −6.1] |
 | Answer recall, first question | 0.904 vs 0.758 (+0.145 [+0.065, +0.222]) | 0.910 vs 0.774 |
 | Answer recall, both questions | 0.940 vs 0.953 (−0.013, n.s.) | 0.951 vs 0.968 |
+
+**Where the dollars go** (per session, the `result` usage summed over both prompts of each raw
+transcript, the same 51 paired tasks; shares at list prices, per million tokens: $6 per cache
+write (the one-hour cache), $0.30 per cache read, $15 per output; corrected 2026-09-30 from $3.75):
+
+| part of the bill | stock | laya-codex (r1) | change | share of laya-codex's cost |
+|---|---|---|---|---|
+| Cache writes (new text each turn) | 14,732 | 14,995 | +1.8% | 57% |
+| Cache reads | 122,135 | 92,144 | −24.6% | 18% |
+| Output | 3,313 | 2,657 | −19.8% | 25% |
+| Cost | $0.176 | $0.160 | −8.8% | |
+
+Almost all of the input saving is in cache reads, billed at a tenth of the input price. Cache
+writes (Claude Code's own instructions and tool definitions, tool output and the injected code)
+are the largest part of the bill and did not move, so cost falls less than input.
 
 **Tool calls per session** (`bench/ledger.py`):
 
@@ -89,8 +234,8 @@ Data: `bench/results/claude-v10/` (as run) and `claude-v10/nostall/` (analysed).
 | laya-codex, keywords only | 5.52 | 1.81 | 2.65 | 1.04 |
 
 **laya-code-r1 vs keyword-only ranking** (same build): no significant difference on any metric.
-Wall −4.2% [−19.1, +12.3], code read + injected −1.6% [−11.1, +8.2], first-question recall
-−0.008. Offline, r1 inlines more of the right files than keywords (70 of 115 vs 62, see
+Cost −4.0% [−11.2, +4.3], wall −4.2% [−19.1, +12.3], code read + injected −1.6% [−11.1, +8.2],
+first-question recall −0.008 [−0.034, +0.013]. Offline, r1 inlines more of the right files than keywords (70 of 115 vs 62, see
 [docs/plans/2026-09-refocus.md](plans/2026-09-refocus.md#progress); replay rows in
 `bench/results/replay-2026-09-26-r1/replay.jsonl`, label `candidate`); 51 tasks are too few to see
 that in sessions.
@@ -137,21 +282,16 @@ with "never" counted as last, and pools precision over Reads.
   0.02, and Grep fell 61%.
 - **Tool calls did not fall further.** Total tool calls stayed at about 5 per session, the same
   as v9, so time did not move: −12%, against a goal of −30%.
-- **The token target is not met:** read + injected +6%, against a goal of −50%. The injection is
-  still as large as the reading it saves. Shrinking it was the next lever, and v11 above shows
-  that cutting the blocks made Claude read more.
+- **The cost target is not met:** −8.8%, against a goal of −50% (set 2026-09-29; it replaced code
+  read plus injected, which is +6% and still reported). Cache writes did not move, and the
+  injection is still as large as the reading it saves. Shrinking it was the next lever, and v11
+  above shows that cutting the blocks made Claude read more.
 
-**Where the time goes** (the same 51 paired tasks; the follow-up chart is the offline replay):
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-time-dark.svg">
-  <img alt="Scatter of 153 benchmark v10 sessions: wall-clock time rises about 12.7 s per 1,000 output tokens (R² 0.84), with stock and laya-codex sessions on the same line" src="assets/insight-time-light.svg" width="760">
-</picture>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-turns-dark.svg">
-  <img alt="Turns per session fell on every repository (moon 18.1 → 11.9, httpx 8.8 → 6.2, hono 9.3 → 5.8) while output tokens per turn rose (313 → 373, 283 → 345, 304 → 372)" src="assets/insight-turns-light.svg" width="760">
-</picture>
+**Where the time goes** (the same 51 paired tasks): wall-clock rose about 12.7 s per 1,000 output
+tokens (R² 0.84, 153 sessions), with stock and laya-codex on the same line; turns per session fell
+on every repository (moon 18.1 → 11.9, httpx 8.8 → 6.2, hono 9.3 → 5.8) while output tokens per
+turn rose (313 → 373, 283 → 345, 304 → 372). The charts now show v13 (see above). The follow-up
+chart is the offline replay:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/insight-followup-dark.svg">

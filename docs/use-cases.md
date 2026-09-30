@@ -37,9 +37,9 @@ Definitions and uses:
 - crates/laya-cli/src/init.rs:472: check_target(root, &root_canon, path)?; — use of `check_target`
 ```
 
-Claude goes straight to `check_target`. In the benchmark (60 tasks, three repositories), a
-correct file was in context before the first turn in 46 of 60 tasks. Stock Claude Code first had
-a correct file at turn 5.5 (median).
+Claude goes straight to `check_target`. In benchmark v13 (60 paired tasks, three repositories),
+a correct file was in context before the first turn in 52 of 60 tasks. Stock Claude Code first had
+a correct file at turn 4 (median), and never in 19 tasks.
 
 ## 2. Keep going in the same session: tests and call sites
 
@@ -56,7 +56,7 @@ what's new, such as the test modules:
 Already provided earlier in this session: crates/laya-cli/src/init.rs:394-425, crates/laya-cli/src/doctor.rs:339-377, …
 ```
 
-This is why reading costs keep falling over a long session instead of growing. Follow-up
+So a follow-up adds only what is new, instead of repeating what the session already has. Follow-up
 prompts that only say "the same change" are searched together with the session's topic, so
 they don't lose track of it.
 
@@ -86,7 +86,7 @@ function.
 
 On a codebase you have never seen, the ranked map works as a table of contents for the question:
 - the files and functions that matter;
-- the code of the top three;
+- the code of the top two files;
 - the callers and callees one step away.
 
 Claude's first answer already cites the right functions, and you can open them from the paths

@@ -1,0 +1,6 @@
+{"version": "v13", "date": "2026-09-30", "binary": "806abbc2ee1b2dd922cd9c0a62d8b315658f209a", "model": "laya-code-r1 (local, T 0.8057)",
+ "claude_model": "claude-sonnet-5-5", "claude_code": "2.1.284", "effort": "medium", "turns": 2,
+ "arms": {"baseline": "stock Claude Code", "laya": "laya-adaptive"},
+ "caps_usd": {"httpx": 4.0, "hono": 4.5, "moon": 10.5}, "spent_usd": 14.29,
+ "harness": "380e995: both prompts in one live `claude -p --input-format stream-json` session; repos in ~/bench-repos",
+ "notes": "The operator's ~/.claude/CLAUDE.md still reached every session of both arms (Claude Code reads <dir>/.claude/CLAUDE.md above the repo); fixed after this run (0b87aeb, repos in /Users/Shared/laya-bench-repos). No stalls, no non-zero exits."}
