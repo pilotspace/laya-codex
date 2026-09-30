@@ -80,6 +80,40 @@ output; these prices come within about 6–7% of the reported costs):
     lookup in only 30 of 80 follow-ups: under 1% net;
   - re-reads of already-inlined lines are rare (5 of 89 sessions).
 
+**Where the time goes** (`bench/time_breakdown.py` over the raw stream-json and the hook logs;
+data: `bench/results/time-v13.json`). Each prompt's `duration_ms` is split into its final
+answer call, the tool calls, the laya-codex hook and the rest, i.e. the lookup turns: model calls
+that end in a tool call. Overhead is the wall-clock outside the prompts. The parts add up to the
+measured wall-clock.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/insight-time-breakdown-dark.svg">
+  <img alt="Where a benchmark v13 session's time goes, seconds per session: stock Claude Code 12.4 final answers, 9.9 lookup turns (3.9 calls), 0.1 tools, 0.8 overhead, 23.2 s in all; laya-codex 12.5 final answers, 4.1 lookup turns (1.75 calls), 1.1 ranking hook, 0.3 tools, 0.8 overhead, 18.7 s in all" src="assets/insight-time-breakdown-light.svg" width="760">
+</picture>
+
+| seconds per session | stock | laya-codex | change | share of laya-codex |
+|---|---|---|---|---|
+| Final answers (last call of each prompt) | 12.36 | 12.52 | +0.16 | 67% |
+| Lookup turns | 9.91 (3.9 calls) | 4.07 (1.75 calls) | **−5.84** | 22% |
+| Ranking hook | – | 1.06 | +1.06 | 6% |
+| Tool execution | 0.13 | 0.29 | +0.15 | 2% |
+| Claude Code overhead | 0.78 | 0.81 | +0.03 | 4% |
+| Wall-clock | 23.19 | 18.74 | −4.44 | |
+
+- **Answers are a floor.** Both arms write the same visible answer (about 3,350 characters per
+  session) in about 12.4 s. The 25.6% output cut is thinking and tool-call tokens in the lookup
+  turns, consistent with time following output tokens across sessions.
+- **The saving is lookup round trips.** Each costs 2.3–2.5 s of model time; the Grep, Read or
+  `search` itself runs in about 0.1 s. What is left is mostly the follow-up: 1.13 calls (2.61 s)
+  against 0.62 (1.46 s) on the first prompt.
+- **The hook costs 0.53 s per prompt** (p90 0.55 s, the model scoring 16 candidates every time),
+  1.06 s per session, or 18% of the saving. v12's keyword-only arm was 5% faster than the model arm.
+- **httpx:** 11 of the 14 tasks where laya-codex was slower. Lookups fell only 8.2 → 5.1 s there,
+  answers ran 1.0 s longer and the hook added 1.0 s.
+- **Against the −30% goal (≤ 16.2 s):** a session with no lookups and no hook would still take
+  about 13.5 s (−42%). The remaining 2.5 s can only come from the follow-up's lookups (up to
+  2.6 s) and the hook (up to 1.1 s); a smaller injection does not shorten the answers.
+
 ## Benchmark v12 (2026-09-29): superseded, the harness charged laya-codex for cache misses
 
 The same build and model as v13, three arms (stock, laya-codex, keyword-only), 60 tasks, $23.15,

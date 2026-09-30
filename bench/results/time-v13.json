@@ -1,0 +1,116 @@
+{
+ "n_tasks": 60,
+ "arms": {
+  "laya": {
+   "answer_s": 12.522,
+   "lookups_s": 4.069,
+   "hook_s": 1.056,
+   "tools_s": 0.288,
+   "overhead_s": 0.81,
+   "wall_s": 18.744,
+   "lookup_calls": 1.75
+  },
+  "baseline": {
+   "answer_s": 12.358,
+   "lookups_s": 9.913,
+   "hook_s": 0.0,
+   "tools_s": 0.133,
+   "overhead_s": 0.781,
+   "wall_s": 23.186,
+   "lookup_calls": 3.917
+  }
+ },
+ "per_repo": {
+  "moon": {
+   "laya": {
+    "answer_s": 13.816,
+    "lookups_s": 2.99,
+    "hook_s": 1.087,
+    "tools_s": 0.381,
+    "overhead_s": 0.805,
+    "wall_s": 19.079,
+    "lookup_calls": 1.35
+   },
+   "baseline": {
+    "answer_s": 14.079,
+    "lookups_s": 11.693,
+    "hook_s": 0.0,
+    "tools_s": 0.198,
+    "overhead_s": 0.804,
+    "wall_s": 26.774,
+    "lookup_calls": 4.15
+   }
+  },
+  "httpx": {
+   "laya": {
+    "answer_s": 11.612,
+    "lookups_s": 5.107,
+    "hook_s": 1.037,
+    "tools_s": 0.292,
+    "overhead_s": 0.802,
+    "wall_s": 18.85,
+    "lookup_calls": 2.15
+   },
+   "baseline": {
+    "answer_s": 10.657,
+    "lookups_s": 8.228,
+    "hook_s": 0.0,
+    "tools_s": 0.084,
+    "overhead_s": 0.779,
+    "wall_s": 19.748,
+    "lookup_calls": 3.65
+   }
+  },
+  "hono": {
+   "laya": {
+    "answer_s": 12.137,
+    "lookups_s": 4.109,
+    "hook_s": 1.042,
+    "tools_s": 0.193,
+    "overhead_s": 0.823,
+    "wall_s": 18.305,
+    "lookup_calls": 1.75
+   },
+   "baseline": {
+    "answer_s": 12.339,
+    "lookups_s": 9.818,
+    "hook_s": 0.0,
+    "tools_s": 0.119,
+    "overhead_s": 0.759,
+    "wall_s": 23.035,
+    "lookup_calls": 3.95
+   }
+  }
+ },
+ "per_prompt": {
+  "baseline prompt 1": {
+   "answer_s": 5.861,
+   "lookups_s": 4.85,
+   "hook_s": 0.0,
+   "tools_s": 0.061,
+   "lookup_calls": 2.017
+  },
+  "baseline prompt 2": {
+   "answer_s": 6.497,
+   "lookups_s": 5.063,
+   "hook_s": 0.0,
+   "tools_s": 0.073,
+   "lookup_calls": 1.9
+  },
+  "laya prompt 1": {
+   "answer_s": 5.994,
+   "lookups_s": 1.457,
+   "hook_s": 0.528,
+   "tools_s": 0.023,
+   "lookup_calls": 0.617
+  },
+  "laya prompt 2": {
+   "answer_s": 6.528,
+   "lookups_s": 2.612,
+   "hook_s": 0.527,
+   "tools_s": 0.265,
+   "lookup_calls": 1.133
+  }
+ },
+ "label": "benchmark v13"
+}
