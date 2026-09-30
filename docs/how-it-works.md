@@ -290,8 +290,9 @@ session, Claude Sonnet 5.5 at medium effort):
 | answer recall, first prompt / both prompts | 0.726 / 0.954 | 0.881 / 0.931 |
 
 The injected text itself costs tokens. It roughly replaces the reading it saves (reading plus
-injected tokens: +9.5%, not significant, pooled). Cost still falls, because the saving is in API
-calls: each call avoided re-reads less of the cached conversation and writes no answer. That is why the injection is capped at 9,500 characters and adaptive mode never re-sends
+injected tokens: +9.5% pooled, not significant; higher on httpx and hono, lower on moon). Cost
+still falls, because the saving is in API calls (3.7 per session instead of 5.9): each call
+avoided saves a re-read of the cached conversation and an answer. That is why the injection is capped at 9,500 characters and adaptive mode never re-sends
 code. Inlining more saved little and cost more.
 
 ## 7. Tuning

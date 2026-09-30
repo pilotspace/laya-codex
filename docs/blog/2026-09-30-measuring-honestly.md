@@ -1,4 +1,4 @@
-# Two benchmark bugs that hid a 14% saving
+# The benchmark bug that hid a 14% saving, and one more we found
 
 *2026-09-30 · laya-codex benchmark v13 · all data in [`bench/results/`](../../bench/results/)*
 
@@ -22,13 +22,13 @@ it).
 |---|---|---|---|
 | **Cost** | $0.128 | $0.110 | **−13.7%** (−17.8% … −9.1%) |
 | **Wall-clock** | 23.2 s | 18.7 s | **−19.2%** (−23.3% … −14.7%) |
-| Turns | 7.9 | 4.3 | −45.5% |
+| API calls | 5.9 | 3.7 | |
 | Tool calls | 5.9 (4.2 Greps) | 2.3 (0.8 Greps) | |
-| Code read + code injected | 2,755 tokens | 3,017 tokens | +9.5%, not significant |
+| Code read + code injected | 2,755 tokens | 3,017 tokens | +9.5%, not significant pooled; +21.5% with repos weighted equally |
 | **Answer recall, first question** | 0.73 | 0.88 | **+0.15** (+0.08 … +0.23) |
 | Answer recall, both questions | 0.95 | 0.93 | −0.02, not significant |
 
-![Savings chart](../assets/benchmark-savings-light.svg)
+![laya-codex vs stock Claude Code, benchmark v13: cost −13.7%, code read plus injected +9.5% (not significant), code-reading tokens −57.0%, turns −45.5%, input tokens −31.7%, output tokens −25.6%, wall-clock −19.2%](../assets/benchmark-savings-light.svg)
 
 The right code was in Claude's context before its first turn in 52 of 60 tasks. Stock Claude
 reached a right file at turn 4 in the median task, and never in 19 of them.
@@ -36,7 +36,10 @@ reached a right file at turn 4 in the median task, and never in 19 of them.
 Two caveats up front:
 
 - **Cost varies by repository.** It fell 22% on moon and 11% on hono. On httpx it did not change
-  significantly (+4%), because stock Claude already finds httpx code in a couple of calls.
+  significantly (+4%), because stock Claude already finds httpx code in a few calls. With each
+  repository weighted equally, cost falls 9.7% (−13.9% … −4.9%) rather than 13.7%.
+- **The benchmark still loaded one person's CLAUDE.md in both arms** (bug two below; found after
+  this run).
 - **Our goals are not met.** We aim for −50% cost and −30% time against stock. We are at −14% and
   −19%.
 
@@ -45,10 +48,11 @@ Two caveats up front:
 ### 1. The model under the benchmark changed
 
 The benchmark asked for `--model sonnet` and recorded only that alias. Between benchmark v10 (27
-September) and our next pilot, the alias moved from Claude Sonnet 5 to Sonnet 5.5. On Sonnet 5.5,
-stock Claude reads about half as much code per session as before (about 2,000 tokens against
-4,600). Our old token goal, a 50% cut in code read plus injected, no longer made sense: laya-codex
-injects about 1,600 tokens on its own.
+September) and our next pilot, the alias moved from Claude Sonnet 5 to Sonnet 5.5, and Claude Code
+went from 2.1.281 to 2.1.284. In an 8-task pilot on the new pair, stock Claude read about half as
+much code per session as before (about 2,000 tokens against 4,600; on all 60 tasks in v13 it was
+2,755). Our old token goal, a 50% cut in code read plus injected, no longer made sense: laya-codex
+injects about 1,600–1,800 tokens on its own.
 
 We moved the goal to **cost per session**. That is what a user pays, and it counts every token,
 the injected ones included. We also pinned runs to a model id.
@@ -61,8 +65,8 @@ hono it was up 8–9%.
 
 To see why, we priced the prompt cache. Claude Code caches the conversation for an hour. New text
 is billed once as a cache write at $6 per million tokens (twice the input price). Each later turn
-re-reads it at $0.30. The laya-codex sessions were writing far more new text on the follow-up
-question than stock sessions: about 6,000 tokens against 760.
+re-reads it at $0.30. On the follow-up question's first API call, the laya-codex sessions were
+writing far more new text than stock sessions: about 6,000 tokens against 760.
 
 ### 3. Bug one: resuming the session broke the cache
 
@@ -84,7 +88,7 @@ cache:
 | resumed per question (old benchmark) | 5,035 tokens | ~6,000 | $0.092 |
 | one live session (fixed) | ~9,500 tokens | ~1,400 | $0.037 |
 
-So the benchmark charged laya-codex for a cost that real sessions never pay, and charged it
+So the benchmark charged laya-codex for a cost that one live session doesn't pay, and charged it
 exactly when laya-codex worked best. It now runs each task as one live session.
 
 ### 4. Bug two: the operator's CLAUDE.md was in every session
@@ -99,13 +103,15 @@ anywhere under your home directory, that includes your home, where the global fi
 in the same home directory.
 
 Both arms were affected alike, so the comparisons stand. But every session carried someone's
-personal rules, about 1,300 extra tokens. The benchmark repos now live outside the home directory,
+personal rules, about 5,000 extra characters. The benchmark repos now live outside the home directory,
 and the runner refuses any repo with a CLAUDE.md above it.
 
 ### 5. The rerun
 
 Benchmark v13 ran with one live session per task. The result is the table at the top:
-**cost −13.7%** where v12 said +0.6%.
+**cost −13.7%** where v12 said +0.6%. Stock's cost did not move between the two runs ($0.128 per
+session), while laya-codex's fell from $0.129 to $0.110. v13 still loaded the operator's CLAUDE.md
+in both arms; we found that after the run, and the benchmark now refuses such a setup.
 
 ## What did not work
 
@@ -117,18 +123,19 @@ We tested each of these, and each was shelved on the evidence:
   looked fine, but in benchmark v11 Claude read 23% more to see the rest. Not merged.
 - **Skipping the code when the model is unsure** (top probability below 0.1). This is safe: it lost
   0 of 142 right files. But it saves about 0.3% of cost. Not built.
-- **Answering the follow-up's lookups up front.** On 70% of follow-ups Claude runs one `search` for
-  the functions it named in its first answer. We could run that lookup for it. But picking the 2–3
+- **Answering the follow-up's lookups up front.** On the follow-up, Claude makes about 0.7
+  `search` calls on average, for the functions it named in its first answer. We could run that lookup for it. But picking the 2–3
   names it will look up from the ~9 it mentions covers every lookup in only 30 of 80 follow-ups,
   under 1% net. Not built.
-- **Letting the model read longer code** (448 or 1,024 tokens instead of 128). It inlined no more
-  right files and was slower.
+- **Letting the model read longer code** (448 or 1,024 tokens instead of 128). In an offline replay
+  of the 60 tasks it inlined 68 and 67 of 115 right files against 70, and was slower.
 
 ## Where the cost goes now
 
 At list prices, a laya-codex session's bill is 64% cache writes, 12% cache re-reads and 24%
 output. The injected code replaces the tool output it saves roughly one for one. What laya-codex
-really saves is **API calls**: 2.3 tool calls against 5.9, about $0.008 per call avoided. Most of
+really saves is **API calls**: 3.7 against 5.9 per session (2.3 tool calls against 5.9), about
+$0.008 per API call avoided. Most of
 what remains is Claude Code's own per-session context and Claude's written answers, which both
 arms pay.
 

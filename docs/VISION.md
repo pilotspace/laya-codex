@@ -61,8 +61,9 @@ Why the gaps exist (v13 `runs.jsonl`, `bench/ledger.py`, and the `result` usage 
 transcripts):
 
 - **Cost follows API calls.**
-  - laya-codex sessions make 2.3 tool calls against 5.9 for stock Claude (4.3 turns against 7.9).
-    Each call avoided saves a re-read of the conversation and an answer, about $0.008.
+  - laya-codex sessions make 2.3 tool calls against 5.9 for stock Claude, and 3.7 API calls
+    against 5.9. Each API call avoided saves a re-read of the conversation and an answer, about
+    $0.008.
   - The injected code replaces tool output roughly one for one, so cache writes, the new text each
     turn, barely move (−3.2%). At list prices they are 64% of laya-codex's bill ($6 per million
     tokens for the one-hour cache); cache re-reads are 12% and output 24%.
@@ -75,7 +76,7 @@ transcripts):
   success line (Grep ≤ 1, ≈ 2 calls).
 - **Tokens read plus injected (reported beside cost): the injection cancels the reading savings.**
   - Claude reads 57% less, but the injected code (about 1.8k tokens per session) brings the total
-    back above stock (+9.5%, n.s.).
+    back above stock (+9.5% pooled, n.s.; +21.5% with repos weighted equally, up on httpx and hono).
   - The retrained reranker (laya-code-r1) ranks the right code higher, 70 vs 62 of 115 offline.
   - Showing less of each block does not help. v11 cut the injection 27% with 18-line windows, and
     Claude read 23% more to see the rest: read + injected rose 10.6%.
