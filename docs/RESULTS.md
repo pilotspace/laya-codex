@@ -8,6 +8,95 @@ settings/plugins/MCP (`--setting-sources project --strict-mcp-config`), tools Re
 In every run we could check (benchmarks v10 to v13), every session in every arm also loaded the
 operator's `~/.claude/CLAUDE.md` (see v13 below); from 2026-09-30 `bench/run_bench.py` refuses such a repo.
 
+**Cost accounting, corrected 2026-09-30.** Claude Code reports each prompt's `total_cost_usd` as
+the session's running total, in one live session and across `claude -p --resume` alike. The
+harness added them, so every two-prompt session was charged prompt 1 twice (v14 below).
+- **Re-derived from the raw transcripts:** v12, v13 and v14 (`bench/recost.py`). Their dollars
+  and cost changes below are counted once.
+- **Not re-derived (raw transcripts not kept):** the two-prompt runs before v12. The running
+  total is verified on Claude Code 2.1.284 only, but those runs very likely carry the same error.
+  Their dollar figures would then be about 1.6× too high, and their cost changes over-weight
+  prompt 1: v13 moved from −13.7% to −14.8%, and v12 from +0.6% to +7.7%.
+- **Tokens, turns, time and recall** never came from that field and are unaffected.
+
+## Benchmark v14 (2026-09-30): held-out tasks; the low-confidence gate does nothing
+
+**What ran.**
+- **Tasks:** 60 new tasks (`bench/tasks-heldout`, 20 per repository, none in `tasks-v8`), two
+  prompts each. laya-codex had not been developed or tuned on any of them.
+- **Arms:**
+  - stock Claude Code;
+  - laya-codex `main` (63d2587);
+  - `main` plus a low-confidence gate (96a2db8, branch `feat/low-confidence-gate`): skip the
+    injection when Laya's best span probability is below 0.2, a rule tuned on v13.
+- **Model and harness:** Claude Sonnet 5.5 (`claude-sonnet-5-5`) at medium effort, Claude Code
+  2.1.284, laya-code-r1, one live session per task, repos outside the home directory.
+- **Cost:** $9.69 ($14.57 as recorded).
+
+Data: `bench/results/claude-v14/` (`cost-cold.txt` holds the costs to quote).
+
+**Three harness bugs, found in this run and fixed after it:**
+- **Two arms shared Anthropic's prompt cache.** Every arm had the same system prompt. When the
+  two laya-codex arms injected the same context (51 of 60 tasks, all but the 9 the gate skipped),
+  the arm that ran second read the other's cached first request at the read price ($0.20 per
+  million tokens) instead of writing it ($4). Only the first API call can match; the
+  conversations diverge after it. The second-running arm read the other's cache in 51 of 51
+  such tasks and was the cheaper of the two in 48.
+  - **Fix:** each arm and repeat now appends its own neutral line (`Session tag: <hash>`) to the
+    system prompt.
+  - **For v14:** `bench/recost.py cold` re-prices any first-call cache read above the arm's usual
+    system-prompt read as a write.
+- **One seed fixed the arm order.** Arms were shuffled per task from one seeded generator, so
+  every repository got the same order, and the gate ran before `main` in 14 of 20 tasks in each.
+  - **Fix:** a seeded base order is rotated task by task and reversed in alternate blocks. Every
+    arm now runs first within one task of the others, and each pair runs in both orders about
+    equally.
+- **Prompt 1 was counted twice** (see the cost note at the top).
+
+**laya-codex `main` vs stock on held-out tasks** (pooled ratio of sums, 95% paired bootstrap CI):
+
+| metric | stock | `main` | change | moon | httpx | hono |
+|---|---|---|---|---|---|---|
+| Cost (cross-arm reads re-priced) | $0.062 | $0.060 | **−3.4%** [−9.7, +3.6], n.s. | −12.5% | +6.4%, n.s. | +8.9%, n.s. |
+| Code read + injected | 1,911 | 2,863 | +49.9% [+29.8, +74.3] | +12.5%, n.s. | +68.3% | +124.9% |
+| Code-reading tokens | 1,911 | 1,051 | −45.0% [−57.0, −30.7] | −56.1% | −49.3% | −9.4%, n.s. |
+| Output tokens | 1,966 | 1,597 | −18.8% [−23.5, −13.6] | −24.9% | −14.1% | −14.8% |
+| Wall-clock time | 20.5 s | 18.0 s | **−12.1%** [−17.9, −5.3] | −11.2%, n.s. | −10.7% | −14.8% |
+| Turns | 7.1 | 4.4 | −37.6% [−43.5, −31.2] | −46.6% | −30.3% | −33.6% |
+| Answer recall, first question | 0.729 | 0.828 | **+0.099** [+0.039, +0.160] | ±0.000, n.s. | +0.146 | +0.150 |
+| Answer recall, both questions | 0.901 | 0.904 | +0.003 [−0.028, +0.031], n.s. | −0.021, n.s. | +0.029, n.s. | ±0.000 |
+
+As measured, `main` cost −24.9% against stock: it often ran second after the gate arm and read
+its cache. Cache reads are also faster, so `main`'s time may be slightly flattered. Stock's tools
+differ, so it never shared a cache with either laya-codex arm.
+
+**What held-out tasks change:**
+- **Cost:** the v13 saving (−14.8%) does not carry over. Only moon saves (−12.5%); httpx and hono
+  cost more, though not significantly.
+- **Code read + injected rises by half.** Stock read only 1,911 tokens here against 2,755 on
+  v13's tasks, while the injection stays about the same size.
+- **Against the targets on held-out tasks:**
+  - **Met:** no both-question loss.
+  - **Short:** time (−12.1% against −20%) and first-question recall (+0.099 against +0.10).
+  - **Not met:** cost, and code read + injected is significantly worse.
+- **Tuning:** the v8 tasks are the ones laya-codex was tuned on from v8 to v13, so held-out
+  tasks are the fairer test of a change.
+
+**The gate vs `main`:** no effect on any measure, and not merged (PR #39 closed, branch kept).
+- **Cost (re-priced):** −1.8% [−5.6, +2.3].
+- **Code read + injected:** −5.8% [−12.1, +0.6].
+- **Other measures:** wall-clock +2.6% [−5.8, +10.6], turns +4.5% [−4.3, +14.8], first-question
+  recall +0.017 [−0.022, +0.064], both questions +0.018 [−0.017, +0.061].
+- **The 9 tasks it skipped:** `main`'s injection still paid there (−6.5% against stock), while
+  the gate arm saved −0.3%.
+- **The 51 tasks where both arms injected the same context** differ by −2.9%: that is run-to-run
+  noise between identical arms.
+
+**Earlier comparisons between two laya-codex arms** (v10 and v12 model vs keyword-only, v11
+`main` vs smaller injection) could share the cache the same way when both arms injected the same
+context. Re-priced, v12's model vs keyword-only cost moves from +0.3% to +1.0%, both
+non-significant. v10's and v11's raw transcripts were not kept.
+
 ## Benchmark v13 (2026-09-30): Sonnet 5.5, one live session per task
 
 **What ran.**
@@ -19,7 +108,7 @@ operator's `~/.claude/CLAUDE.md` (see v13 below); from 2026-09-30 `bench/run_ben
 - **Tasks:** all 60, two prompts each, no stalls, no failed sessions. Every laya-codex prompt was
   ranked by the model.
 - **Harness:** both prompts of a task in one live `claude -p --input-format stream-json` session
-  (#32). **Cost:** $14.29.
+  (#32). **Cost:** $8.99 ($14.29 as the harness recorded it, see the note above).
 - **Caveat:** the operator's `~/.claude/CLAUDE.md` still reached every session of both arms (found
   after this run; fixed in #32 by moving the repos out of the home directory).
 
@@ -29,7 +118,7 @@ Data: `bench/results/claude-v13/`. Headline: `bench/results/headline-v13.json`.
 
 | metric | stock | laya-codex | change | moon | httpx | hono |
 |---|---|---|---|---|---|---|
-| Cost | $0.128 | $0.110 | **−13.7%** [−17.8, −9.1] (repo-balanced −9.7% [−13.9, −4.9]) | −22.3% | +4.2%, n.s. | −11.0% |
+| Cost | $0.081 | $0.069 | **−14.8%** [−18.8, −10.4] (repo-balanced −11.4% [−15.5, −6.7]) | −23.6% | +1.3%, n.s. | −11.8% |
 | Code read + injected | 2,755 | 3,017 | +9.5% [−1.6, +22.6], n.s. (repo-balanced +21.5% [+9.5, +36.8]) | −22.6% | +58.2% | +28.9% |
 | Code-reading tokens | 2,755 | 1,184 | −57.0% [−65.2, −47.8] | −72.0% | −38.1% | −44.9% |
 | Total input tokens | | | −31.7% [−37.3, −25.0] | −43.7% | −11.1%, n.s. | −26.3% |
@@ -58,9 +147,9 @@ On findable gold only (`bench/stale_gold.py`, 55 tasks): first question 0.720 �
 a gold file in context before Claude's first turn in 52 of 60 tasks (stock: median turn 4, never
 in 19 tasks); Reads on gold 70% → 76%; tokens spent reading non-gold files 278 → 102.
 
-**Where the dollars go** (the `result` usage of every prompt; shares at list prices per million
-tokens: $6 per cache write (Claude Code uses the one-hour cache), $0.30 per cache read, $15 per
-output; these prices come within about 6–7% of the reported costs):
+**Where the dollars go** (the `result` usage of every prompt; shares at Sonnet 5.5 list prices
+per million tokens: $4 per cache write (Claude Code uses the one-hour cache), $0.20 per cache
+read, $10 per output; these reproduce every reported cost exactly):
 
 | part of the bill, per session | stock | laya-codex | change | share of laya-codex's cost |
 |---|---|---|---|---|
@@ -70,7 +159,7 @@ output; these prices come within about 6–7% of the reported costs):
 
 - **The saving is in API calls:** 1.6 against 3.0 on the first prompt and 2.1 against 2.9 on the
   follow-up. The injected code replaces tool output roughly one for one, so cache writes barely
-  move; every call avoided saves a re-read of the conversation and an answer, about $0.008.
+  move; every call avoided saves a re-read of the conversation and an answer, about $0.005.
 - **Cost levers checked offline after this run** (v12 and v13 transcripts, request captures):
   - dropping the code when Laya's top probability is below 0.1 (8 of 120 first prompts, all
     httpx; from the request captures) loses no gold file (0 of 142) but saves about 0.3% of cost;
@@ -144,19 +233,21 @@ the loop is not built.
 
 ## Benchmark v12 (2026-09-29): superseded, the harness charged laya-codex for cache misses
 
-The same build and model as v13, three arms (stock, laya-codex, keyword-only), 60 tasks, $23.15,
-with the old harness: the second prompt resumed the session with `claude -p --resume`.
+The same build and model as v13, three arms (stock, laya-codex, keyword-only), 60 tasks, $15.27
+($23.15 as recorded), with the old harness: the second prompt resumed the session with
+`claude -p --resume`.
 
 - **What went wrong:** when prompt 1 was answered in a single API call, which only happens when
   the injected code is enough, the resumed request no longer matched the prompt cache, and the
   follow-up paid to rewrite the whole conversation. It hit 31 of 60 laya-codex sessions, 28 of 60
   keyword-only sessions and 0 of 60 stock sessions (stock always calls tools first).
-- **Size:** on the same task, $0.092 per session resumed against $0.037 in one live session.
-- **Result as measured:** laya-codex vs stock cost +0.6% [−4.1, +5.6], wall −16.9%, first-question
-  recall 0.717 → 0.897. v13 re-measured it with the fix: stock's cost per session stayed at $0.128
-  while laya-codex's fell from $0.129 to $0.110.
-- **laya-codex vs keyword-only** (both arms hit alike): no significant difference in cost (−0.2%
-  [−3.1, +2.9]) or first-question recall (0.897 vs 0.879); wall +5.3% [+1.0, +9.9].
+- **Size:** on the same task, $0.069 per session resumed against $0.032 in one live session.
+- **Result as measured:** laya-codex vs stock cost +7.7% [+1.6, +13.7], wall −16.9%,
+  first-question recall 0.717 → 0.897. v13 re-measured it with the fix: stock's cost per session
+  stayed at $0.081 while laya-codex's fell from $0.087 to $0.069.
+- **laya-codex vs keyword-only** (both arms hit alike): no significant difference in cost (+0.3%
+  [−4.0, +4.9]; +1.0% [−3.3, +5.4] with cross-arm cache reads re-priced, see v14) or
+  first-question recall (0.897 vs 0.879); wall +5.3% [+1.0, +9.9].
 
 Data: `bench/results/claude-v12/` (`meta.json` records the harness).
 

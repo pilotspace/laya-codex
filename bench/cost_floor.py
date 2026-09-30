@@ -14,7 +14,10 @@ import json
 import os
 import statistics as st
 
-PRICES = {"cache_write": 6.0, "cache_read": 0.30, "output": 15.0}
+from runs import PRICES_PER_M
+
+PRICES = {"cache_write": PRICES_PER_M["cache_creation_input_tokens"],
+          "cache_read": PRICES_PER_M["cache_read_input_tokens"], "output": PRICES_PER_M["output_tokens"]}
 CHARS_PER_TOKEN = 3.5
 
 
@@ -30,7 +33,7 @@ def session(lines):
             s["cache_write"] += (u.get("cache_creation_input_tokens") or 0) + (u.get("input_tokens") or 0)
             s["cache_read"] += u.get("cache_read_input_tokens") or 0
             s["output"] += u.get("output_tokens") or 0
-            s["reported_usd"] += d.get("total_cost_usd") or 0
+            s["reported_usd"] = d.get("total_cost_usd") or s["reported_usd"]  # a running total
     return s
 
 

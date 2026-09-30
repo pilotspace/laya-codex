@@ -12,12 +12,13 @@ laya-codex indexes your repository locally and hands Claude the code each task n
 [![Model on Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20model-laya--code-yellow)](https://huggingface.co/tindang/laya-code)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757)](#install)
 
-| **−14%** | **−19%** | **5.9 → 2.3** | **73% → 88%** |
+| **−14.8%** | **−19%** | **5.9 → 2.3** | **73% → 88%** |
 |:---:|:---:|:---:|:---:|
 | cost per session | time per session | tool calls per session | right files in Claude's first answer |
 
 <sub>Benchmark v13 vs stock Claude Code · 60 paired tasks · 3 repositories · Claude Sonnet 5.5 · 95% CI.
-Trade-off: code read + injected +10% (not significant). <a href="#benchmark">Details</a></sub>
+Trade-off: code read + injected +10% (not significant). On 60 new tasks (v14): cost −3% (not
+significant), time −12%, first answers 73% → 83%. <a href="#benchmark">Details</a></sub>
 
 **[Install](#install)** · **[What changes](#what-changes-for-claude)** · **[How it works](#how-it-works)** · **[Benchmark](#benchmark)** · **[FAQ](#faq)**
 
@@ -27,7 +28,7 @@ Trade-off: code read + injected +10% (not significant). <a href="#benchmark">Det
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagram-session-dark.svg">
-  <img alt="One task, two sessions (benchmark v13 means, bar length = wall-clock time): stock Claude Code takes 23.2 s and $0.128 with 5.9 tool calls (Grep, Grep, Read, Grep, Grep, Read) and has the right file at turn 4 (median), never in 19 of 60 tasks; with laya-codex the prompt arrives with the ranked code, so the right file is in context before turn 1 in 52 of 60 tasks, and the session takes 18.7 s and $0.110 with 2.3 tool calls (search, Grep)" src="docs/assets/diagram-session-light.svg" width="760">
+  <img alt="One task, two sessions (benchmark v13 means, bar length = wall-clock time): stock Claude Code takes 23.2 s and $0.081 with 5.9 tool calls (Grep, Grep, Read, Grep, Grep, Read) and has the right file at turn 4 (median), never in 19 of 60 tasks; with laya-codex the prompt arrives with the ranked code, so the right file is in context before turn 1 in 52 of 60 tasks, and the session takes 18.7 s and $0.069 with 2.3 tool calls (search, Grep)" src="docs/assets/diagram-session-light.svg" width="760">
 </picture>
 
 <picture>
@@ -66,7 +67,7 @@ subagents, and where it helps less.
 | | |
 |---|---|
 | **Right code first** | The code arrives with the prompt: 2.3 tool calls instead of 5.9. |
-| **Cheaper and faster** | −14% cost, −19% time, −32% input and −26% output tokens per session. |
+| **Faster, often cheaper** | −19% time, −32% input and −26% output tokens per session; cost −14.8% (−3%, not significant, on new tasks). |
 | **Better first answers** | Right files named 73% → 88% on the first question (no significant change over both). |
 | **Nothing to learn** | Runs through Claude Code's hooks; you prompt as usual. |
 | **Local** | No server, account or telemetry. Only injected code reaches Anthropic, like Claude's own reads. |
@@ -193,12 +194,12 @@ bootstrap CIs; grey = not significant.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-savings-dark.svg">
-  <img alt="laya-codex vs stock Claude Code: cost, code tokens reaching Claude and turns. Paired benchmark v13, 60 tasks on moon, httpx and hono, claude-sonnet-5-5 at medium effort, 95% confidence intervals: cost −13.7%; code read plus injected +9.5% (not significant); code-reading tokens −57.0%; turns −45.5%; total input tokens −31.7%; output tokens −25.6%; wall-clock time −19.2%" src="docs/assets/benchmark-savings-light.svg" width="760">
+  <img alt="laya-codex vs stock Claude Code: cost, code tokens reaching Claude and turns. Paired benchmark v13, 60 tasks on moon, httpx and hono, claude-sonnet-5-5 at medium effort, 95% confidence intervals: cost −14.8%; code read plus injected +9.5% (not significant); code-reading tokens −57.0%; turns −45.5%; total input tokens −31.7%; output tokens −25.6%; wall-clock time −19.2%" src="docs/assets/benchmark-savings-light.svg" width="760">
 </picture>
 
 | per session | stock | laya-codex | change | 95% CI |
 |---|---|---|---|---|
-| Cost (goal −15%) | $0.128 | $0.110 | **−13.7%** | −17.8% … −9.1% |
+| Cost (goal −15%) | $0.081 | $0.069 | **−14.8%** | −18.8% … −10.4% |
 | Code read + injected (tokens) | 2,755 | 3,017 | +9.5% | −1.6% … +22.6% |
 | Code-reading tokens | 2,755 | 1,184 | **−57.0%** | −65.2% … −47.8% |
 | Total input tokens | | | **−31.7%** | −37.3% … −25.0% |
@@ -221,14 +222,27 @@ injection costs about what it saves:
 
 | change vs stock | moon (Rust) | hono (TypeScript) | httpx (Python) |
 |---|---|---|---|
-| Cost (95% CI) | **−22.3%** (−28.0% … −15.4%) | **−11.0%** (−18.1% … −2.7%) | +4.2% (−4.3% … +13.9%), n.s. |
+| Cost (95% CI) | **−23.6%** (−29.3% … −16.9%) | **−11.8%** (−18.4% … −4.8%) | +1.3% (−7.4% … +11.7%), n.s. |
 | Wall-clock time | **−28.7%** | **−20.5%** | −4.5%, n.s. |
 | Turns | **−58.9%** | **−45.7%** | **−27.6%** |
 | Code-reading tokens | **−72.0%** | **−44.9%** | **−38.1%** |
 | Code read + injected | **−22.6%** | +28.9% | +58.2% |
 
 Bold = significant improvement; the hono and httpx increases are significant too. Repositories
-weighted equally: cost −9.7% (−13.9% … −4.9%), read + injected +21.5% (+9.5% … +36.8%).
+weighted equally: cost −11.4% (−15.5% … −6.7%), read + injected +21.5% (+9.5% … +36.8%).
+
+### On new tasks
+
+laya-codex was tuned on these 60 tasks from v8 to v13. Benchmark v14 ran 60 new ones
+(`bench/tasks-heldout`) under the same model and harness:
+- **Cost:** −3.4% (−9.7% … +3.6%), not significant. It fell only on moon (−12.5%).
+- **Time and turns:** time −12.1% (−17.9% … −5.3%), turns −37.6%.
+- **Right files on the first question:** 0.73 → 0.83 (+0.10, +0.04 … +0.16), no change over both.
+- **Code read + injected:** +49.9%. Stock read less on these tasks while the injection kept its
+  size.
+
+The gains in turns, time and first answers hold; the cost saving mostly does not.
+[Details](docs/RESULTS.md#benchmark-v14-2026-09-30-held-out-tasks-the-low-confidence-gate-does-nothing)
 
 ### Where the saving comes from
 
@@ -237,18 +251,22 @@ output about one for one, and each avoided call saves re-reading the conversatio
 bill at list prices: 64% cache writes, 12% cache re-reads, 24% output.
 
 **Two benchmark bugs** ([write-up](docs/blog/2026-09-30-measuring-honestly.md)): resuming the
-session per prompt made laya-codex pay prompt-cache misses (v12: cost +0.6%; v13 without it:
-$0.129 → $0.110, stock unchanged at $0.128). And every session in both arms, v13 included, loaded
-the operator's `~/.claude/CLAUDE.md` (found after this run, since fixed).
+session per prompt made laya-codex pay prompt-cache misses (v12: cost +7.7%; v13 without it:
+$0.087 → $0.069, stock unchanged at $0.081). And every session in both arms, v13 included, loaded
+the operator's `~/.claude/CLAUDE.md` (found after this run, since fixed). Two more were found in
+v14 and fixed:
+- the harness counted prompt 1's cost twice (the costs here are re-derived);
+- arms with the same system prompt shared Anthropic's prompt cache.
 
 ### What limits this result, and what is next
 
 | limit | why | next |
 |---|---|---|
-| **Cost −13.7%**, goal −15% | Most of the bill is Claude Code's own context and Claude's answers, paid by both arms; even with zero lookups a session costs about $0.068 (−47%) | Don't inject where stock is already cheap (httpx) |
+| **Cost −14.8%**, goal −15% | Most of the bill is Claude Code's own context and Claude's answers, paid by both arms; even with zero lookups a session with today's injection costs about $0.045 (−44%) | Don't inject where stock is already cheap (httpx) |
+| **New tasks (v14): cost −3.4%** (n.s.), read + injected +50% | Tuned on v13's tasks; stock reads less on new ones, the injection does not shrink with it | Judge changes on held-out tasks |
 | **Read + injected +9.5%** (n.s.; +21.5% repo-balanced), goal: not significantly worse | ~1.8k injected tokens replace reading about one for one | Smaller blocks made Claude read more (v11); same httpx fix |
 | **Time −19.2%**, goal −20% | Answers take about 12.4 s in both arms; the saving is all lookup round trips ([breakdown](docs/RESULTS.md)) | The small time levers, about −21% |
-| **httpx cost +4%** (n.s.) | Stock already finds httpx code fast; all 8 first-prompt injections Laya scored below p 0.1 were httpx | — |
+| **httpx cost +1%** (n.s.) | Stock already finds httpx code fast; all 8 first-prompt injections Laya scored below p 0.1 were httpx | — |
 | **Model vs keywords**: no session difference | r1 wins offline (70 vs 62 of 115), not yet in v10/v12 ([details](#why-a-laya-model-on-top-of-keyword-search)) | — |
 | **Scope**: find-and-explain tasks, one model per run | — | An edit-task pilot |
 
@@ -285,7 +303,8 @@ Full method, raw data and the next run: [docs/RESULTS.md](docs/RESULTS.md).
 <details>
 <summary><b>What does it cost to run?</b></summary>
 
-- **Money:** free, and it lowers your Claude bill (−13.7% per session in benchmark v13).
+- **Money:** free. Per session, Claude cost −14.8% in benchmark v13 and −3.4% (not significant) on
+  new tasks in v14.
 - **Disk:** about 45 MB of binaries plus the ~850 MB model.
 - **Memory:** about 1 GB of RAM while the daemon runs.
 
@@ -360,7 +379,8 @@ code: review it before attaching it to an [issue](https://github.com/pilotspace/
 ## Roadmap
 
 **Next:**
-- **Cost and tokens:** reach −15% per session (−13.7% now) without code read + injected rising, by
+- **Cost and tokens:** reach −15% per session (−14.8% on v13's tasks, −3.4% n.s. on new ones)
+  without code read + injected rising, by
   not injecting where stock Claude Code is already cheap (httpx).
 - **Time:** reach −20% (−19.2% now); answers are a fixed ~12.4 s, so only lookups and the hook can shrink.
 - **Real sessions:** confirm the gains on locally recorded rankings, not just the benchmark.

@@ -1,0 +1,7 @@
+{"version": "v14", "date": "2026-09-30", "binary": {"laya": "63d258761b6a2045e13dd4ddabed9e24ba4d6a15", "gate": "96a2db82fd2aef51c75715e8479997928ea83d36"}, "model": "laya-code-r1 (local, T 0.8057)",
+ "claude_model": "claude-sonnet-5-5", "claude_code": "2.1.284", "effort": "medium", "turns": 2,
+ "tasks": "bench/tasks-heldout (60 tasks, none in bench/tasks-v8)",
+ "arms": {"baseline": "stock Claude Code", "laya": "laya-adaptive, main", "gate": "laya-adaptive, main plus the low-confidence gate (branch feat/low-confidence-gate, not merged)"},
+ "caps_usd": {"httpx": 6.0, "hono": 6.75, "moon": 13.25}, "spent_usd": 9.69,
+ "harness": "96a2db8: one live session per task; every arm had the same system prompt and a per-task random arm order from one fixed seed",
+ "notes": "Cost is re-derived from the raw transcripts (bench/recost.py rewrite; the harness summed running totals, $14.57 recorded). The laya and gate arms shared Anthropic's prompt cache whenever their first requests matched (51 of 51 tasks where both injected the same context), so as-measured costs favour whichever ran second; cost-cold.txt re-prices those cross-arm reads as writes and is the cost to quote. Time, tokens, turns and recall are unaffected by the cost fixes."}

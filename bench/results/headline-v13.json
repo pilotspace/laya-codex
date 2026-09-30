@@ -12,9 +12,9 @@
  "metrics": {
   "cost": {
    "label": "Cost",
-   "pct": -13.7,
-   "lo": -17.8,
-   "hi": -9.1
+   "pct": -14.8,
+   "lo": -18.8,
+   "hi": -10.4
   },
   "reading_plus_injected": {
    "label": "Reading + injected",
@@ -66,9 +66,9 @@
  "per_repo": {
   "moon": {
    "cost": {
-    "pct": -22.3,
-    "lo": -28.0,
-    "hi": -15.4
+    "pct": -23.6,
+    "lo": -29.3,
+    "hi": -16.9
    },
    "reading_plus_injected": {
     "pct": -22.6,
@@ -103,9 +103,9 @@
   },
   "httpx": {
    "cost": {
-    "pct": 4.2,
-    "lo": -4.3,
-    "hi": 13.9
+    "pct": 1.3,
+    "lo": -7.4,
+    "hi": 11.7
    },
    "reading_plus_injected": {
     "pct": 58.2,
@@ -140,9 +140,9 @@
   },
   "hono": {
    "cost": {
-    "pct": -11.0,
-    "lo": -18.1,
-    "hi": -2.7
+    "pct": -11.8,
+    "lo": -18.4,
+    "hi": -4.8
    },
    "reading_plus_injected": {
     "pct": 28.9,

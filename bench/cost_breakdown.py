@@ -1,7 +1,7 @@
 """Where the money goes: per-arm billing components from raw benchmark transcripts.
 
-Sums the `result` events' usage per run (one per prompt) and prices them at Sonnet rates
-(input $3/M, cache write $3.75/M, cache read $0.30/M, output $15/M), next to the reported cost.
+Sums the `result` events' usage per run (one per prompt) and prices them at the list prices in
+bench/runs.py, next to the reported cost (the last result's total_cost_usd, a running total).
 Also shows how much of the bill the tool results (reading) and laya's injection can explain.
 
     python3 bench/cost_breakdown.py <run dir> [<run dir> ...]
@@ -11,7 +11,7 @@ import os
 import sys
 from collections import defaultdict
 
-PRICE = {"input_tokens": 3.0, "cache_creation_input_tokens": 3.75, "cache_read_input_tokens": 0.30, "output_tokens": 15.0}
+from runs import PRICES_PER_M as PRICE
 
 for out in sys.argv[1:]:
     runs = {}
@@ -34,7 +34,7 @@ for out in sys.argv[1:]:
                 if e.get("type") == "result":
                     for k in PRICE:
                         usage[k] += (e.get("usage") or {}).get(k) or 0
-                    reported += e.get("total_cost_usd") or 0
+                    reported = e.get("total_cost_usd") or reported
             g = agg[a]
             for k in PRICE:
                 g[k] += usage[k] / len(tasks)

@@ -30,6 +30,7 @@ unhealthy row is left in runs.jsonl (bench/runs.py's `load_runs` prefers the hea
 described above -- a pilot is still a real (billed) run, just a small, bounded one.
 """
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -244,9 +245,17 @@ def arm_env(out_dir, specs):
     return env
 
 
-def arm_flags(arm, cfg_dir):
+def cache_tag(arm, rep=0):
+    """A neutral system-prompt line unique to (arm, repeat). Two arms whose first requests are
+    identical share Anthropic's prompt cache, so whichever ran second was billed cheap cache reads
+    for the other's writes (v14: 51 of 51 tasks). A hash, not the arm name, so it cannot steer the model."""
+    return "Session tag: %s." % hashlib.sha256(("%s:%d" % (arm, rep)).encode()).hexdigest()[:8]
+
+
+def arm_flags(arm, cfg_dir, rep=0):
     # --tools also takes effect for MCP tools only through --mcp-config; list them explicitly.
-    base = ["--setting-sources", "project", "--strict-mcp-config", "--permission-mode", "bypassPermissions"]
+    base = ["--setting-sources", "project", "--strict-mcp-config", "--permission-mode", "bypassPermissions",
+            "--append-system-prompt", cache_tag(arm, rep)]
     if arm == "baseline":
         return base + ["--tools", "Read,Grep,Glob"]
     flags = base + ["--tools", "Read,Grep,Glob", "--settings", os.path.join(cfg_dir, "laya-settings.%s.json" % arm)]
@@ -311,9 +320,9 @@ FOLLOWUP = ("Now, for the same change, identify the tests that cover this code a
             "FILES: <comma-separated repo-relative paths of the most relevant source files>")
 
 
-def _claude(prompt, arm, args, cfg_dir, env, session_flags):
+def _claude(prompt, arm, args, cfg_dir, env, session_flags, rep=0):
     cmd = ["claude", "-p", prompt, "--model", args.model, "--output-format", "stream-json", "--verbose",
-           "--include-hook-events", "--max-budget-usd", str(args.max_usd)] + session_flags + arm_flags(arm, cfg_dir)
+           "--include-hook-events", "--max-budget-usd", str(args.max_usd)] + session_flags + arm_flags(arm, cfg_dir, rep)
     t0 = time.time()
     try:
         p = subprocess.run(cmd, cwd=args.repo, capture_output=True, text=True, timeout=args.timeout, env=env)
@@ -324,7 +333,7 @@ def _claude(prompt, arm, args, cfg_dir, env, session_flags):
     return lines, rc, time.time() - t0
 
 
-def _claude_session(prompts, arm, args, cfg_dir, env, sid, popen=subprocess.Popen):
+def _claude_session(prompts, arm, args, cfg_dir, env, sid, popen=subprocess.Popen, rep=0):
     """Run `prompts` as one live Claude session: one `claude -p --input-format stream-json`
     process, each prompt sent only after the previous one's result, as a user types them.
     Resuming the session per prompt (`--resume`) rebuilt the first message differently when
@@ -334,7 +343,7 @@ def _claude_session(prompts, arm, args, cfg_dir, env, sid, popen=subprocess.Pope
     import threading
     cmd = ["claude", "-p", "--input-format", "stream-json", "--model", args.model, "--output-format", "stream-json",
            "--verbose", "--include-hook-events", "--max-budget-usd", str(args.max_usd),
-           "--session-id", sid] + arm_flags(arm, cfg_dir)
+           "--session-id", sid] + arm_flags(arm, cfg_dir, rep)
     p = popen(cmd, cwd=args.repo, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
               text=True, env=env)
     out, dead = [], None
@@ -418,10 +427,11 @@ def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None, versions=None, clau
     agg = {"reading_tokens": 0, "total_in": 0, "output": 0, "cost": 0.0, "turns": 0, "tool_calls": {}}
     answers = []
     prompt_output_tokens, prompt_answer_chars, prompt_turns, prompt_wall_s = [], [], [], []
+    prompt_cost_usd = []
     if len(prompts) == 1:
-        per_prompt = [_claude(prompts[0], arm, args, cfg_dir, env, ["--no-session-persistence"])]
+        per_prompt = [_claude(prompts[0], arm, args, cfg_dir, env, ["--no-session-persistence"], rep)]
     else:
-        per_prompt = _claude_session(prompts, arm, args, cfg_dir, env, sid)
+        per_prompt = _claude_session(prompts, arm, args, cfg_dir, env, sid, rep=rep)
     for lines, rc, w in per_prompt:
         all_lines += lines
         wall += w
@@ -431,7 +441,13 @@ def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None, versions=None, clau
         agg["reading_tokens"] += r["reading_tokens"]
         agg["total_in"] += (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
         agg["output"] += u.get("output_tokens") or 0
-        agg["cost"] += r["cost_usd"] or 0
+        # total_cost_usd is the session's running total (one process, see _claude_session): the
+        # session costs the last total, and each prompt the step from the previous one.
+        if r["cost_usd"] is not None:
+            prompt_cost_usd.append(round(r["cost_usd"] - agg["cost"], 6))
+            agg["cost"] = r["cost_usd"]
+        else:
+            prompt_cost_usd.append(0.0)
         agg["turns"] += r["num_turns"] or 0
         for t, n in r["tool_calls"].items():
             agg["tool_calls"][t] = agg["tool_calls"].get(t, 0) + n
@@ -457,7 +473,7 @@ def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None, versions=None, clau
            "rank_modes": h["rank_modes"], "scored": h["scored"], "offered": h["offered"],
            "prompt_injected_tokens": h["prompt_injected_tokens"], "injection_ok": injection_ok,
            "prompt_output_tokens": prompt_output_tokens, "prompt_answer_chars": prompt_answer_chars,
-           "prompt_turns": prompt_turns, "prompt_wall_s": prompt_wall_s}
+           "prompt_turns": prompt_turns, "prompt_wall_s": prompt_wall_s, "prompt_cost_usd": prompt_cost_usd}
     row.update(grade(answers[0], task["gold"]))
     if len(answers) > 1:
         named = [n for a in answers for n in grade(a, task["gold"])["named"]]
@@ -468,10 +484,19 @@ def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None, versions=None, clau
 
 
 def make_plan(tasks, arms, repeat, seed=7):
-    """(arm, task, rep) in run order: each repeat of a task runs every arm, in a random order per
-    task and repeat, so machine and API drift hit all arms alike. Repeat 0 is the pre-repeat plan."""
-    rng = random.Random(seed)
-    return [(a, t, rep) for rep in range(repeat) for t in tasks for a in rng.sample(arms, len(arms))]
+    """(arm, task, rep) in run order: each repeat of a task runs every arm, so machine and API drift
+    hit all arms alike. The order is balanced, not drawn per task: a seeded base order is rotated
+    task by task and reversed every other block of len(arms) tasks, so every arm runs first within
+    one task of the others and each pair runs in both orders about equally (v14's per-task draws
+    put one arm first in 14 of 20 tasks). Repeat 0 is the pre-repeat plan."""
+    base = random.Random(seed).sample(arms, len(arms))
+    n, plan = len(arms), []
+    for rep in range(repeat):
+        for i, t in enumerate(tasks):
+            k = rep * len(tasks) + i
+            order = base[k % n:] + base[:k % n]
+            plan += [(a, t, rep) for a in (order[::-1] if (k // n) % 2 else order)]
+    return plan
 
 
 def run(args):

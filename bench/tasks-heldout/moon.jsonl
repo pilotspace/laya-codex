@@ -1,0 +1,20 @@
+{"id": "3262663f40", "task": "feat(189-03): PERF-09 \u2014 fallback elimination + force-inline SIMD helpers", "gold": ["src/storage/dashtable/simd.rs"]}
+{"id": "b173c6b5e2", "task": "feat(189-02): add DashTable::insert_or_update + rewrite Database::set", "gold": ["src/storage/dashtable/mod.rs", "src/storage/db.rs", "tests/perf_v0112_insert_or_update_single_probe.rs"]}
+{"id": "d8e2087306", "task": "fix(189-01): add +1 depth headroom in DashTable::with_capacity for zero-split guarantee", "gold": ["src/storage/dashtable/mod.rs"]}
+{"id": "3423bb179b", "task": "feat(189-01): add split_count counter to DashTable for pre-sizing verification", "gold": ["src/storage/dashtable/mod.rs"]}
+{"id": "7fa4b0855b", "task": "feat(191-02): add mimalloc-alt feature flag with tri-state allocator cfg", "gold": ["src/main.rs"]}
+{"id": "4a48d0b427", "task": "fix(191-01): correct jemalloc prefixed symbol and env var names", "gold": ["src/command/server_admin.rs", "src/main.rs"]}
+{"id": "596d062517", "task": "fix(190-03): widen Prometheus sum/RSS ratio tolerance in integration test", "gold": ["tests/memory_prometheus_kinds.rs"]}
+{"id": "8f0ac5501a", "task": "feat(190-03): wire scrape hook updating 7 moon_memory_bytes kinds every 15s", "gold": ["src/admin/http_server.rs", "src/admin/metrics_setup.rs"]}
+{"id": "a622d64eee", "task": "feat(190-03): register moon_memory_bytes labeled gauge with 7-kind label set", "gold": ["src/admin/metrics_setup.rs"]}
+{"id": "9f2c2cef7e", "task": "feat(190-02): implement MEMORY DOCTOR full schema (7 subsystems + allocator)", "gold": ["src/admin/metrics_setup.rs", "src/command/server_admin.rs", "src/main.rs"]}
+{"id": "acafe21738", "task": "feat(190-01): add resident_bytes() to Database and DashTable", "gold": ["src/storage/dashtable/mod.rs", "src/storage/db.rs"]}
+{"id": "1640cc23b8", "task": "fix(replication): stop lying about master_link_status and validate REPLCONF", "gold": ["src/command/connection.rs", "src/replication/handshake.rs"]}
+{"id": "6582fa9ca2", "task": "perf(dispatch): batch-level eviction gate skips per-write rt-config lock", "gold": ["src/server/conn/handler_monoio/mod.rs"]}
+{"id": "e00769ef14", "task": "perf(dispatch): length-gate try_handle_* + inline name checks", "gold": ["src/server/conn/handler_monoio/dispatch.rs", "src/server/conn/handler_monoio/mod.rs"]}
+{"id": "e2addc8771", "task": "perf(storage): pre-size DashTable + fuse Database::set probe", "gold": ["src/config.rs", "src/main.rs", "src/shard/mod.rs", "src/storage/db.rs"]}
+{"id": "a0782d5491", "task": "feat(shard): key-access IP affinity hint for listener placement", "gold": ["src/server/conn/core.rs", "src/server/conn/handler_monoio/mod.rs", "src/server/conn/handler_sharded/mod.rs", "src/shard/affinity.rs"]}
+{"id": "bfc723ea95", "task": "perf(expiry): skip O(N) scan when no TTL-bearing keys exist", "gold": ["src/server/expiration.rs", "src/storage/db.rs"]}
+{"id": "5bd024104b", "task": "perf(hot-path): batch dispatch-path counters per command-batch", "gold": ["src/admin/metrics_setup.rs", "src/server/conn/handler_sharded/mod.rs", "src/shard/dispatch.rs"]}
+{"id": "8680735ab2", "task": "perf(hot-path): 1-in-16 latency sampling on command dispatch", "gold": ["src/admin/metrics_setup.rs", "src/server/conn/core.rs", "src/server/conn/handler_monoio/mod.rs", "src/server/conn/handler_sharded/mod.rs"]}
+{"id": "04e11fa805", "task": "fix(ci): gate pipeline_auto_index on text-index + annotate 4 FT unwraps", "gold": ["src/command/vector_search/ft_text_search.rs", "src/server/conn/handler_monoio/ft.rs", "tests/pipeline_auto_index.rs"]}

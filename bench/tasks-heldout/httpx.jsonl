@@ -1,0 +1,20 @@
+{"id": "c1cc6b2462", "task": "Fixes #2666: None is the default value of file for httpx.NetRCAuth", "gold": ["httpx/_auth.py"]}
+{"id": "4b5a92e88e", "task": "set logging request lines to INFO level for async method also", "gold": ["httpx/_client.py"]}
+{"id": "f1157dbc41", "task": "Use standard logging style", "gold": ["httpx/_client.py", "httpx/_config.py", "httpx/_utils.py", "tests/test_utils.py"]}
+{"id": "85c5898d8e", "task": "Change LineDecoder to match stdlib splitlines, resulting in significant speed up", "gold": ["httpx/_decoders.py", "tests/models/test_responses.py", "tests/test_decoders.py"]}
+{"id": "c5e9c82c90", "task": "Add sslcontext to the asynclient docstring", "gold": ["httpx/_client.py"]}
+{"id": "a934c36a85", "task": "Drop private imports from test_urlparse.py", "gold": ["httpx/_urlparse.py"]}
+{"id": "f0fd91925b", "task": "fix type annotation for MockTransport", "gold": ["httpx/_transports/mock.py", "tests/client/test_async_client.py", "tests/client/test_auth.py", "tests/client/test_redirects.py"]}
+{"id": "a6af45edac", "task": "Use '%20' for encoding spaces in query parameters.", "gold": ["httpx/_urlparse.py", "httpx/_urls.py", "tests/models/test_url.py"]}
+{"id": "57daabf673", "task": "Drop `rfc3986` requirement.", "gold": ["httpx/_urlparse.py", "httpx/_urls.py", "tests/models/test_url.py", "tests/test_asgi.py"]}
+{"id": "4cbf13ece2", "task": "Raise `TypeError` on invalid query params.", "gold": ["httpx/_utils.py", "tests/models/test_queryparams.py"]}
+{"id": "b82fbe2c13", "task": "Drop private import of 'format_form_param' from tests", "gold": ["httpx/_utils.py", "tests/test_multipart.py"]}
+{"id": "b97c0594a5", "task": "Streaming multipart support", "gold": ["httpx/_multipart.py", "tests/test_multipart.py"]}
+{"id": "a8dd079be7", "task": "Raise TypeError if content is passed a 'dict' instance.", "gold": ["httpx/_content.py", "tests/test_content.py"]}
+{"id": "40a0da093b", "task": "Add back in URL.raw with NamedTuple", "gold": ["httpx/_types.py", "httpx/_urls.py", "tests/models/test_url.py"]}
+{"id": "57aa5b08a4", "task": "Enable no_implicit_reexport", "gold": ["httpx/_config.py", "httpx/_utils.py", "tests/conftest.py"]}
+{"id": "0eb97fc988", "task": "Use wsgi types from typeshed", "gold": ["httpx/_transports/wsgi.py"]}
+{"id": "8327e13454", "task": "reuse the digest auth state to avoid unnecessary requests", "gold": ["httpx/_auth.py", "tests/client/test_auth.py", "tests/test_auth.py"]}
+{"id": "75a13a15aa", "task": "Remove typeshed iscoroutine workaround", "gold": ["httpx/_transports/mock.py"]}
+{"id": "1ba3e2ad4c", "task": "Switch `extensions` from `Dict` to `Mapping`.", "gold": ["httpx/_client.py", "httpx/_types.py"]}
+{"id": "8752e2672c", "task": "Drop .read/.aread from SyncByteStream/AsyncByteStream", "gold": ["httpx/_content.py", "httpx/_types.py", "tests/test_content.py"]}

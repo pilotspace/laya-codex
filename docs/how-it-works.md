@@ -280,7 +280,7 @@ session, Claude Sonnet 5.5 at medium effort):
 
 | per session | stock Claude Code | with laya-codex |
 |---|---|---|
-| cost | $0.128 | $0.110 (−13.7%, CI −17.8%…−9.1%) |
+| cost | $0.081 | $0.069 (−14.8%, CI −18.8%…−10.4%) |
 | code read + injected | 2,755 tokens | 3,017 (+9.5%, not significant) |
 | code-reading tokens (Read/Grep/Glob/`search` output) | 2,755 | 1,184 (−57.0%, CI −65.2%…−47.8%) |
 | wall-clock | 23.2 s | 18.7 s (−19.2%, CI −23.3%…−14.7%) |
