@@ -6,7 +6,7 @@
 | output_tokens | 2769.7 | 1841.4 |
 | wall_s | 26.8 | 19.1 |
 | num_turns | 8.8 | 3.6 |
-| cost_usd | 0.201 | 0.156 |
+| cost_usd | 0.123 | 0.094 |
 | recall | 0.938 | 0.908 |
 | precision | 0.351 | 0.381 |
 | hit_any | 1.000 | 1.000 |

@@ -63,7 +63,7 @@ class SessionRace(unittest.TestCase):
 
     def test_labels_carry_the_benchmark_numbers(self):
         doc = diagrams.session(diagrams.THEMES["light"])
-        for needle in ("23.2 s", "18.7 s", "$0.128", "$0.110", "5.9 tool calls", "2.3 tool calls",
+        for needle in ("23.2 s", "18.7 s", "$0.081", "$0.069", "5.9 tool calls", "2.3 tool calls",
                        "turn 4", "52 of 60"):
             with self.subTest(needle):
                 self.assertIn(needle, doc)

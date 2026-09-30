@@ -2,6 +2,15 @@
 
 *2026-09-30 · laya-codex benchmark v13 · all data in [`bench/results/`](../../bench/results/)*
 
+> **Correction (2026-09-30, later).** A third bug: the harness added Claude Code's running cost
+> totals, so every session was charged for its first prompt twice.
+> - **Re-derived:** v13's cost is −14.8% (−18.8% … −10.4%), not −13.7%, at $0.081 per stock
+>   session and $0.069 with laya-codex. v12's is +7.7%, not +0.6%.
+> - **On 60 tasks laya-codex was not tuned on** (benchmark v14): cost −3.4%, not significant.
+>
+> The text below is as first published. Current numbers are in
+> [docs/RESULTS.md](../RESULTS.md).
+
 laya-codex ranks your repository's code with a small local model and hands Claude Code the right
 functions with your prompt, so Claude spends less time searching. We measure that against stock
 Claude Code on 60 real tasks from three open-source repositories (moon in Rust, httpx in Python,

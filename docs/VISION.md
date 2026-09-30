@@ -33,26 +33,35 @@ Measured against stock Claude Code on the benchmark suite (3 repositories, 60 ta
 
 | target | definition | stock | laya-codex now | goal |
 |---|---|---|---|---|
-| **Cost −15%** | dollars per session: every token Claude is billed for, including the code laya-codex injects | $0.128 | $0.110 (−13.7% [−17.8, −9.1]), not met | ≤ $0.109 |
+| **Cost −15%** | dollars per session: every token Claude is billed for, including the code laya-codex injects | $0.0809 | $0.0689 (−14.8% [−18.8, −10.4]), not met | ≤ $0.0688 |
 | **Time −20%** | session wall-clock | 23.2 s | 18.7 s (−19.2% [−23.3, −14.7]), not met | ≤ 18.6 s |
 | **Quality** | answer recall of the gold files: first question up, both questions no loss | 0.726 / 0.954 | 0.881 / 0.931 (first +0.154; both −0.024, n.s.), met | first ≥ +0.10; both not worse |
 | **Tokens** | code read plus injected | 2,755 | 3,017 (+9.5% n.s.; +21.5% [+9.5, +36.8] repo-balanced), not met | not significantly worse |
 
 A goal is met when the point estimate reaches it and the 95% interval excludes zero.
 
+**On 60 held-out tasks** (benchmark v14; laya-codex was tuned on v13's tasks) only one target is
+met, no both-question loss (+0.003):
+- **Cost:** −3.4% [−9.7, +3.6], with cross-arm cache reads re-priced.
+- **Time:** −12.1% [−17.9, −5.3].
+- **First-question recall:** +0.099 [+0.039, +0.160], just short of +0.10.
+- **Code read + injected:** +49.9% [+29.8, +74.3].
+
 **Why the targets were reset (2026-09-30).** The earlier goals, cost −50% and time −30%, are out
 of reach of anything laya-codex controls:
 - **Cost has a floor** (`bench/cost_floor.py`, v13 raw transcripts). Claude Code's own context is
   written on every session's first call (5,125 tokens), Claude writes its answers (about 950
   tokens), and each prompt re-reads the conversation. With zero lookups and no injection a session
-  would cost $0.052 (−59%); with zero lookups and today's injection, $0.068 (−47%), above the
-  $0.064 that −50% requires. A smaller injection makes Claude read more (v11).
+  would cost $0.035 (−57%); with zero lookups and today's injection, $0.045 (−44%), above the
+  $0.040 that −50% requires. A smaller injection makes Claude read more (v11). (Re-derived
+  2026-09-30 at Sonnet 5.5 prices with each session's cost counted once; the first figures,
+  $0.052 and $0.068, used Sonnet 5 prices against double-counted costs and gave −59% and −47%.)
 - **Time has a floor** (`bench/time_breakdown.py`). The final answers take about 12.4 s in both
   arms; with no lookups and no hook a session would still take about 13.5 s. The only lever left
   of any size, lookups on the follow-up, failed its offline replay (41% of follow-ups covered
   against a 69% bar), so −30% would need Claude to stop looking things up.
 The new goals sit just ahead of v13 and are reachable with named levers: not injecting where stock
-Claude Code is already cheap (httpx: cost +4.2%, n.s.), and the small time levers (about −21%).
+Claude Code is already cheap (httpx: cost +1.3%, n.s.), and the small time levers (about −21%).
 
 The current figures are from benchmark v13 (2026-09-30, 60 paired tasks, Claude Sonnet 5.5
 (`claude-sonnet-5-5`) at medium effort on Claude Code 2.1.284, laya-code-r1, both prompts in one
@@ -80,9 +89,9 @@ transcripts):
 - **Cost follows API calls.**
   - laya-codex sessions make 2.3 tool calls against 5.9 for stock Claude, and 3.7 API calls
     against 5.9. Each API call avoided saves a re-read of the conversation and an answer, about
-    $0.008.
+    $0.005.
   - The injected code replaces tool output roughly one for one, so cache writes, the new text each
-    turn, barely move (−3.2%). At list prices they are 64% of laya-codex's bill ($6 per million
+    turn, barely move (−3.2%). At list prices they are 64% of laya-codex's bill ($4 per million
     tokens for the one-hour cache); cache re-reads are 12% and output 24%.
   - Most of that is Claude Code's own per-session context and Claude's answers, which both arms
     pay. The next ideas checked offline (skip low-confidence code; inject the follow-up's lookups)
@@ -146,3 +155,4 @@ Frozen (not developed unless this page changes):
 | 2026-09-29 | The token goal becomes cost per session −50% against stock, with no quality loss. Stock Claude Code 2.1.284 on Sonnet 5.5 reads about half the code it did in v10 (Sonnet 5), which puts −50% of read plus injected below laya-codex's injection alone. Read plus injected stays reported. The −30% time goal is kept until all 60 tasks are re-measured on current Claude Code. Every ranking is recorded locally by default (`laya-codex capture`, merged after v0.4.0). Answering Grep or Read through laya-codex may be explored again (reverses the 2026-09-24/25 rule). Stronger "answer from the shown code" wording failed a pilot (tokens −3%, a gold file lost) and is not merged. The next decisive run is all 60 tasks on Sonnet 5.5 at medium effort, pinned by model id, with stock, laya-codex and keywords-only arms (estimate $26, cap $32) |
 | 2026-09-30 | Benchmark harness fixed: a task's prompts run in one live session (resuming per prompt charged laya-codex for rewriting the prompt cache in about half its sessions, v12), and benchmark repos stay out of the home directory (every session in every arm loaded the operator's `~/.claude/CLAUDE.md`). v13 on Sonnet 5.5: cost −13.7%, time −19.2%, first-question recall +0.154, both-question recall −0.024 (n.s.). Skipping low-confidence code (~0.3%) and injecting the follow-up's lookups (<1%) are not built. Whether −50% cost stays the goal is open |
 | 2026-09-30 | Targets reset to cost −15%, time −20%, first-question recall +0.10 with no both-question loss, and code read plus injected not significantly worse; met means the estimate reaches the goal and the 95% interval excludes zero. The −50% cost goal is below the session's cost floor ($0.068 with zero lookups and today's injection, `bench/cost_floor.py`), and −30% time needs Claude to stop looking things up: answers take about 12.4 s in both arms, and the follow-up completeness replay covered 41% of follow-ups against a 69% bar, so it is not built (`bench/followup_completeness.py`). Next: don't inject where stock is already cheap (httpx) and confirm on real sessions |
+| 2026-09-30 | Benchmark v14 on 60 held-out tasks. The low-confidence gate showed no effect and is not merged (PR #39 closed, branch kept). Three harness bugs are fixed: costs counted prompt 1 twice (v12–v14 re-derived: v13 cost −13.7% → −14.8%; the cost floor with today's injection is $0.045, −44%, so −50% stays out of reach); arms with the same system prompt shared Anthropic's prompt cache (each arm now gets its own tag); and one seed fixed the arm order (now balanced). On held-out tasks `main` vs stock: cost −3.4% (n.s.), time −12.1%, first-question recall +0.099, code read + injected +49.9%. The targets are unchanged |

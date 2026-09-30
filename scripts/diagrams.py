@@ -17,9 +17,9 @@ from charts import THEMES, text  # noqa: E402
 
 # Means per session from benchmark v13 (docs/RESULTS.md): 60 paired tasks, claude-sonnet-5-5.
 SESSION = {
-    "stock": {"wall_s": 23.2, "cost": 0.128, "tool_calls": 5.9, "calls": ["Grep", "Grep", "Read", "Grep", "Grep", "Read"],
+    "stock": {"wall_s": 23.2, "cost": 0.081, "tool_calls": 5.9, "calls": ["Grep", "Grep", "Read", "Grep", "Grep", "Read"],
               "right_file": "right file at turn 4 (median); never in 19 of 60"},
-    "laya": {"wall_s": 18.7, "cost": 0.110, "tool_calls": 2.3, "calls": ["search", "Grep"],
+    "laya": {"wall_s": 18.7, "cost": 0.069, "tool_calls": 2.3, "calls": ["search", "Grep"],
              "right_file": "right file before turn 1 in 52 of 60"},
 }
 CYCLE_S = 12.0      # one loop of the session race
@@ -127,8 +127,8 @@ def session(t):
             saved = 100 * (s["wall_s"] / longest - 1)
             items.append(text((end_x + AXIS_X1) / 2, y + 4, f"{saved:.0f}%".replace("-", "−"), 12, t["fg"], "middle", "600"))
         body.append(group(name, items))
-    return doc(w, h, body, css, t, "One task, two sessions: stock Claude Code 23.2 s, $0.128, 5.9 tool calls, right file at "
-               "turn 4; with laya-codex 18.7 s, $0.110, 2.3 tool calls, right file before turn 1 in 52 of 60 tasks")
+    return doc(w, h, body, css, t, "One task, two sessions: stock Claude Code 23.2 s, $0.081, 5.9 tool calls, right file at "
+               "turn 4; with laya-codex 18.7 s, $0.069, 2.3 tool calls, right file before turn 1 in 52 of 60 tasks")
 
 
 # --- 2. the pipeline --------------------------------------------------------------------------

@@ -40,8 +40,16 @@ All notable changes to this project are documented here. The format follows
 - **The benchmark runs each task as one live session.** Resuming the session for the second
   prompt (`claude -p --resume`) rebuilt the first message differently when prompt 1 was answered in
   one API call, so the follow-up rewrote the whole prompt cache: 31 of 60 laya-codex sessions and
-  0 of 60 stock sessions in benchmark v12. Benchmark v13, with the fix: cost −13.7% against stock
-  (v12: +0.6%), time −19.2%, first-question recall 0.73 → 0.88.
+  0 of 60 stock sessions in benchmark v12. Benchmark v13, with the fix: cost −14.8% against stock
+  (v12: +7.7%), time −19.2%, first-question recall 0.73 → 0.88.
+- **Benchmark costs count each session once.** Claude Code reports each prompt's cost as the
+  session's running total. The harness added them, charging every two-prompt session for prompt 1
+  twice. `bench/recost.py` re-derives v12–v14 from the raw transcripts, and `bench/cost_floor.py`
+  now uses Sonnet 5.5's list prices.
+- **Benchmark arms no longer share a prompt cache.** Each arm and repeat gets its own system-prompt
+  tag. Before, an arm whose first request matched another's read that arm's cache (v14).
+- **Benchmark arm order is balanced.** Every arm runs first for an equal share of tasks. One fixed
+  seed had put the same arm first in 14 of 20 tasks in every repository.
 - **The benchmark keeps the operator's CLAUDE.md out.** Claude Code reads `<dir>/.claude/CLAUDE.md`
   in every directory above the repo, so repos under the home directory loaded the operator's
   global file in every session of every arm. `run_bench` now refuses such a repo.
