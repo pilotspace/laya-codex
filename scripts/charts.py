@@ -124,11 +124,14 @@ def journey(d, t):
     """Step lines: share of tasks with a correct file in Claude's context by each turn."""
     j = d["journey"]
     n = len(j["baseline"])
-    w, h = 760, 360
-    left, right, top, bottom = 64, 24, 92, 300
+    # The legend sits below the axis and each line is labelled at its end in a right gutter, so
+    # no text is drawn over the plotted lines.
+    w, h = 760, 420
+    left, right, top, bottom = 64, 140, 92, 290
     max_turn = 20
     sx = lambda turn: left + turn * (w - left - right) / max_turn
     sy = lambda frac: bottom - frac * (bottom - top)
+    share = lambda turns, turn: sum(1 for x in turns if x is not None and x <= turn) / n
     body = [
         text(24, 32, "The journey to the right code", 17, t["fg"], weight="600"),
         text(24, 54, f"Share of the {n} tasks where a correct file is in Claude's context, by turn", 12, t["muted"]),
@@ -144,10 +147,9 @@ def journey(d, t):
     def step(turns, color, dash="", width=3):
         pts = []
         for turn in range(0, max_turn + 1):
-            frac = sum(1 for x in turns if x is not None and x <= turn) / n
             if pts:
                 pts.append((sx(turn), pts[-1][1]))
-            pts.append((sx(turn), sy(frac)))
+            pts.append((sx(turn), sy(share(turns, turn))))
         path = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
         d_attr = f' stroke-dasharray="{dash}"' if dash else ""
         return (f'<polyline points="{path}" fill="none" stroke="{color}" stroke-width="{width}" '
@@ -157,19 +159,24 @@ def journey(d, t):
     body.append(step(j["laya_read"], t["laya"], "6 5", 2))
     body.append(step(j["laya_seen"], t["laya"]))
 
+    # Direct labels at each line's end: which line it is and its share by the last turn.
+    for key, name in (("laya_seen", "laya-codex"), ("laya_read", "its first Read"), ("baseline", "stock")):
+        f = share(j[key], max_turn)
+        body.append(text(sx(max_turn) + 8, sy(f) + 4, f"{name} {f:.0%}", 12, t["fg"], weight="600"))
+
     at0 = sum(1 for x in j["laya_seen"] if x == 0)
     body.append(f'<circle cx="{sx(0):.1f}" cy="{sy(at0 / n):.1f}" r="5" fill="{t["laya"]}"/>')
-    cx, cy = sx(8.6), sy(0.52)
-    body.append(f'<line x1="{sx(0) + 6:.1f}" y1="{sy(at0 / n) + 4:.1f}" x2="{cx - 4:.1f}" y2="{cy - 4:.1f}" stroke="{t["muted"]}" stroke-width="1"/>')
-    body.append(text(cx, cy + 4, f"{at0} of {n} tasks: the right code arrives with the prompt", 12, t["fg"], weight="600"))
-    first_b = min(x for x in j["baseline"] if x is not None)
-    body.append(text(sx(first_b) + 8, sy(0) - 10, f"stock: first correct file at turn {first_b}", 12, t["muted"]))
+    # Callout beside the dot, in the gap under the laya-codex line (no leader crossing other lines).
+    body.append(text(sx(0) + 12, sy(at0 / n - 0.09) + 4, f"{at0} of {n} tasks: the right code arrives with the prompt",
+                     12, t["fg"], weight="600"))
 
-    lx, ly = sx(8.6), sy(0.36)
+    first_b = min(x for x in j["baseline"] if x is not None)
+    lx, ly = left, bottom + 66
     legend = (
         (t["laya"], "", 3, f"laya-codex: correct code in context (median turn {turn_label(median(j['laya_seen']))})"),
         (t["laya"], "6 5", 2, f"laya-codex: first correct Read (median {turn_label(median(j['laya_read']))})"),
-        (t["base"], "", 3, f"stock Claude Code (median {turn_label(median(j['baseline']))})"),
+        (t["base"], "", 3, f"stock Claude Code (median {turn_label(median(j['baseline']))}; "
+                           f"first correct file at turn {first_b})"),
     )
     for k, (color, dash, width, label) in enumerate(legend):
         y = ly + k * 20
