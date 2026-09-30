@@ -815,6 +815,17 @@ class RepoOutsideClaudeHome(unittest.TestCase):
             found = run_bench.claude_md_above(os.path.join(d, "jobs", "repo"))
         self.assertEqual([os.path.basename(os.path.dirname(f)) for f in found], [os.path.basename(d)])
 
+    def test_a_dot_claude_claude_md_above_the_repo_is_reported(self):
+        # Claude Code also reads <dir>/.claude/CLAUDE.md in every directory above the working one,
+        # which is where a home directory keeps the user's global file: ~/.claude/CLAUDE.md.
+        import run_bench
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".claude"))
+            os.makedirs(os.path.join(d, "bench-repos", "repo"))
+            open(os.path.join(d, ".claude", "CLAUDE.md"), "w").write("personal rules")
+            found = run_bench.claude_md_above(os.path.join(d, "bench-repos", "repo"), stop=d)
+        self.assertEqual(found, [os.path.join(d, ".claude", "CLAUDE.md")])
+
     def test_a_clean_path_reports_nothing(self):
         import run_bench
         with tempfile.TemporaryDirectory() as d:

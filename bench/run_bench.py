@@ -379,12 +379,13 @@ def _claude_session(prompts, arm, args, cfg_dir, env, sid, popen=subprocess.Pope
 
 def claude_md_above(repo, stop=None):
     """CLAUDE.md files in the directories above `repo` (up to `stop`, else the filesystem root).
-    Claude Code loads each of them into every session, so a benchmark repo below one (a checkout
-    under ~/.claude, say) feeds the operator's own instructions to every arm."""
+    Claude Code loads each of them into every session, including <dir>/.claude/CLAUDE.md, so any
+    repo under the operator's home directory gets their global ~/.claude/CLAUDE.md as project
+    instructions in every arm."""
     found = []
     d = os.path.dirname(os.path.abspath(repo))
     while True:
-        for name in ("CLAUDE.md", "CLAUDE.local.md"):
+        for name in ("CLAUDE.md", "CLAUDE.local.md", os.path.join(".claude", "CLAUDE.md")):
             f = os.path.join(d, name)
             if os.path.isfile(f):
                 found.append(f)
