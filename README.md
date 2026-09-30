@@ -198,12 +198,12 @@ bootstrap CIs; grey = not significant.
 
 | per session | stock | laya-codex | change | 95% CI |
 |---|---|---|---|---|
-| Cost (goal −50%) | $0.128 | $0.110 | **−13.7%** | −17.8% … −9.1% |
+| Cost (goal −15%) | $0.128 | $0.110 | **−13.7%** | −17.8% … −9.1% |
 | Code read + injected (tokens) | 2,755 | 3,017 | +9.5% | −1.6% … +22.6% |
 | Code-reading tokens | 2,755 | 1,184 | **−57.0%** | −65.2% … −47.8% |
 | Total input tokens | | | **−31.7%** | −37.3% … −25.0% |
 | Output tokens | | | **−25.6%** | −28.9% … −22.2% |
-| Wall-clock time (goal −30%) | 23.2 s | 18.7 s | **−19.2%** | −23.3% … −14.7% |
+| Wall-clock time (goal −20%) | 23.2 s | 18.7 s | **−19.2%** | −23.3% … −14.7% |
 | Turns (tool calls + prompts) | 7.9 | 4.3 | **−45.5%** | −49.8% … −40.7% |
 | Tool calls | 5.9 | 2.3 | | Grep 4.2 → 0.8; `search` 0.8 |
 | Answer recall, first question | 0.73 | 0.88 | **+0.15** | +0.08 … +0.23 |
@@ -245,9 +245,9 @@ the operator's `~/.claude/CLAUDE.md` (found after this run, since fixed).
 
 | limit | why | next |
 |---|---|---|
-| **Cost −13.7%**, goal −50% | Most of the bill is Claude Code's own context and Claude's answers, paid by both arms | Next ideas test at ≤ 1% each offline; goal under review |
-| **Read + injected +9.5%** (n.s.) | ~1.8k injected tokens replace reading about one for one | Smaller blocks made Claude read more (v11) |
-| **Time −19.2%**, goal −30% | Time follows output: 7.6 s per 1,000 tokens (R² 0.82) | Fewer, shorter answers |
+| **Cost −13.7%**, goal −15% | Most of the bill is Claude Code's own context and Claude's answers, paid by both arms; even with zero lookups a session costs about $0.068 (−47%) | Don't inject where stock is already cheap (httpx) |
+| **Read + injected +9.5%** (n.s.; +21.5% repo-balanced), goal: not significantly worse | ~1.8k injected tokens replace reading about one for one | Smaller blocks made Claude read more (v11); same httpx fix |
+| **Time −19.2%**, goal −20% | Answers take about 12.4 s in both arms; the saving is all lookup round trips ([breakdown](docs/RESULTS.md)) | The small time levers, about −21% |
 | **httpx cost +4%** (n.s.) | Stock already finds httpx code fast; all 8 first-prompt injections Laya scored below p 0.1 were httpx | — |
 | **Model vs keywords**: no session difference | r1 wins offline (70 vs 62 of 115), not yet in v10/v12 ([details](#why-a-laya-model-on-top-of-keyword-search)) | — |
 | **Scope**: find-and-explain tasks, one model per run | — | An edit-task pilot |
@@ -360,8 +360,10 @@ code: review it before attaching it to an [issue](https://github.com/pilotspace/
 ## Roadmap
 
 **Next:**
-- **Cost:** toward −50% per session (−13.7% now); next ideas test at about 1% each, so the goal is under review.
-- **Time:** toward −30% (−19.2% now); time follows how much Claude writes.
+- **Cost and tokens:** reach −15% per session (−13.7% now) without code read + injected rising, by
+  not injecting where stock Claude Code is already cheap (httpx).
+- **Time:** reach −20% (−19.2% now); answers are a fixed ~12.4 s, so only lookups and the hook can shrink.
+- **Real sessions:** confirm the gains on locally recorded rankings, not just the benchmark.
 - **Model:** turn r1's better offline ranking into a session-level gain (none yet in v10, v12).
 - **Upkeep:** compact Moon's data log automatically (it reached 4.1 GB); a faster model for Linux.
 
