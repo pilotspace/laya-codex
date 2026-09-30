@@ -36,6 +36,16 @@ All notable changes to this project are documented here. The format follows
   ones included, and skipped tasks where the event never happened. Turns are now medians with
   "never" counted as last.
 
+### Fixed
+- **The benchmark runs each task as one live session.** Resuming the session for the second
+  prompt (`claude -p --resume`) rebuilt the first message differently when prompt 1 was answered in
+  one API call, so the follow-up rewrote the whole prompt cache: 31 of 60 laya-codex sessions and
+  0 of 60 stock sessions in benchmark v12. Benchmark v13, with the fix: cost −13.7% against stock
+  (v12: +0.6%), time −19.2%, first-question recall 0.73 → 0.88.
+- **The benchmark keeps the operator's CLAUDE.md out.** Claude Code reads `<dir>/.claude/CLAUDE.md`
+  in every directory above the repo, so repos under the home directory loaded the operator's
+  global file in every session of every arm. `run_bench` now refuses such a repo.
+
 ## [0.4.0] — 2026-09-28
 
 Claude answers its own lookups with laya-codex `search` instead of Grep, the reranker is retrained

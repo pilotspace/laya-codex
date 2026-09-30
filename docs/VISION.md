@@ -33,14 +33,14 @@ Measured against stock Claude Code on the benchmark suite (3 repositories, 60 ta
 
 | target | definition | stock | laya-codex now | goal |
 |---|---|---|---|---|
-| **Cost −50%** | dollars per session: every token Claude is billed for, including the code laya-codex injects | $0.176 | $0.160 (−8.8%) | ≤ $0.088 |
-| **Time −30%** (re-measured next) | session wall-clock | 38.3 s | 33.7 s (−12.0%) | ≤ 26.8 s |
-| **Quality: no loss** | answer recall of the gold files, turn 1 and both turns | 0.758 / 0.953 | 0.904 / 0.940 | not worse on either |
+| **Cost −50%** | dollars per session: every token Claude is billed for, including the code laya-codex injects | $0.128 | $0.110 (−13.7%) | ≤ $0.064 |
+| **Time −30%** | session wall-clock | 23.2 s | 18.7 s (−19.2%) | ≤ 16.2 s |
+| **Quality: no loss** | answer recall of the gold files, turn 1 and both turns | 0.726 / 0.954 | 0.881 / 0.931 (turn 1 +0.154; both −0.024, n.s.) | not worse on either |
 
-The current figures are from benchmark v10 (2026-09-27, 51 paired tasks, Claude Sonnet 5
-(`claude-sonnet-5`) at medium effort on Claude Code 2.1.281, laya-code-r1; see
-[docs/RESULTS.md](RESULTS.md)). The goals are relative, so their absolute values follow each run's
-stock baseline.
+The current figures are from benchmark v13 (2026-09-30, 60 paired tasks, Claude Sonnet 5.5
+(`claude-sonnet-5-5`) at medium effort on Claude Code 2.1.284, laya-code-r1, both prompts in one
+live session; see [docs/RESULTS.md](RESULTS.md)). The goals are relative, so their absolute values
+follow each run's stock baseline.
 
 **Why cost replaced code tokens (2026-09-29).** A re-baseline on Claude Code 2.1.284 with Claude
 Sonnet 5.5 (`claude-sonnet-5-5`: the `sonnet` alias had moved since v10), 8 paired tasks on httpx
@@ -52,32 +52,30 @@ buys the rest of the result, stock → laya-codex:
 |---|---|---|---|---|
 | 0.50 → 0.90 / 1.00 → 0.94 | 5.0 → 3.4 | −13% | +48% | −36% |
 
-Eight tasks is a small sample, not a headline; the full rerun on Sonnet 5.5 replaces it.
+Eight tasks is a small sample, not a headline; benchmark v13 replaced it.
 
-Code tokens read plus injected stay reported, next to cost, but they are no longer the goal. The
-time goal is re-measured on all 60 tasks with current Claude Code before it is kept or restated.
+Code tokens read plus injected stay reported, next to cost, but they are no longer the goal.
+Benchmark v13 re-measured time on all 60 tasks with current Claude Code: −19.2%.
 
-Why the gaps exist (v10 `runs.jsonl`, `bench/ledger.py`, and the `result` usage in the raw
+Why the gaps exist (v13 `runs.jsonl`, `bench/ledger.py`, and the `result` usage in the raw
 transcripts):
 
-- **Cost follows cache writes.**
-  - Per session, stock Claude writes 14.7k tokens to the prompt cache and laya-codex 15.0k
-    (+1.8%). Cache writes are the new text each turn: Claude Code's own instructions and tool
-    definitions, tool output and the injected code. They are 45% of laya-codex's bill.
-  - The input saving (−21.7%) is almost all cache reads (−24.6%), billed at a tenth of the input
-    price, and output (−19.8%) is the rest. So cost falls 8.8%.
-  - Reaching −50% means cutting what is written each turn, not only the number of turns.
-
-- **Time follows tool calls.**
-  - Each tool call costs about 2 s.
-  - laya-codex sessions make 5.3 tool calls against 9.0 for stock Claude.
-  - Since name lookups (#18), Claude calls laya-codex `search` about once per session (v9: 0.02),
-    and Grep fell from 5.3 to 2.0. But it swapped Greps for searches one for one, so the total
-    stayed at v9's level.
-  - Reaching −30% means about 2 tool calls per session.
+- **Cost follows API calls.**
+  - laya-codex sessions make 2.3 tool calls against 5.9 for stock Claude (4.3 turns against 7.9).
+    Each call avoided saves a re-read of the conversation and an answer, about $0.008.
+  - The injected code replaces tool output roughly one for one, so cache writes, the new text each
+    turn, barely move (−3.2%). At list prices they are 64% of laya-codex's bill ($6 per million
+    tokens for the one-hour cache); cache re-reads are 12% and output 24%.
+  - Most of that is Claude Code's own per-session context and Claude's answers, which both arms
+    pay. The next ideas checked offline (skip low-confidence code; inject the follow-up's lookups)
+    come to about 1% each, so −50% is not in reach of the injection alone.
+- **Time follows output.** Each 1,000 output tokens adds about 7.6 s (R² 0.82), whoever found the
+  code; laya-codex cuts output 25.6%.
+- **Pull is met.** Grep fell from 4.2 to 0.8 per session and total tool calls to 2.3, the lever's
+  success line (Grep ≤ 1, ≈ 2 calls).
 - **Tokens read plus injected (reported beside cost): the injection cancels the reading savings.**
-  - Claude reads 32% less, but the injected code (about 1.7k tokens per session) brings the total
-    back above stock.
+  - Claude reads 57% less, but the injected code (about 1.8k tokens per session) brings the total
+    back above stock (+9.5%, n.s.).
   - The retrained reranker (laya-code-r1) ranks the right code higher, 70 vs 62 of 115 offline.
   - Showing less of each block does not help. v11 cut the injection 27% with 18-line windows, and
     Claude read 23% more to see the rest: read + injected rose 10.6%.
@@ -128,3 +126,4 @@ Frozen (not developed unless this page changes):
 | 2026-09-27 | Release v0.4.0 with laya-code-r1, published as revision `25f97e5` on a separate `r1` branch of the Hugging Face repo (main keeps the first model) and pinned by the installer |
 | 2026-09-28 | Park the smaller injection (18-line windows, no first-prompt uses): it passed the offline replay but raised read + injected 10.6% in benchmark v11, because Claude read the rest of each block. Not merged; v0.4.0 ships without it |
 | 2026-09-29 | The token goal becomes cost per session −50% against stock, with no quality loss. Stock Claude Code 2.1.284 on Sonnet 5.5 reads about half the code it did in v10 (Sonnet 5), which puts −50% of read plus injected below laya-codex's injection alone. Read plus injected stays reported. The −30% time goal is kept until all 60 tasks are re-measured on current Claude Code. Every ranking is recorded locally by default (`laya-codex capture`, merged after v0.4.0). Answering Grep or Read through laya-codex may be explored again (reverses the 2026-09-24/25 rule). Stronger "answer from the shown code" wording failed a pilot (tokens −3%, a gold file lost) and is not merged. The next decisive run is all 60 tasks on Sonnet 5.5 at medium effort, pinned by model id, with stock, laya-codex and keywords-only arms (estimate $26, cap $32) |
+| 2026-09-30 | Benchmark harness fixed: a task's prompts run in one live session (resuming per prompt charged laya-codex for rewriting the prompt cache in about half its sessions, v12), and benchmark repos stay out of the home directory (every session in every arm loaded the operator's `~/.claude/CLAUDE.md`). v13 on Sonnet 5.5: cost −13.7%, time −19.2%, first-question recall +0.154, both-question recall −0.024 (n.s.). Skipping low-confidence code (~0.3%) and injecting the follow-up's lookups (<1%) are not built. Whether −50% cost stays the goal is open |

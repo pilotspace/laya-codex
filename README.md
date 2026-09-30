@@ -2,8 +2,9 @@
 
 # laya-codex
 
-**Claude Code gets the right code with your prompt. In benchmark v10: 9% lower cost, 34% fewer
-turns, 12% less time and better first answers; code read plus injected +6% (not significant).**
+**Claude Code gets the right code with your prompt. In benchmark v13 on Claude Sonnet 5.5: 14%
+lower cost, 19% less time, 46% fewer turns and better first answers; code read plus injected +10%
+(not significant).**
 
 laya-codex indexes your repository on your machine and, before Claude starts each task, gives it the
 code that task needs. Claude skips most of the grep-and-open-files hunt.
@@ -16,7 +17,7 @@ code that task needs. Claude skips most of the grep-and-open-files hunt.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-savings-dark.svg">
-  <img alt="laya-codex vs stock Claude Code: cost, code tokens reaching Claude and turns. Paired benchmark v10, 51 tasks on moon, httpx and hono, claude-sonnet-5 at medium effort, 95% confidence intervals: cost −8.8%; code read plus injected +6.2% (not significant); code-reading tokens −32.0%; turns −33.6%; total input tokens −21.7%; output tokens −19.8%; wall-clock time −12.0%" src="docs/assets/benchmark-savings-light.svg" width="760">
+  <img alt="laya-codex vs stock Claude Code: cost, code tokens reaching Claude and turns. Paired benchmark v13, 60 tasks on moon, httpx and hono, claude-sonnet-5-5 at medium effort, 95% confidence intervals: cost −13.7%; code read plus injected +9.5% (not significant); code-reading tokens −57.0%; turns −45.5%; total input tokens −31.7%; output tokens −25.6%; wall-clock time −19.2%" src="docs/assets/benchmark-savings-light.svg" width="760">
 </picture>
 
 </div>
@@ -73,7 +74,7 @@ helping from the next prompt. To check the setup, run `laya-codex doctor --repo 
 |---|---|---|
 | **What Claude has before its first turn** | Only your prompt | Your prompt, plus the function that does the check (`check_target`), its code, and the line that calls it |
 | **What Claude does first** | Searches with grep and opens files until it finds the check | Reads the check it was given and starts fixing it |
-| **Turn at which a correct file is in context** (benchmark v10 median, 51 tasks) | 4 | **0** (43 of 51 tasks) |
+| **Turn at which a correct file is in context** (benchmark v13 median, 60 tasks) | 4 | **0** (52 of 60 tasks) |
 
 What laya-codex added to the prompt, trimmed from real output on this repository:
 
@@ -91,17 +92,17 @@ Definitions and uses:
 - crates/laya-cli/src/init.rs:472: check_target(root, &root_canon, path)?; — use of `check_target`
 ````
 
-Across the whole benchmark, stock Claude Code reached a correct file at turn 2 at the earliest, and at turn 4 in the median task.
-laya-codex had one in context before Claude's first turn in most tasks:
+Across the whole benchmark, stock Claude Code reached a correct file at turn 4 in the median task,
+and never in 19 of 60 tasks. laya-codex had one in context before Claude's first turn in 52 of 60:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-journey-dark.svg">
-  <img alt="Share of 51 tasks with a correct file in Claude's context by turn: with laya-codex 43 of 51 before the first turn (median turn 0); stock Claude Code starts at turn 2 (median 4); laya-codex's first correct Read has median 4" src="docs/assets/benchmark-journey-light.svg" width="760">
+  <img alt="Share of 60 tasks with a correct file in Claude's context by turn (benchmark v13): with laya-codex 52 of 60 before the first turn (median turn 0); stock Claude Code median turn 4; most laya-codex tasks never needed to Read a correct file because it arrived with the prompt" src="docs/assets/benchmark-journey-light.svg" width="760">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-reads-dark.svg">
-  <img alt="Finding the right code, 51 paired tasks, stock vs laya-codex: relevant code found 78% → 81%, median turn the right code arrives 4 → 0, Reads on relevant code 56% → 51%, wasted read tokens 1,267 → 938" src="docs/assets/benchmark-reads-light.svg" width="760">
+  <img alt="Finding the right code, benchmark v13, 60 paired tasks, stock vs laya-codex: relevant code found 50% → 78%, median turn the right code arrives 4 → 0, Reads on relevant code 70% → 76%, wasted read tokens 278 → 102" src="docs/assets/benchmark-reads-light.svg" width="760">
 </picture>
 
 **More examples** in [docs/use-cases.md](docs/use-cases.md):
@@ -114,14 +115,14 @@ laya-codex had one in context before Claude's first turn in most tasks:
 ## Why you might want it
 
 - **Claude starts with the right code.** The code a task needs arrives with the prompt, so Claude
-  skips most of the grep-and-open-files hunt: 34% fewer turns, 41% fewer tool calls (Greps fall
-  from 5.3 to 2.0 per session), 12% less time. It is not free: the injected code (about 1.7k
-  tokens per session) makes code read plus injected +6% (not significant).
-- **Lower bills.** A session costs 9% less (−16% … −2%), with 22% fewer input tokens and 20% fewer
+  skips most of the grep-and-open-files hunt: 46% fewer turns, 2.3 tool calls per session instead
+  of 5.9 (Greps fall from 4.2 to 0.8), 19% less time. It is not free: the injected code (about
+  1.8k tokens per session) makes code read plus injected +10% (not significant).
+- **Lower bills.** A session costs 14% less (−18% … −9%), with 32% fewer input tokens and 26% fewer
   output tokens, so the context window fills more slowly.
 - **Better first answers.** On the first question of each task, Claude named the right files more
-  often (answer recall 0.76 → 0.90). Over both questions recall did not change significantly
-  (0.95 → 0.94).
+  often (answer recall 0.73 → 0.88). Over both questions recall did not change significantly
+  (0.95 → 0.93).
 - **Nothing to learn.** It runs through Claude Code's own hooks. You keep prompting as usual.
 - **Everything stays on your machine.** Indexing and ranking run locally, with no server, account or
   telemetry. Only the code laya-codex adds to a prompt goes to Anthropic, the same way code Claude
@@ -136,47 +137,56 @@ three open-source repositories: [moon](https://github.com/pilotspace/moon) (Rust
 [httpx](https://github.com/encode/httpx) (Python) and [hono](https://github.com/honojs/hono)
 (TypeScript), none of them used in training. Each task comes from a commit in the repository's
 history, and each session asks two questions: where the change goes, then which tests cover it.
-Both arms use the same model (Claude Sonnet 5, `claude-sonnet-5`, at medium effort, Claude Code
-2.1.281), and all numbers are paired, with 95%
-bootstrap confidence intervals. This is benchmark v10 (2026-09-27): laya-codex with the retrained
-laya-code-r1 model, 51 tasks (moon stopped at its cost cap after 15 tasks, and 4 of those were
-dropped because a Claude API session hung for up to 4 hours in every arm).
+Both arms use the same model (Claude Sonnet 5.5, `claude-sonnet-5-5`, at medium effort, Claude
+Code 2.1.284), and all numbers are paired, with 95% bootstrap confidence intervals. This is
+benchmark v13 (2026-09-30): laya-codex 0.4.0 plus the changes since (the per-file candidate cap
+and request capture), with the laya-code-r1 model, all 60 tasks, no stalls. Each task's two
+prompts run in one live session, as you would type them.
 
-| vs stock Claude Code | change | 95% CI |
-|---|---|---|
-| Cost (goal: −50%) | **−8.8%** | −16.3% … −1.9% |
-| Code read + code injected | +6.2% | −11.3% … +26.3%, not significant |
-| Code-reading tokens | **−32.0%** | −47.0% … −15.0% |
-| Total input tokens | **−21.7%** | −35.1% … −6.4% |
-| Output tokens | **−19.8%** | −26.8% … −12.3% |
-| Wall-clock time (goal: −30%) | **−12.0%** | −19.1% … −4.4% |
-| Turns | **−33.6%** | −40.4% … −26.5% |
-| Tool calls per session | **9.0 → 5.3** | Grep 5.3 → 2.0; laya-codex `search` 1.0 |
-| Answer recall, first question | **0.90 vs 0.76** | difference +0.07 … +0.22 |
-| Answer recall, both questions | 0.94 vs 0.95 | difference −0.07 … +0.03, not significant |
+| vs stock Claude Code, per session | stock | laya-codex | change | 95% CI |
+|---|---|---|---|---|
+| Cost (goal: −50%) | $0.128 | $0.110 | **−13.7%** | −17.8% … −9.1% |
+| Code read + code injected | 2,755 | 3,017 | +9.5% | −1.6% … +22.6%, not significant |
+| Code-reading tokens | 2,755 | 1,184 | **−57.0%** | −65.2% … −47.8% |
+| Total input tokens | | | **−31.7%** | −37.3% … −25.0% |
+| Output tokens | | | **−25.6%** | −28.9% … −22.2% |
+| Wall-clock time (goal: −30%) | 23.2 s | 18.7 s | **−19.2%** | −23.3% … −14.7% |
+| Turns | 7.9 | 4.3 | **−45.5%** | −49.8% … −40.7% |
+| Tool calls | 5.9 | 2.3 | | Grep 4.2 → 0.8; laya-codex `search` 0.8 |
+| Answer recall, first question | 0.73 | 0.88 | **+0.15** | +0.08 … +0.23 |
+| Answer recall, both questions | 0.95 | 0.93 | −0.02 | −0.08 … +0.02, not significant |
 
-Code reading fell on every repository (−26% on moon, −38% on httpx, −38% on hono), but on httpx
-and hono the injected code outweighs it in tokens (read + injected +21.8% and +15.7%). Cost there
-was +0.3% and −5.5%, both not significant.
+By repository, cost fell 22% on moon (−28% … −15%) and 11% on hono (−18% … −3%); on httpx it did
+not change significantly (+4%, −4% … +14%), because stock Claude already finds httpx code in a few
+calls and the injected code costs about what it saves. Code reading fell everywhere (−72%, −38%,
+−45%).
 
-Cost falls less than input tokens because most of the input saving is in cache reads (−25%),
-which are billed at a tenth of the input price. Cache writes, the new text each turn (Claude
-Code's own instructions and tools, tool output and the injected code), are 45% of the bill and did
-not move (+1.8%).
+The saving comes from fewer API calls, not fewer tokens: the injected code replaces tool output
+roughly one for one, and every call it avoids re-reads the conversation and writes an answer. At
+list prices the bill is 64% cache writes (the new text each turn), 12% cache re-reads and 24%
+output.
+
+**Two benchmark bugs, fixed before this run.** Earlier runs resumed the session for the second
+prompt (`claude -p --resume`). When laya-codex's code let Claude answer the first prompt in one
+call, the resumed request missed the prompt cache and paid to rewrite the whole conversation, in
+about half of the laya-codex sessions and none of stock's; v12 measured cost +0.6% with it, v13
+−13.7% without it. And every session, in both arms, loaded the operator's personal
+`~/.claude/CLAUDE.md`. How we found them: [the write-up](docs/blog/2026-09-30-measuring-honestly.md).
 
 ### What limits this result, and what is next
 
 | limit | why | next |
 |---|---|---|
-| **Cost**: −8.8%; our −50% goal is not met | Cache writes (the new text each turn) are the largest part of the bill and did not move; the saving is mostly in cheap cache reads | Cut what is written each turn: Claude Code's own tool definitions, tool output and the injection |
-| **Tokens** (reported beside cost): code read + injected +6.2%, not significant | The injection (about 1.7k tokens per session) is as large as the reading it saves | Cut what Claude reads, not what it is shown: benchmark v11 showed less of each block, and Claude read 23% more |
-| **Time**: −12.0%; our −30% goal is not met | Claude now answers lookups with laya-codex `search` (1.0 per session) instead of Grep, but total tool calls stayed at about 5 per session, and time follows the tool calls and the output | Make one call answer more, so sessions need fewer of them |
-| **Model vs keywords**: no end-to-end difference | laya-code-r1 inlines more right files offline (70 of 115 vs 62 for keywords), but at 51 tasks the sessions show no significant difference (cost −4.0%, time −4.2%, code read + injected −1.6%, first-question recall 0.90 vs 0.91) | A larger run once the injection shrinks |
-| **Scope**: tasks that find and explain code, not edits; one model (Sonnet 5) | The `sonnet` alias has since moved to Sonnet 5.5, where stock Claude reads about half as much code (8-task re-baseline, 2026-09-29) | A full rerun on Sonnet 5.5; an edit-task pilot |
+| **Cost**: −13.7%; our −50% goal is not met | Most of a session's bill is Claude Code's own context and Claude's answers, which both arms pay; laya-codex saves the calls it avoids (2.3 instead of 5.9) | Offline checks of the next ideas found ≤ 1% each (skipping low-confidence code, injecting follow-up lookups); the goal itself is under review |
+| **Tokens** (reported beside cost): code read + injected +9.5%, not significant | The injection (about 1.8k tokens per session) replaces the reading it saves roughly one for one | Showing less of each block made Claude read more (benchmark v11) |
+| **Time**: −19.2%; our −30% goal is not met | Time follows how much Claude writes (7.6 s per 1,000 output tokens, R² 0.82) | Fewer, shorter answers |
+| **httpx**: cost +4%, not significant | Stock Claude already finds httpx code in a few calls; Laya is least sure there (every injection it scored below p 0.1 was httpx) | — |
+| **Model vs keywords**: no end-to-end difference | laya-code-r1 inlines more right files offline (70 of 115 vs 62 for keywords), but sessions show no significant difference: v10 on Sonnet 5 (cost −4.0%, first-question recall 0.90 vs 0.91) and v12 on Sonnet 5.5 (cost −0.2%, time +5.3%) | — |
+| **Scope**: tasks that find and explain code, not edits; one model per run | — | An edit-task pilot |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/insight-time-dark.svg">
-  <img alt="Scatter of 153 benchmark v10 sessions: wall-clock time rises about 12.7 s per 1,000 output tokens (R² 0.84), with stock and laya-codex sessions on the same line" src="docs/assets/insight-time-light.svg" width="760">
+  <img alt="Scatter of 120 benchmark v13 sessions: wall-clock time rises about 7.6 s per 1,000 output tokens (R² 0.82), with stock and laya-codex sessions on the same line" src="docs/assets/insight-time-light.svg" width="760">
 </picture>
 
 <picture>
@@ -185,15 +195,15 @@ not move (+1.8%).
 </picture>
 
 The report behind these, with every number and the plan for the next run:
-[docs/RESULTS.md](docs/RESULTS.md#benchmark-v10-2026-09-27-the-refocus-release).
+[docs/RESULTS.md](docs/RESULTS.md#benchmark-v13-2026-09-30-sonnet-55-one-live-session-per-task).
 
 Full method, per-repository results, the model-vs-keywords comparison and raw data:
 [docs/RESULTS.md](docs/RESULTS.md). To regenerate the charts:
 
 ```sh
 cd scripts
-python3 charts.py ../bench/results/headline-v10.json ../docs/assets
-python3 insight_charts.py ../bench/results/claude-v10/nostall ../docs/assets --arm laya --run-label "benchmark v10" \
+python3 charts.py ../bench/results/headline-v13.json ../docs/assets
+python3 insight_charts.py ../bench/results/claude-v13 ../docs/assets --arm laya --run-label "benchmark v13" \
     --before ../bench/results/replay-2026-09-24/ab-rank.jsonl v030 v0.3.0 \
     --after ../bench/results/replay-2026-09-26-r1/replay.jsonl candidate v0.4.0
 ```
@@ -281,7 +291,10 @@ same build with the model switched off. The model ranked all 102 of its arm's pr
 - Over 51 tasks, no measure differed significantly: cost −4.0% (−11.2% … +4.3%), code read plus
   injected −1.6% (−11.1% … +8.2%), wall-clock −4.2% (−19.1% … +12.3%), first-question recall
   0.90 vs 0.91.
-- Offline, laya-code-r1 inlines more right files than keywords (70 of 115 vs 62); 51 tasks are
+- Benchmark v12 repeated the comparison on Sonnet 5.5 over 60 tasks: again no significant
+  difference in cost (−0.2%, −3.1% … +2.9%) or first-question recall (0.90 vs 0.88); sessions with
+  the model took 5% longer (+1.0% … +9.9%).
+- Offline, laya-code-r1 inlines more right files than keywords (70 of 115 vs 62); 51–60 tasks are
   too few to see that in sessions.
 - Earlier runs (benchmark v2) found the model 13% slower, but did not record how many prompts it
   actually ranked; see
@@ -298,7 +311,7 @@ top item on the roadmap. To rank by keywords only, set `LAYA_CODEX_NO_MODEL=1` o
 <details>
 <summary><b>What does it cost to run?</b></summary>
 
-- **Money:** nothing. laya-codex is free and runs locally, and it lowers what you pay Claude (−8.8% per session in benchmark v10, 95% CI −16.3% … −1.9%).
+- **Money:** nothing. laya-codex is free and runs locally, and it lowers what you pay Claude (−13.7% per session in benchmark v13, 95% CI −17.8% … −9.1%).
 - **Disk:** about 45 MB for the binaries and about 850 MB for the model.
 - **Memory:** the daemon uses about 1 GB of RAM while it is running.
 
@@ -399,11 +412,13 @@ contains your prompts and code, so review it before attaching it to an
 - **v0.2.0:** one name everywhere: the CLI is `laya-codex` (was `laya`), env vars are
   `LAYA_CODEX_*`; a Homebrew formula; the plugin, crash isolation and daemon limits from 0.1.x.
 - **Next:**
-  - lower cost per session (the −50% cost goal), with code read plus injected reported beside
-    it: most of the bill is the new text written each turn, and showing less of each block made
-    Claude read more (benchmark v11);
-  - fewer tool calls per session, so time falls further (the −30% time goal);
-  - turning the retrained model's better offline ranking into an end-to-end gain (benchmark v10 shows none yet);
+  - lower cost per session (the −50% cost goal; −13.7% in benchmark v13), with code read plus
+    injected reported beside it. Offline checks of the next ideas found about 1% each, so the goal
+    itself is under review;
+  - less time per session (the −30% time goal; −19.2% in benchmark v13): time follows how much
+    Claude writes;
+  - turning the retrained model's better offline ranking into an end-to-end gain (benchmarks v10
+    and v12 show none yet);
   - compacting Moon's data log automatically (it reached 4.1 GB during the benchmark);
   - a faster model for Linux.
 

@@ -274,24 +274,24 @@ plus an outline. In benchmark v3 that fired on no Read at all, because Claude re
 
 Without laya-codex, Claude Code finds code by searching: Grep, Glob, then whole-file Reads, many of
 them of the wrong file. laya-codex front-loads a small, ranked answer (about 1.5–2.5k tokens), so
-fewer of those steps happen. From [RESULTS.md](RESULTS.md) (benchmark v10: v0.4.0 with
-laya-code-r1 vs stock Claude Code, 51 paired tasks on moon, httpx and hono, two prompts per
-session, Claude Sonnet 5 at medium effort):
+fewer of those steps happen. From [RESULTS.md](RESULTS.md) (benchmark v13: laya-codex with
+laya-code-r1 vs stock Claude Code, 60 paired tasks on moon, httpx and hono, two prompts in one
+session, Claude Sonnet 5.5 at medium effort):
 
 | per session | stock Claude Code | with laya-codex |
 |---|---|---|
-| cost | $0.176 | $0.160 (−8.8%, CI −16.3%…−1.9%) |
-| code read + injected | 4,635 tokens | 4,924 (+6.2%, not significant) |
-| code-reading tokens (Read/Grep/Glob/`search` output) | 4,635 | 3,151 (−32.0%, CI −47.0%…−15.0%) |
-| wall-clock | 38.3 s | 33.7 s (−12.0%, CI −19.1%…−4.4%) |
-| turns | 100% | −33.6% (CI −40.4%…−26.5%) |
-| tool calls | 9.0 | 5.3 |
-| correct code in context before the first turn | 0 of 51 tasks | 43 of 51 tasks |
-| answer recall, first prompt / both prompts | 0.758 / 0.953 | 0.904 / 0.940 |
+| cost | $0.128 | $0.110 (−13.7%, CI −17.8%…−9.1%) |
+| code read + injected | 2,755 tokens | 3,017 (+9.5%, not significant) |
+| code-reading tokens (Read/Grep/Glob/`search` output) | 2,755 | 1,184 (−57.0%, CI −65.2%…−47.8%) |
+| wall-clock | 23.2 s | 18.7 s (−19.2%, CI −23.3%…−14.7%) |
+| turns | 7.9 | 4.3 (−45.5%) |
+| tool calls | 5.9 | 2.3 |
+| correct code in context before the first turn | 0 of 60 tasks | 52 of 60 tasks |
+| answer recall, first prompt / both prompts | 0.726 / 0.954 | 0.881 / 0.931 |
 
-The injected text itself costs tokens. It roughly cancels the reading it saves (reading plus
-injected tokens: +6.2%, not significant, pooled). Cost still falls, because the saving is mostly
-in turns: fewer turns re-read less of the cached conversation. That is why the injection is capped at 9,500 characters and adaptive mode never re-sends
+The injected text itself costs tokens. It roughly replaces the reading it saves (reading plus
+injected tokens: +9.5%, not significant, pooled). Cost still falls, because the saving is in API
+calls: each call avoided re-reads less of the cached conversation and writes no answer. That is why the injection is capped at 9,500 characters and adaptive mode never re-sends
 code. Inlining more saved little and cost more.
 
 ## 7. Tuning

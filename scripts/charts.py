@@ -49,9 +49,9 @@ def savings(d, t):
     title = d.get("chart_title", "With laya-codex, Claude Code spends less on every measure")
     body = [
         text(24, 32, title, 17, t["fg"], weight="600"),
-        text(24, 54, f"Paired change vs stock Claude Code · {d['n_tasks']} tasks · {', '.join(d['repos'])} · "
+        text(24, 54, f"{d['n_tasks']} paired tasks · {', '.join(d['repos'])} · "
                      f"{d['model']}" + (f" · {d['effort']} effort" if d.get("effort") else "") +
-                     " · 95% bootstrap CI" + (" · grey = no significant change" if more else ""),
+                     " · 95% CI" + (" · grey = not significant" if more else ""),
              12, t["muted"]),
     ]
     for tick in range(-int(more), int(less * 1.08) + 1):
@@ -115,6 +115,11 @@ def median(xs):
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
 
 
+def turn_label(x):
+    """A median turn for a legend: 'never' when the median task never got there."""
+    return "never" if x == float("inf") else f"{x:g}"
+
+
 def journey(d, t):
     """Step lines: share of tasks with a correct file in Claude's context by each turn."""
     j = d["journey"]
@@ -162,9 +167,9 @@ def journey(d, t):
 
     lx, ly = sx(8.6), sy(0.36)
     legend = (
-        (t["laya"], "", 3, f"laya-codex: correct code in context (median turn {median(j['laya_seen']):g})"),
-        (t["laya"], "6 5", 2, f"laya-codex: first correct Read (median {median(j['laya_read']):g})"),
-        (t["base"], "", 3, f"stock Claude Code (median {median(j['baseline']):g})"),
+        (t["laya"], "", 3, f"laya-codex: correct code in context (median turn {turn_label(median(j['laya_seen']))})"),
+        (t["laya"], "6 5", 2, f"laya-codex: first correct Read (median {turn_label(median(j['laya_read']))})"),
+        (t["base"], "", 3, f"stock Claude Code (median {turn_label(median(j['baseline']))})"),
     )
     for k, (color, dash, width, label) in enumerate(legend):
         y = ly + k * 20
