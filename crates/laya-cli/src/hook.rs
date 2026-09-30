@@ -133,6 +133,12 @@ fn user_prompt(prompt: &str, session: &str, ctx: &HookCtx) -> Outcome {
             ..Outcome::skip("no_spans")
         };
     }
+    if laya_rank::low_confidence(&result) {
+        return Outcome {
+            rank,
+            ..Outcome::skip("low_confidence")
+        };
+    }
     let text = if let Some(text) = rendered {
         if text.is_empty() {
             return Outcome {
@@ -373,6 +379,33 @@ mod tests {
             scored: 10,
             offered: 10,
             related: vec![],
+        }
+    }
+
+    #[test]
+    fn an_unsure_ranking_sends_nothing_and_says_why() {
+        let prompt = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is wal replay done"});
+        let unsure = res(vec![
+            span("src/a.rs", 1, 20, 0.15),
+            span("src/b.rs", 1, 9, 0.05),
+        ]);
+        // Rendered by the hook itself, and rendered (as nothing) by the daemon.
+        for (compact, rendered) in [(false, None), (true, Some(String::new()))] {
+            let mut f = fake(Some(unsure.clone()), 0);
+            f.rendered = rendered;
+            let c = HookCtx {
+                compact,
+                adaptive: compact,
+                ..ctx(&f)
+            };
+            let o = handle(&prompt, &c);
+            assert_eq!(o.action, "low_confidence");
+            assert_eq!(o.output, None);
+            assert_eq!(
+                o.rank.map(|r| r.mode),
+                Some("laya"),
+                "the ranking is still logged"
+            );
         }
     }
 

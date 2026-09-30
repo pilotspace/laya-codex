@@ -361,6 +361,29 @@ pub fn sized_keys(ctx: &SizedContext) -> Vec<SpanKey> {
     ctx.full.iter().map(SpanKey::of).collect()
 }
 
+/// Laya's probability below which no candidate counts as relevant enough to inject.
+///
+/// In benchmark v13 the 5 of 60 first prompts whose best span scored below it were all httpx
+/// tasks where stock Claude Code finds the code in a few calls: the injection cost more than it
+/// saved on every one. Sending nothing there gave cost −14.8% (from −13.7%), wall-clock −20.5%
+/// (from −19.2%) and fewer code tokens, with recall unchanged or better (docs/RESULTS.md).
+pub const LOW_CONFIDENCE_P: f32 = 0.2;
+
+/// True when the model scored the spans and rates every one below [`LOW_CONFIDENCE_P`]: the prompt
+/// is then better left to Claude's own search. Keyword-only rankings carry no probability, so
+/// they are never judged low-confidence.
+pub fn low_confidence(result: &QueryResult) -> bool {
+    if result.mode != laya_core::RankMode::Laya || result.scored == 0 {
+        return false;
+    }
+    let best = result
+        .spans
+        .iter()
+        .filter_map(|s| s.p_relevant)
+        .reduce(f32::max);
+    best.is_some_and(|p| p < LOW_CONFIDENCE_P)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1014,5 +1037,45 @@ mod tests {
             render_sized(&ctx, 10_000),
             render_sized_with_keys(&ctx, 10_000).0
         );
+    }
+
+    fn scored(spans: Vec<RankedSpan>) -> QueryResult {
+        QueryResult {
+            scored: spans.len(),
+            offered: spans.len(),
+            ..result(RankMode::Laya, spans, vec![])
+        }
+    }
+
+    #[test]
+    fn low_confidence_when_the_model_rates_every_span_below_the_cut() {
+        let r = scored(vec![
+            span("a.py", 1, 9, "f", Some(0.15), 0.9),
+            span("b.py", 1, 9, "g", Some(0.04), 0.8),
+        ]);
+        assert!(low_confidence(&r));
+    }
+
+    #[test]
+    fn one_span_at_or_above_the_cut_keeps_the_injection() {
+        let r = scored(vec![
+            span("a.py", 1, 9, "f", Some(0.05), 0.9),
+            span("b.py", 1, 9, "g", Some(LOW_CONFIDENCE_P), 0.8),
+        ]);
+        assert!(!low_confidence(&r));
+    }
+
+    #[test]
+    fn without_model_scores_there_is_no_confidence_to_judge() {
+        // Keyword-only ranking (no model, or it ran out of time) always injects.
+        let lexical = result(
+            RankMode::Lexical,
+            vec![span("a.py", 1, 9, "f", None, 0.9)],
+            vec![],
+        );
+        assert!(!low_confidence(&lexical));
+        let unscored = scored(vec![span("a.py", 1, 9, "f", None, 0.9)]);
+        assert!(!low_confidence(&unscored));
+        assert!(!low_confidence(&scored(vec![])));
     }
 }

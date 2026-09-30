@@ -123,8 +123,15 @@ The pipeline has six steps. Each step is a function in `crates/laya-rank`.
 
 ## 3. What gets injected
 
-The rendered block has four parts, in this order, and never exceeds **9,500 characters**. Claude
-Code replaces hook output over 10,000 characters with a file preview.
+**Nothing, when the model is unsure.** If Laya scored the candidates and rates every one below
+0.2, the prompt gets no injection and nothing is recorded as sent; Claude searches as it would
+without laya-codex (the hook log says `low_confidence`). In benchmark v13 this was 5 of 60 first
+prompts, all httpx tasks where stock Claude Code finds the code in a few calls and the injection
+cost more than it saved. Keyword-only rankings have no probability and are always injected, and
+Claude's own `search` calls are always answered.
+
+Otherwise the rendered block has four parts, in this order, and never exceeds **9,500
+characters**. Claude Code replaces hook output over 10,000 characters with a file preview.
 
 - **Ranked locations**: up to 10 spans, grouped by file.
 - **Full code for the top 2 spans, one per file** (1 when the task is about a single function).

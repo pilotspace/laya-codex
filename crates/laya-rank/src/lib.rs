@@ -40,6 +40,7 @@ pub use signals::{
     FollowUpIntent, PromptSignals, content_terms, extract_signals, follow_up_intent, is_follow_up,
 };
 pub use sizing::{
-    DEFAULT_CAPS, SizeOpts, SizedContext, SizingCaps, SpanKey, follow_up_caps, is_prose_path,
-    render_sized, render_sized_with_keys, size_context, size_context_opts, sized_keys,
+    DEFAULT_CAPS, LOW_CONFIDENCE_P, SizeOpts, SizedContext, SizingCaps, SpanKey, follow_up_caps,
+    is_prose_path, low_confidence, render_sized, render_sized_with_keys, size_context,
+    size_context_opts, sized_keys,
 };

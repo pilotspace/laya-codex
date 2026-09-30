@@ -142,6 +142,27 @@ mentions (Claude thinks of them while answering the follow-up); and 12 for names
 about 1.0 s per session. That is below the bar, and no tuning can reach the uncovered 47, so
 the loop is not built.
 
+**Low-confidence gate: built, not yet benchmarked.** When Laya rates every returned span below
+0.2, the hook now injects nothing (`laya_rank::low_confidence`, hook action `low_confidence`).
+Replayed over v13, taking a gated session to behave like the stock one (plus the hook's first
+ranking), with 95% intervals from the paired bootstrap:
+
+| gate | prompts gated | cost | time | read + injected (pooled / repo-balanced) | first / both-question recall |
+|---|---|---|---|---|---|
+| none (v13) | 0 | −13.7% | −19.2% | +9.5% / +21.5% | +0.154 / −0.024 |
+| **top p < 0.2** | 5, all httpx | −14.8% [−19.1, −10.6] | −20.5% [−24.1, −16.6] | +5.1% / +14.9% | +0.171 / −0.007 |
+| top candidate is a test file | 14 | −13.1% | −15.0% | +1.0% / +8.6% | +0.051 / −0.028 |
+| oracle: skip the 19 tasks where the injection cost more | 19 | −17.4% | −19.4% | −9.3% / −3.8% | +0.081 / −0.011 |
+
+No hook-time signal separates the 19 losing tasks well (best AUC 0.70), so the gate recovers
+about a third of the oracle. The cut was picked on these 60 tasks, so it was checked on 60 new
+ones (`bench/tasks-heldout/`, the next commits of each repository, none in the benchmark set)
+with `bench/replay_hooks.py` and the real model. The build gates exactly the 5 predicted v13
+tasks. On the new tasks it gates 9 of 60 (httpx 4, hono 4, moon 1), and what it skips is
+mostly wrong: main's injection had a correct file inlined in 3 of the 9 gated tasks against 45
+of the 51 it keeps (v13: 1 of 5 against 51 of 55). Its effect on cost and time on new tasks
+needs a paired run.
+
 ## Benchmark v12 (2026-09-29): superseded, the harness charged laya-codex for cache misses
 
 The same build and model as v13, three arms (stock, laya-codex, keyword-only), 60 tasks, $23.15,

@@ -122,6 +122,7 @@ prompt. Check the setup with `laya-codex doctor --repo .`.
   server laya-codex runs for you; edits are re-indexed as Claude makes them.
 - **Rank:** [laya-code](https://huggingface.co/tindang/laya-code/tree/r1) re-ranks keyword
   candidates within a time budget. A busy machine re-ranks fewer; with no model, keywords rank alone.
+  If the model rates every candidate below 0.2, nothing is injected and Claude searches as usual.
 - **No repeats:** follow-ups skip code already sent or read whole. Claude's own Reads are never changed.
 - **`search` tool:** one MCP call returns a name's definition, callers and tests, with a note on
   whether the list is complete; a description returns ranked code.

@@ -203,6 +203,11 @@ impl Daemon {
         req: &RenderReq,
         follow_up: Option<FollowUpIntent>,
     ) -> (String, Vec<(String, u32, u32)>) {
+        // A prompt the model is unsure about is left to Claude's own search: send nothing and
+        // mark nothing as sent. Claude's direct `search` calls (no session) are always answered.
+        if session.is_some() && laya_rank::low_confidence(result) {
+            return (String::new(), Vec::new());
+        }
         if !req.adaptive {
             let text = laya_rank::render_compact_opts(result, 3, req.budget_tokens, req.related);
             return (text, Vec::new());
@@ -1351,12 +1356,51 @@ mod tests {
         assert_eq!(pointers, 2, "{second}");
     }
 
-    /// Every chunk gets the same low probability: far below any probability threshold.
+    /// Every chunk gets the same modest probability: below the retriever's 0.5 threshold, above
+    /// the low-confidence cut, so sizing (not the cut) decides what is sent.
     struct LowScorer;
     impl Scorer for LowScorer {
         fn score(&self, _task: &str, chunks: &[&Chunk]) -> laya_core::Result<Vec<f32>> {
+            Ok(vec![0.3; chunks.len()])
+        }
+    }
+
+    /// The model is unsure of every chunk: below the low-confidence cut.
+    struct UnsureScorer;
+    impl Scorer for UnsureScorer {
+        fn score(&self, _task: &str, chunks: &[&Chunk]) -> laya_core::Result<Vec<f32>> {
             Ok(vec![0.05; chunks.len()])
         }
+    }
+
+    #[test]
+    fn an_unsure_model_sends_nothing_and_marks_nothing_as_sent() {
+        let (d, repo) = daemon_with_files(WAL_FILES);
+        let d = production_daemon(d.store.clone());
+        *d.scorer.write().unwrap() = Some(Arc::new(UnsureScorer));
+        let (result, text) = ask_ranked(&d, &repo, "s", "where is the wal segment replayed");
+        assert_eq!(
+            result.mode,
+            laya_core::RankMode::Laya,
+            "the model ranked it"
+        );
+        assert!(
+            !result.spans.is_empty(),
+            "spans are still returned for the log"
+        );
+        assert!(text.is_empty(), "nothing is injected: {text}");
+        // Nothing was marked as sent: once the model is confident, the top-ranked file (which a
+        // render would have recorded as sent) is inlined. The prompt names four content terms so
+        // it is a new topic, not a follow-up with the smaller follow-up caps.
+        *d.scorer.write().unwrap() = Some(Arc::new(LowScorer));
+        let (_, text) = ask_ranked(
+            &d,
+            &repo,
+            "s",
+            "where is the wal segment replayed after a crash",
+        );
+        assert!(text.contains("### src/wal0.rs"), "{text}");
+        assert_eq!(blocks(&text), 2, "{text}");
     }
 
     /// The production daemon's ranking and sizing, with `LowScorer` as the model.
@@ -1447,7 +1491,7 @@ mod tests {
             laya_core::RankMode::Laya,
             "the model ranked it"
         );
-        assert!(result.spans.iter().all(|s| s.p_relevant == Some(0.05)));
+        assert!(result.spans.iter().all(|s| s.p_relevant == Some(0.3)));
         assert_eq!(blocks(&text), 2, "{text}");
         let inlined: Vec<&str> = text
             .lines()
