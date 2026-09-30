@@ -517,23 +517,36 @@ cargo test --workspace --release
 <details>
 <summary><b>Reproducing the benchmark</b></summary>
 
-Pinned commits and task sets are listed in [docs/RESULTS.md](docs/RESULTS.md) (v8). For each
-repository:
+Pinned commits and task sets are listed in [docs/RESULTS.md](docs/RESULTS.md) (v8). Before you
+run:
+- **Clone outside your home directory.** Claude Code reads `.claude/CLAUDE.md` in every folder
+  above the repo, including your home, so `run_bench` refuses a clone with a CLAUDE.md above it.
+- **Pin the model by id** (`--model claude-sonnet-5-5`, not the `sonnet` alias, which moves), and
+  set the effort.
+
+Each task's two prompts run in one live Claude session. For each repository:
 
 ```sh
 python3 bench/run_bench.py tasks --repo <clone> --skip 40 --n 20 [--code-only] --out bench/tasks-v8/<repo>.jsonl
 laya-codex index <clone>
 python3 bench/run_bench.py run --repo <clone> --tasks bench/tasks-v8/<repo>.jsonl \
-    --arms baseline,laya-adaptive,laya-lex --turns 2 --out /tmp/bench/<repo>
+    --arms baseline,laya:laya-adaptive --model claude-sonnet-5-5 --effort medium --turns 2 \
+    --max-total-usd 10 --out /tmp/bench/<repo>
 ```
 
-Then pool the three runs:
+Add `laya-lex:laya-lex` to `--arms` for the keyword-only comparison. Then pool the three runs and
+build the headline and charts:
 
 ```sh
-python3 bench/stats_pooled.py laya-adaptive baseline /tmp/bench/moon /tmp/bench/httpx /tmp/bench/hono
-python3 bench/read_accuracy.py /tmp/bench/moon bench/tasks-v8/moon.jsonl /tmp/bench/httpx bench/tasks-v8/httpx.jsonl \
-    /tmp/bench/hono bench/tasks-v8/hono.jsonl
+python3 bench/stats_pooled.py laya baseline /tmp/bench/moon /tmp/bench/httpx /tmp/bench/hono
+python3 bench/headline.py --out /tmp/bench/headline.json --version mine --arm laya --lex none --with-output \
+    --claude-model claude-sonnet-5-5 --effort medium --raw-root /tmp/bench \
+    --run /tmp/bench/moon bench/tasks-v8/moon.jsonl --run /tmp/bench/httpx bench/tasks-v8/httpx.jsonl \
+    --run /tmp/bench/hono bench/tasks-v8/hono.jsonl
+python3 scripts/charts.py /tmp/bench/headline.json /tmp/bench/charts
 ```
+
+Benchmark v13 cost $14.29 for 60 tasks × 2 arms on Sonnet 5.5.
 
 </details>
 
