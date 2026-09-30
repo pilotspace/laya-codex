@@ -39,6 +39,9 @@ them; keep both. Hooks always fail open.
 - The goals are cost per session −15% and wall-clock −20% vs stock, with first-question recall up
   and no both-question loss (docs/VISION.md). Also report code tokens read **plus** injected,
   quality (answer recall) and time: one table, so a gain on one is weighed against the others.
+- Judge the targets on held-out tasks (`bench/tasks-heldout`). `bench/tasks-v8` is where
+  laya-codex was tuned; use it as a regression check only. When two laya-codex arms run together,
+  quote the cost from `bench/recost.py cold`.
 - Record the rank mode (`laya`, `laya-partial`, `lexical`) for every prompt you compare.
 - Pin Claude by model id (e.g. `--model claude-sonnet-5-5`), not the `sonnet` alias: the alias moves
   to newer models between runs, and runs on different models are not comparable.
