@@ -1,0 +1,489 @@
+{
+ "sessions": 60,
+ "results": [
+  {
+   "rule": "ranked",
+   "cap": 25,
+   "budget": 2000,
+   "followups_with_lookups": 58,
+   "all_covered": 6,
+   "calls": 68,
+   "calls_removable": 7,
+   "list_chars_mean": 448,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 23,
+    "search-name: name has too many uses": 6,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 2,
+    "grep: list over budget": 8,
+    "search-words: list over budget": 1
+   }
+  },
+  {
+   "rule": "ranked",
+   "cap": 25,
+   "budget": 4000,
+   "followups_with_lookups": 58,
+   "all_covered": 6,
+   "calls": 68,
+   "calls_removable": 7,
+   "list_chars_mean": 448,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 23,
+    "search-name: name has too many uses": 6,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 2,
+    "grep: list over budget": 8,
+    "search-words: list over budget": 1
+   }
+  },
+  {
+   "rule": "ranked",
+   "cap": 25,
+   "budget": 7000,
+   "followups_with_lookups": 58,
+   "all_covered": 6,
+   "calls": 68,
+   "calls_removable": 7,
+   "list_chars_mean": 448,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 23,
+    "search-name: name has too many uses": 6,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 2,
+    "grep: list over budget": 8,
+    "search-words: list over budget": 1
+   }
+  },
+  {
+   "rule": "ranked",
+   "cap": 60,
+   "budget": 2000,
+   "followups_with_lookups": 58,
+   "all_covered": 10,
+   "calls": 68,
+   "calls_removable": 11,
+   "list_chars_mean": 625,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 23,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 1,
+    "grep: list over budget": 9,
+    "search-words: list over budget": 1,
+    "search-name: name has too many uses": 2
+   }
+  },
+  {
+   "rule": "ranked",
+   "cap": 60,
+   "budget": 4000,
+   "followups_with_lookups": 58,
+   "all_covered": 10,
+   "calls": 68,
+   "calls_removable": 11,
+   "list_chars_mean": 625,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 23,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 1,
+    "grep: list over budget": 9,
+    "search-words: list over budget": 1,
+    "search-name: name has too many uses": 2
+   }
+  },
+  {
+   "rule": "ranked",
+   "cap": 60,
+   "budget": 7000,
+   "followups_with_lookups": 58,
+   "all_covered": 10,
+   "calls": 68,
+   "calls_removable": 11,
+   "list_chars_mean": 625,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 23,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 1,
+    "grep: list over budget": 9,
+    "search-words: list over budget": 1,
+    "search-name: name has too many uses": 2
+   }
+  },
+  {
+   "rule": "ranked+inlined",
+   "cap": 25,
+   "budget": 2000,
+   "followups_with_lookups": 58,
+   "all_covered": 7,
+   "calls": 68,
+   "calls_removable": 8,
+   "list_chars_mean": 638,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 18,
+    "search-name: name has too many uses": 10,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 2,
+    "grep: list over budget": 8,
+    "search-words: name has too many uses": 1
+   }
+  },
+  {
+   "rule": "ranked+inlined",
+   "cap": 25,
+   "budget": 4000,
+   "followups_with_lookups": 58,
+   "all_covered": 7,
+   "calls": 68,
+   "calls_removable": 8,
+   "list_chars_mean": 638,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 18,
+    "search-name: name has too many uses": 10,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 2,
+    "grep: list over budget": 8,
+    "search-words: name has too many uses": 1
+   }
+  },
+  {
+   "rule": "ranked+inlined",
+   "cap": 25,
+   "budget": 7000,
+   "followups_with_lookups": 58,
+   "all_covered": 7,
+   "calls": 68,
+   "calls_removable": 8,
+   "list_chars_mean": 638,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 18,
+    "search-name: name has too many uses": 10,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 2,
+    "grep: list over budget": 8,
+    "search-words: name has too many uses": 1
+   }
+  },
+  {
+   "rule": "ranked+inlined",
+   "cap": 60,
+   "budget": 2000,
+   "followups_with_lookups": 58,
+   "all_covered": 12,
+   "calls": 68,
+   "calls_removable": 13,
+   "list_chars_mean": 909,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 19,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 1,
+    "grep: list over budget": 9,
+    "search-words: name has too many uses": 1,
+    "search-name: name has too many uses": 3
+   }
+  },
+  {
+   "rule": "ranked+inlined",
+   "cap": 60,
+   "budget": 4000,
+   "followups_with_lookups": 58,
+   "all_covered": 12,
+   "calls": 68,
+   "calls_removable": 13,
+   "list_chars_mean": 936,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 18,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 1,
+    "grep: list over budget": 9,
+    "search-words: name has too many uses": 1,
+    "search-name: name has too many uses": 3
+   }
+  },
+  {
+   "rule": "ranked+inlined",
+   "cap": 60,
+   "budget": 7000,
+   "followups_with_lookups": 58,
+   "all_covered": 12,
+   "calls": 68,
+   "calls_removable": 13,
+   "list_chars_mean": 936,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 18,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 1,
+    "grep: list over budget": 9,
+    "search-words: name has too many uses": 1,
+    "search-name: name has too many uses": 3
+   }
+  },
+  {
+   "rule": "answer",
+   "cap": 25,
+   "budget": 2000,
+   "followups_with_lookups": 58,
+   "all_covered": 16,
+   "calls": 68,
+   "calls_removable": 18,
+   "list_chars_mean": 982,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: name has too many uses": 12,
+    "grep: name not mentioned in prompt 1": 18,
+    "search-name: list over budget": 1,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 10,
+    "search-words: name has too many uses": 1
+   }
+  },
+  {
+   "rule": "answer",
+   "cap": 25,
+   "budget": 4000,
+   "followups_with_lookups": 58,
+   "all_covered": 17,
+   "calls": 68,
+   "calls_removable": 19,
+   "list_chars_mean": 1009,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: name has too many uses": 12,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 10,
+    "search-words: name has too many uses": 1
+   }
+  },
+  {
+   "rule": "answer",
+   "cap": 25,
+   "budget": 7000,
+   "followups_with_lookups": 58,
+   "all_covered": 17,
+   "calls": 68,
+   "calls_removable": 19,
+   "list_chars_mean": 1009,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: name has too many uses": 12,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 10,
+    "search-words: name has too many uses": 1
+   }
+  },
+  {
+   "rule": "answer",
+   "cap": 60,
+   "budget": 2000,
+   "followups_with_lookups": 58,
+   "all_covered": 22,
+   "calls": 68,
+   "calls_removable": 24,
+   "list_chars_mean": 1435,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 4,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 8,
+    "search-words: name has too many uses": 1,
+    "search-name: name has too many uses": 3
+   }
+  },
+  {
+   "rule": "answer",
+   "cap": 60,
+   "budget": 4000,
+   "followups_with_lookups": 58,
+   "all_covered": 24,
+   "calls": 68,
+   "calls_removable": 26,
+   "list_chars_mean": 1841,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 8,
+    "search-words: name has too many uses": 1,
+    "search-name: name has too many uses": 3
+   }
+  },
+  {
+   "rule": "answer",
+   "cap": 60,
+   "budget": 7000,
+   "followups_with_lookups": 58,
+   "all_covered": 24,
+   "calls": 68,
+   "calls_removable": 26,
+   "list_chars_mean": 1941,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 8,
+    "search-words: name has too many uses": 1,
+    "search-name: name has too many uses": 3
+   }
+  },
+  {
+   "rule": "answer+ranked",
+   "cap": 25,
+   "budget": 2000,
+   "followups_with_lookups": 58,
+   "all_covered": 16,
+   "calls": 68,
+   "calls_removable": 18,
+   "list_chars_mean": 1209,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: name has too many uses": 12,
+    "grep: name not mentioned in prompt 1": 18,
+    "search-name: list over budget": 1,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 10,
+    "search-words: name has too many uses": 1
+   }
+  },
+  {
+   "rule": "answer+ranked",
+   "cap": 25,
+   "budget": 4000,
+   "followups_with_lookups": 58,
+   "all_covered": 17,
+   "calls": 68,
+   "calls_removable": 19,
+   "list_chars_mean": 1256,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: name has too many uses": 12,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 10,
+    "search-words: name has too many uses": 1
+   }
+  },
+  {
+   "rule": "answer+ranked",
+   "cap": 25,
+   "budget": 7000,
+   "followups_with_lookups": 58,
+   "all_covered": 17,
+   "calls": 68,
+   "calls_removable": 19,
+   "list_chars_mean": 1256,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: name has too many uses": 12,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 10,
+    "search-words: name has too many uses": 1
+   }
+  },
+  {
+   "rule": "answer+ranked",
+   "cap": 60,
+   "budget": 2000,
+   "followups_with_lookups": 58,
+   "all_covered": 22,
+   "calls": 68,
+   "calls_removable": 24,
+   "list_chars_mean": 1613,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "search-name: list over budget": 4,
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 8,
+    "search-words: name has too many uses": 1,
+    "search-name: name has too many uses": 3
+   }
+  },
+  {
+   "rule": "answer+ranked",
+   "cap": 60,
+   "budget": 4000,
+   "followups_with_lookups": 58,
+   "all_covered": 24,
+   "calls": 68,
+   "calls_removable": 26,
+   "list_chars_mean": 2146,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 8,
+    "search-words: name has too many uses": 1,
+    "search-name: name has too many uses": 3
+   }
+  },
+  {
+   "rule": "answer+ranked",
+   "cap": 60,
+   "budget": 7000,
+   "followups_with_lookups": 58,
+   "all_covered": 24,
+   "calls": 68,
+   "calls_removable": 26,
+   "list_chars_mean": 2258,
+   "today_prompt2_chars_mean": 1766,
+   "misses": {
+    "grep: name not mentioned in prompt 1": 18,
+    "Read (wants code)": 22,
+    "search-name: name not mentioned in prompt 1": 7,
+    "grep: name has too many uses": 8,
+    "search-words: name has too many uses": 1,
+    "search-name: name has too many uses": 3
+   }
+  }
+ ]
+}

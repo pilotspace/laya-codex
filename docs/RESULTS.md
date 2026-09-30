@@ -108,11 +108,39 @@ measured wall-clock.
   against 0.62 (1.46 s) on the first prompt.
 - **The hook costs 0.53 s per prompt** (p90 0.55 s, the model scoring 16 candidates every time),
   1.06 s per session, or 18% of the saving. v12's keyword-only arm was 5% faster than the model arm.
+  The follow-up re-ranks prompt 1's topic: in all 60 sessions its request capture has the same
+  focus, the same 24 candidates and identical probabilities. The benchmark scores every prompt
+  cold (`LAYA_CODEX_MEMO=0`, so arms can't share cached scores); in real use the daemon's
+  probability cache serves such a follow-up, so about 0.5 s of the 1.06 s is a benchmark cost
+  that users don't pay. The harness stays as it is, to keep runs comparable.
 - **httpx:** 11 of the 14 tasks where laya-codex was slower. Lookups fell only 8.2 → 5.1 s there,
   answers ran 1.0 s longer and the hook added 1.0 s.
 - **Against the −30% goal (≤ 16.2 s):** a session with no lookups and no hook would still take
   about 13.5 s (−42%). The remaining 2.5 s can only come from the follow-up's lookups (up to
   2.6 s) and the hook (up to 1.1 s); a smaller injection does not shorten the answers.
+
+**Follow-up completeness, checked offline and not built** (`bench/followup_completeness.py`;
+data: `bench/results/followup-completeness-v13.json`). Could the follow-up hook have spared
+Claude its lookups by injecting, for a set of names from prompt 1, every line that uses each name
+(file:line lists, no code), like a `search` name lookup does? The replay scans the benchmark
+checkouts for each name; the real `search` results fall inside the scan in 37 of 38 complete
+name queries. Pass bar, set before the run: every lookup covered in at least 69% of follow-ups
+(the earlier check of injecting the callers and tests of Claude's answer names reached 30 of 80).
+
+| names taken from prompt 1 | follow-ups with every lookup covered | lookup calls removable | list characters |
+|---|---|---|---|
+| ranked symbols | 10 of 58 | 11 of 68 | 625 |
+| ranked symbols + inlined definitions | 12 of 58 | 13 of 68 | 936 |
+| **Claude's first answer** (backticked names) | **24 of 58 (41%)** | **26 of 68** | 1,841 |
+| Claude's answer + ranked symbols | 24 of 58 | 26 of 68 | 2,146 |
+
+Per name at most 60 uses and at most 4,000 characters in all; today's whole follow-up
+injection averages 1,766 characters. Of the 96 follow-up tool calls, the best rule covers 37.
+It misses 22 Reads, which want code, not a list; 25 lookups for names that prompt 1 never
+mentions (Claude thinks of them while answering the follow-up); and 12 for names with more than
+60 uses. Even if Claude trusted file:line lists completely, the 26 removable calls come to
+about 1.0 s per session. That is below the bar, and no tuning can reach the uncovered 47, so
+the loop is not built.
 
 ## Benchmark v12 (2026-09-29): superseded, the harness charged laya-codex for cache misses
 
