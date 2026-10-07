@@ -39,12 +39,36 @@ def question(lst):
     return common.QUESTIONS[0].format(task=lst["focus"])
 
 
-def encode_list(tok, lst):
-    """[(ids, markers)] for every candidate of a list, exactly as the Rust scorer builds them."""
+def list_state_ids(tok, lst, cap=common.STATE_TOKENS):
+    """Per candidate, the first `cap` state tokens (`SequenceBuilder::encode_state(state, Some(cap))`) as int32
+    arrays: tokenized once, then sliced to any window <= cap (a prefix of the cap is the window's own encoding)."""
+    out = StateIds(cap)
+    for c in lst["candidates"]:
+        ids = common.state_ids(tok, common.render_state(c["path"], c["start"], c["end"], c["text"]), budget=cap)
+        out.append(np.asarray(ids, np.int32))
+    return out
+
+
+class StateIds(list):
+    """list_state_ids output: one int32 array per candidate, plus the cap they were cut to."""
+
+    def __init__(self, cap):
+        super().__init__()
+        self.cap = cap
+
+
+def build_list(tok, lst, sids, window=common.STATE_TOKENS, max_len=common.MAX_LEN):
+    """[(ids, markers)] for every candidate at a `window`-token state and the model's `max_len`, exactly as the
+    Rust scorer builds them with LAYA_CODEX_STATE_TOKENS=window. `sids` comes from list_state_ids."""
+    if window > sids.cap:
+        raise ValueError("window %d is beyond the %d state tokens kept" % (window, sids.cap))
     q = question(lst)
-    return [common.encode_ids(tok, q, common.state_ids(tok, common.render_state(c["path"], c["start"], c["end"],
-                                                                                  c["text"])))
-            for c in lst["candidates"]]
+    return [common.encode_ids(tok, q, a[:window].tolist(), max_len=max_len) for a in sids]
+
+
+def encode_list(tok, lst, window=common.STATE_TOKENS, max_len=common.MAX_LEN):
+    """[(ids, markers)] for every candidate of a list, exactly as the Rust scorer builds them."""
+    return build_list(tok, lst, list_state_ids(tok, lst, cap=window), window=window, max_len=max_len)
 
 
 def blend_order(p, w=W, score_top=SCORE_TOP):
@@ -108,3 +132,20 @@ def listwise_loss(margin, y):
     if total <= 0:
         return margin.sum() * 0.0
     return -(y / total * torch.log_softmax(margin, -1)).sum()
+
+
+def kd_loss(logits2, teacher_logits2, T, list_weight=1.0):
+    """Distillation from a teacher's calibrated probabilities over one list. `logits2`: the student's raw noul
+    logits [n, 2]; `teacher_logits2`: the teacher's raw logits [n, 2] and its noul temperature T.
+
+    pointwise: cross-entropy of the student's noul distribution against the teacher's P = sigmoid(margin_t / T)
+    (what the production blend consumes); listwise: cross-entropy of the student's list softmax of margins
+    against softmax(margin_t / T) (the teacher's ranking). Both are minimal at margin_s = margin_t / T."""
+    import torch
+    t = torch.as_tensor(teacher_logits2, dtype=torch.float32, device=logits2.device)
+    mt = (t[:, 1] - t[:, 0]) / T
+    pt = torch.sigmoid(mt)
+    loss = -(torch.stack([1 - pt, pt], -1) * torch.log_softmax(logits2, -1)).sum(-1).mean()
+    if list_weight:
+        loss = loss + list_weight * listwise_loss(logits2[:, 1] - logits2[:, 0], torch.softmax(mt, -1))
+    return loss

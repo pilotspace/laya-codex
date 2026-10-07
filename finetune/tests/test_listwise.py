@@ -69,3 +69,69 @@ def test_summarize_compares_models_on_the_same_lists():
     assert s["blend"]["file_r@1"] == 1.0 and s["lexical"]["file_r@1"] == 0.0
     assert s["model_only"]["file_r@1"] == 1.0
     assert s["n_lists"] == 3
+
+
+# ----------------------------------------------------------------------------- windows + distillation
+@pytest.fixture(scope="module")
+def tok():
+    import common
+    if not os.path.isfile(os.path.join(common.BASE_MODEL, "tokenizer", "tokenizer.json")):
+        pytest.skip("no laya tokenizer (set LAYA_CODEX_FT_BASE)")
+    from transformers import AutoTokenizer
+    return AutoTokenizer.from_pretrained(os.path.join(common.BASE_MODEL, "tokenizer"))
+
+
+def _lst():
+    body = "\n".join("value_%d = compute(%d)" % (i, i) for i in range(300))
+    return {"focus": "fix compute", "candidates": [
+        {"path": "a.py", "start": 1, "end": 300, "text": body, "label": 1.0},
+        {"path": "b.py", "start": 5, "end": 6, "text": "x = 1\ny = 2", "label": 0.0}]}
+
+
+def test_state_ids_are_cut_once_and_sliced_per_window(tok):
+    import common
+    lst = _lst()
+    sids = listwise.list_state_ids(tok, lst, cap=384)
+    assert len(sids[0]) == 384 and len(sids[1]) < 20
+    q = listwise.question(lst)
+    for w, ml in ((128, 512), (256, 704), (384, 704)):
+        want = [common.encode_ids(tok, q, common.state_ids(tok, common.render_state(
+            c["path"], c["start"], c["end"], c["text"]), budget=w), max_len=ml) for c in lst["candidates"]]
+        assert listwise.build_list(tok, lst, sids, window=w, max_len=ml) == want
+
+
+def test_encode_list_default_is_the_r1_view(tok):
+    lst = _lst()
+    assert listwise.encode_list(tok, lst) == listwise.build_list(
+        tok, lst, listwise.list_state_ids(tok, lst, cap=128), window=128, max_len=512)
+    assert listwise.encode_list(tok, lst, window=384, max_len=704) == listwise.build_list(
+        tok, lst, listwise.list_state_ids(tok, lst, cap=384), window=384, max_len=704)
+
+
+def test_build_list_refuses_a_window_beyond_the_cap(tok):
+    lst = _lst()
+    with pytest.raises(ValueError):
+        listwise.build_list(tok, lst, listwise.list_state_ids(tok, lst, cap=128), window=256, max_len=704)
+
+
+def test_kd_loss_is_minimal_at_the_calibrated_teacher():
+    import torch
+    t = torch.tensor([[0.0, 2.0], [0.0, -1.0], [0.5, 0.0], [0.0, 0.3]])
+    T = 0.8
+    best = torch.stack([torch.zeros(4), (t[:, 1] - t[:, 0]) / T], -1)  # student margin = teacher margin / T
+    s = best.clone().requires_grad_(True)
+    loss = listwise.kd_loss(s, t, T)
+    loss.backward()
+    assert s.grad.abs().max() < 1e-5
+    for other in (torch.zeros(4, 2), -best, best * 2):
+        assert listwise.kd_loss(other, t, T) > loss.detach() + 1e-4
+
+
+def test_kd_loss_pointwise_only_without_list_weight():
+    import torch
+    s = torch.tensor([[0.0, 1.0], [0.0, -1.0]])
+    t = torch.tensor([[0.0, 1.0], [0.0, 1.0]])
+    pt = torch.sigmoid(torch.tensor([1.0, 1.0]))
+    target = torch.stack([1 - pt, pt], -1)
+    want = -(target * torch.log_softmax(s, -1)).sum(-1).mean()
+    assert torch.allclose(listwise.kd_loss(s, t, 1.0, list_weight=0.0), want)

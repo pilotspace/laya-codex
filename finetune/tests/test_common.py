@@ -179,6 +179,46 @@ def test_encode_ids_keeps_only_the_state_budget(tok):
     assert len(ids) == len(head) + 128 and len(markers) == 2
 
 
+# ----------------------------------------------------------------------------- longer windows (student)
+def _long_state():
+    return common.render_state("x.py", 1, 400, "\n".join("value_%d = compute(%d)" % (i, i) for i in range(400)))
+
+
+def test_encode_ids_honours_the_model_max_len(tok):
+    # a long focus fills the head; at max_len 512 a 384-token window is cut, at 704 it is not
+    q = common.QUESTIONS[0].format(task=" ".join("word%d" % i for i in range(60)))
+    sids = common.state_ids(tok, _long_state(), budget=384)
+    head = common.encode_ids(tok, q, [])[0]  # ends with the state's closing [SEP]
+    cut, _ = common.encode_ids(tok, q, sids)
+    assert len(cut) == 512 and len(cut) - len(head) < 384
+    ids, markers = common.encode_ids(tok, q, sids, max_len=704)
+    assert ids == head[:-1] + list(sids) + [tok.sep_token_id] and len(markers) == 2
+
+
+def test_encode_ids_matches_reference_at_a_longer_max_len(tok):
+    sys.path.insert(0, BASE)
+    from rl_common import build_sequence
+    st = _long_state()
+    q = common.QUESTIONS[0].format(task="fix compute")
+    ids, markers = common.encode_ids(tok, q, common.state_ids(tok, st, budget=10_000), max_len=704)
+    ref_ids, ref_markers = build_sequence(tok, st, {"t": "noul", "ins": q, "crit": None}, 704, 192)
+    assert (ids, markers) == (ref_ids, ref_markers)
+    assert len(ids) == 704
+
+
+def test_required_max_len_never_cuts_the_window(tok):
+    # the head is at most HEAD_MAX_LEN tokens of question + options, plus [CLS] and two [SEP]; the state
+    # then needs its own closing [SEP]
+    assert common.required_max_len(384) == common.HEAD_MAX_LEN + 3 + 384 + 1 == 580
+    q = common.QUESTIONS[0].format(task=" ".join("word%d" % i for i in range(400)))
+    head = common.encode_ids(tok, q, [], max_len=10_000)[0]
+    assert len(head) == common.HEAD_MAX_LEN + 3 + 1
+    for w in (128, 256, 384):
+        sids = common.state_ids(tok, _long_state(), budget=w)
+        ids, markers = common.encode_ids(tok, q, sids, max_len=common.required_max_len(w))
+        assert ids[-w - 1:-1] == list(sids) and len(markers) == 2
+
+
 def test_is_fix_commit():
     assert common.is_fix("fix(tui): handle resize of the viewport", "")
     assert common.is_fix("Handle empty frames in the decoder", "Fixes #123")
