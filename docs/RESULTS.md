@@ -1,4 +1,4 @@
-# laya-codex — results (updated 2026-09-30)
+# laya-codex — results (updated 2026-10-07)
 
 All numbers are reproducible from this repo; raw per-run rows are in `bench/results/`.
 Hardware: Apple M4 Pro, 24 GB. Agent: Claude Code (version per run), model `sonnet` alias at
@@ -18,6 +18,86 @@ harness added them, so every two-prompt session was charged prompt 1 twice (v14 
   Their dollar figures would then be about 1.6× too high, and their cost changes over-weight
   prompt 1: v13 moved from −13.7% to −14.8%, and v12 from +0.6% to +7.7%.
 - **Tokens, turns, time and recall** never came from that field and are unaffected.
+
+## Follow-up picks (2026-10-07): not built
+
+**The question.** The 2026-09-30 replay (v13 below) chose by rule which names' lists the follow-up
+hook would inject, and covered too little. Could a picker that sees the follow-up question, such as
+the Laya model, choose what to inject so that Claude skips its follow-up lookups? Before building
+one, we bounded it with an oracle that knows which lookups Claude will make. The bar was set before
+the replay: cover at least 50% of the follow-up's lookup calls, and be cost-neutral (added
+injection cost below calls removed × $0.005).
+
+**Method.** `bench/followup_picks.py` (tests: `bench/test_followup_picks.py`; data:
+`bench/results/followup-picks-v13-v14.json`) replays the laya-codex sessions of v13 (tuned tasks)
+and v14 (held-out tasks) against the benchmark checkouts, offline:
+- **Candidates:** the names Claude put in backticks in its first answer, plus the definitions
+  prompt 1 inlined, about 19 names per session.
+- **What could be injected:** each candidate's `file:lines` list (the `search` name-lookup rules),
+  and code snippets for Reads whose range holds a use of a candidate.
+- **Coverage:**
+  - a `search` or Grep is covered if every name it asks for has its list in the lookup's scope;
+  - a model call is removable if every tool use in it is covered (the 2026-09-30 rule).
+- **Name parsing, fixed from 2026-09-30:**
+  - `\bparse` was read as `bparse`;
+  - `content-type` and `middleware/etag` were split into words;
+  - a `fn test_` Grep counted `test_` as a name.
+
+**Calls removable, out of the follow-up's lookup calls** (budget = injected characters per
+follow-up; the pass bar is 50%):
+
+| picker | 1k | 2k | 4k | 8k | no limit |
+|---|---|---|---|---|---|
+| oracle, v13 + v14 (138 calls) | 36% | 46% | **53%** [44, 62] | 57% | 59% |
+| oracle, held-out v14 (70 calls) | 29% | 36% | **40%** [28, 52] | 46% | 51% |
+| oracle, the planned shape (lists + at most 1 snippet), v13 + v14 | 36% | 44% | 48% | 49% | 52% |
+| perfect picker of at most 3 names (whole lists), v13 + v14 | – | 33% | 37% | 38% | – |
+| best of six rules without a model, v13 + v14 | 22% | 28% | 33% | 41% | – |
+
+95% bootstrap CIs over sessions are in brackets. The 2026-09-30 bar was every lookup covered in
+69% of follow-ups. The oracle covers every lookup in 37 of 58 v13 follow-ups at 4k chars, and 19 of
+54 in v14.
+
+**Why the oracle misses** (v13 + v14, 197 follow-up tool uses, oracle at 8k chars):
+
+| outcome | uses | share |
+|---|---|---|
+| covered | 128 | 65% |
+| a name Claude first thinks of on the follow-up (not in its answer or any injection) | 46 | 23% |
+| a generic word (more than 100 uses) | 7 | 4% |
+| a Grep for test or definition structure only | 4 | 2% |
+| a list over 8k chars by itself | 4 | 2% |
+| a name only in the ranked symbols, not the answer | 4 | 2% |
+| a name absent from the checkout | 3 | 2% |
+| a `search` in words | 1 | 1% |
+
+With no candidate limit (any name Claude asked for), the oracle reaches 85% at 4k. The list design
+works; the names can't be known in advance.
+
+**Cost was not the limit.**
+- **Saving per removed call:** a removed follow-up lookup call saves $0.0093 (mean of 138, median
+  $0.0083). This counts its read of the cached prefix, its output, and its tool_use and
+  tool_result, which the next call writes to the cache and every later call reads again. Each
+  token is counted once, at Sonnet 5.5 prices. If its output moved into the final answer, it
+  would still save $0.0076.
+- **Injection price:** 0.455 tokens per char. This is regressed from the follow-up's billed cache
+  writes on v13 + v14 (R² 0.99), not the bench's 3.5 chars per token, which is being corrected
+  separately. The text is written once at $4/M and read by each later call at $0.20/M.
+- **Break-even:** 4,877 injected chars per removed call (2,616 at the plan's $0.005).
+- **Oracle:** at 4k it injects 522 chars and removes 0.61 calls per follow-up, for a net
+  −$0.0047 (−$0.0021 at $0.005).
+- **Rules:** rules that inject whole lists without seeing the follow-up are not cost-neutral.
+  Every rule at 2k–8k costs more than the plan's $0.005 per call; all answer names at 4k inject
+  3,720 chars for 0.37 calls.
+- **Time:** at v13's 2.3 s per follow-up lookup call, the held-out oracle at 4k (0.47 calls per
+  session) would save about 1.1 s per session.
+
+**Conclusion: parked, owner decision 2026-10-07.**
+- The limit is the names, not the picker or the cost. About 23% of follow-up tool uses ask for
+  names Claude only thinks of on the follow-up, and no injection made before it can hold them.
+- Even an oracle covers 40% of held-out follow-up lookups at 4k chars (bar 50%). With the planned
+  shape it covers 48% on all tasks.
+- Don't retry without new evidence that Claude's follow-up names can be known before it asks.
 
 ## Benchmark v14 (2026-09-30): held-out tasks; the low-confidence gate does nothing
 
