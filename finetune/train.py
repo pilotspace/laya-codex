@@ -228,14 +228,19 @@ def select_key(m):
             round(float(np.mean([v["blend"]["mrr_pos"] for v in m.values()])), 4))
 
 
-def validate(model, tok, val_lists, val_sids, windows, max_len, device, T=None):
-    """{str(window): evaluate(...)} with the temperature fitted per window (T=None) or fixed."""
+def score_windows(model, tok, val_lists, val_sids, windows, max_len, device):
+    """{str(window): (raw logits per list, enc)} for the validation lists at each window."""
     out = {}
     for w in windows:
         enc = [(listwise.build_list(tok, l, s, window=w, max_len=max_len), labels_of(l))
                for l, s in zip(val_lists, val_sids)]
-        out[str(w)] = evaluate(predict_lists(model, enc, device, tok.pad_token_id), val_lists, enc, T=T)
+        out[str(w)] = (predict_lists(model, enc, device, tok.pad_token_id), enc)
     return out
+
+
+def validate(scored, val_lists, T=None):
+    """{str(window): evaluate(...)} with the temperature fitted per window (T=None) or fixed."""
+    return {w: evaluate(z, val_lists, enc, T=T) for w, (z, enc) in scored.items()}
 
 
 def memory_now(device):
@@ -370,8 +375,9 @@ def train(args, device):
         list_secs = {int(k): v for k, v in ck.get("list_secs", {}).items()}
         print("resumed at step %d" % step, flush=True)
     else:
-        m0 = validate(model, tok, val_lists, val_sids, val_windows, max_len, device, T=noul_temperature(cfg))
-        m0f = validate(model, tok, val_lists, val_sids, val_windows, max_len, device)
+        scored = score_windows(model, tok, val_lists, val_sids, val_windows, max_len, device)
+        m0, m0f = validate(scored, val_lists, T=noul_temperature(cfg)), validate(scored, val_lists)
+        del scored
         log.append({"step": 0, "val_base_T": m0, "val": m0f, "mem": memory_now(device)})
         print("step 0 val (base T) %s" % json.dumps(m0), flush=True)
         print("step 0 val (fitted T) %s" % json.dumps(m0f), flush=True)
@@ -421,7 +427,7 @@ def train(args, device):
             t0 = time.time()
         if step % args.eval_every == 0 or finished:
             release_cache(device)
-            m = validate(model, tok, val_lists, val_sids, val_windows, max_len, device)
+            m = validate(score_windows(model, tok, val_lists, val_sids, val_windows, max_len, device), val_lists)
             log.append({"step": step, "train_loss_ema": round(ema, 4), "val": m, "mem": memory_now(device),
                         "train_secs": round(train_secs, 1)})
             print("step %d val %s" % (step, json.dumps(m)), flush=True)
