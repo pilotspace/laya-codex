@@ -24,9 +24,20 @@ def paired(a, b, n=10000, seed=0):
                                                              round(float(np.percentile(bs, 97.5)), 4)]}
 
 
+def parse_model_spec(spec, default_window=128):
+    """`name=dir[@window]` -> (name, dir, window): each model is scored at its own state window."""
+    if "=" not in spec:
+        raise ValueError("model spec must be name=dir[@window]: %r" % spec)
+    name, mdir = spec.split("=", 1)
+    head, _, tail = mdir.rpartition("@")
+    if head and tail.isdigit():
+        return name, head, int(tail)
+    return name, mdir, default_window
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", nargs="+", required=True, help="name=dir")
+    ap.add_argument("--models", nargs="+", required=True, help="name=dir[@state window, default 128]")
     ap.add_argument("--heldout", nargs="*", default=["pilot-space"])
     ap.add_argument("--device", default=None)
     ap.add_argument("--out", required=True)
@@ -39,12 +50,12 @@ def main():
         sets["heldout-" + h] = listwise.load_lists(names=[h], heldout=True)
     rep, per_list = {"sets": {k: len(v) for k, v in sets.items()}, "models": {}}, {}
     for spec in args.models:
-        name, mdir = spec.split("=", 1)
+        name, mdir, window = parse_model_spec(spec)
         model, tok, cfg, _ = load_base_model(os.path.expanduser(mdir), device)
         T = noul_temperature(cfg)
-        rep["models"][name] = {"dir": mdir, "T": T}
+        rep["models"][name] = {"dir": mdir, "T": T, "state_window": window, "max_len": cfg["max_len"]}
         for sname, lists in sets.items():
-            enc = encode_lists(tok, lists)
+            enc = encode_lists(tok, lists, window=window, max_len=cfg["max_len"])
             z = predict_lists(model, enc, device, tok.pad_token_id)
             rep["models"][name][sname] = evaluate(z, lists, enc, T=T)
             per_list[(name, sname)] = [listwise.list_metrics(l, listwise.blend_order(

@@ -12,14 +12,21 @@
 - Validation (every --eval-every updates): NLL, AUROC and the production blend simulation (listwise.summarize,
   temperature fitted on the monitor lists); the best checkpoint by blend top2_gold (gold files in the first two chunks), then MRR.
 
+- Student (finetune/student.py): --base is a ModernBERT-base init dir with a longer max_len; --windows (or
+  --window-range) draws the state window per list, so one model serves 128 to 384 code tokens; validation runs at
+  every --val-windows. --kd-weight adds listwise.kd_loss against a teacher's cached logits (finetune/teacher.py).
+
     python3 finetune/train.py --base ~/.cache/laya-codex/models/laya-code-v1 --top-layers 12 --epochs 2
     python3 finetune/train.py --base ... --bench              # throughput probe
+    python3 finetune/train.py --base <student-init> --top-layers 22 --windows 128 256 384 --val-windows 128 256 384 \
+        --kd-weight 1 --teacher-cache <r1-w128.npz> --grad-ckpt
 """
 import argparse
 import json
 import math
 import os
 import random
+import resource
 import sys
 import time
 
@@ -78,14 +85,59 @@ def noul_temperature(cfg):
 
 
 # ----------------------------------------------------------------------------- data
-def encode_lists(tok, lists, limit=None):
+def encode_lists(tok, lists, limit=None, window=common.STATE_TOKENS, max_len=common.MAX_LEN):
     """[(seqs [(ids, markers)], labels np.array)] per list; `limit` keeps the first candidates only (production
-    scores the first listwise.SCORE_TOP)."""
+    scores the first listwise.SCORE_TOP). `window` / `max_len`: LAYA_CODEX_STATE_TOKENS and the model's max_len."""
     out = []
     for l in lists:
         l = dict(l, candidates=l["candidates"][:limit]) if limit else l
-        out.append((listwise.encode_list(tok, l), np.array([c["label"] for c in l["candidates"]], np.float32)))
+        out.append((listwise.encode_list(tok, l, window=window, max_len=max_len), labels_of(l)))
     return out
+
+
+def labels_of(lst):
+    return np.array([c["label"] for c in lst["candidates"]], np.float32)
+
+
+def _head(ls):
+    return [dict(l, candidates=l["candidates"][:listwise.SCORE_TOP]) for l in ls]
+
+
+def training_lists(data_dir=None):
+    """What production scores (the first SCORE_TOP candidates) of every training list with a positive among them."""
+    return [l for l in _head(listwise.load_lists("train", data_dir=data_dir)) if any(c["label"] > 0 for c in l["candidates"])]
+
+
+def validation_lists(data_dir=None, n=None):
+    """The validation monitor: the same first SCORE_TOP of a seeded sample of the validation lists (the blend leaves
+    the tail in lexical order)."""
+    all_val = _head(listwise.load_lists("val", data_dir=data_dir))
+    return random.Random(7).sample(all_val, min(n or len(all_val), len(all_val)))
+
+
+def draw_window(rng, windows=None, window_range=None):
+    """The state window of one training list: uniform over `windows`, or a uniform integer in `window_range`."""
+    if window_range:
+        return rng.randint(window_range[0], window_range[1])
+    return windows[rng.randrange(len(windows))]
+
+
+def window_plan(windows, window_range, max_len):
+    """Validate the window settings against the model's max_len: (windows, window_range, largest window)."""
+    if window_range:
+        lo, hi = window_range
+        if not 0 < lo <= hi:
+            raise ValueError("bad --window-range %s" % (window_range,))
+        windows, wmax = None, hi
+    else:
+        windows = list(windows or [common.STATE_TOKENS])
+        if min(windows) <= 0:
+            raise ValueError("bad --windows %s" % windows)
+        wmax = max(windows)
+    if common.required_max_len(wmax) > max_len:
+        raise ValueError("a %d-token window needs max_len >= %d, the model has %d (the window would be cut)" % (
+            wmax, common.required_max_len(wmax), max_len))
+    return windows, (tuple(window_range) if window_range else None), wmax
 
 
 def collate(seqs, pad_id):
@@ -158,7 +210,30 @@ def evaluate(logits_lists, lists, enc, T=None):
 
 
 def select_key(m):
-    return (m["blend"]["top2_gold"], m["blend"]["mrr_pos"])
+    """Checkpoint selection: blend top2_gold then MRR; for per-window validation ({window: m}) their means."""
+    if "blend" in m:
+        return (m["blend"]["top2_gold"], m["blend"]["mrr_pos"])
+    return (round(float(np.mean([v["blend"]["top2_gold"] for v in m.values()])), 4),
+            round(float(np.mean([v["blend"]["mrr_pos"] for v in m.values()])), 4))
+
+
+def validate(model, tok, val_lists, val_sids, windows, max_len, device, T=None):
+    """{str(window): evaluate(...)} with the temperature fitted per window (T=None) or fixed."""
+    out = {}
+    for w in windows:
+        enc = [(listwise.build_list(tok, l, s, window=w, max_len=max_len), labels_of(l))
+               for l, s in zip(val_lists, val_sids)]
+        out[str(w)] = evaluate(predict_lists(model, enc, device, tok.pad_token_id), val_lists, enc, T=T)
+        if device.type == "mps":
+            torch.mps.empty_cache()
+    return out
+
+
+def memory_now(device):
+    """Peak RSS of this process (ru_maxrss: bytes on macOS) and the MPS driver allocation, in GB."""
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (2**30 if sys.platform == "darwin" else 2**20)
+    mps = torch.mps.driver_allocated_memory() / 2**30 if device.type == "mps" else 0.0
+    return {"peak_rss_gb": round(rss, 2), "mps_gb": round(mps, 2)}
 
 
 def atomic_save(obj, path):
@@ -171,12 +246,16 @@ def trainable_state(model):
     return {n: p.detach().cpu().clone() for n, p in model.named_parameters() if p.requires_grad}
 
 
-def list_loss(model, seqs, labels, device, pad_id, list_weight, amp=False):
+def list_loss(model, seqs, labels, device, pad_id, list_weight, amp=False, teacher=None, kd_weight=0.0, kd_T=1.0,
+              kd_list_weight=1.0):
+    """Gold loss (noul log loss + list_weight x listwise) + kd_weight x listwise.kd_loss against `teacher` logits."""
     logits = forward_logits(model, collate(seqs, pad_id), device, amp)
     y = torch.tensor(labels, device=device)
     loss = noul_loss(logits, y)
     if list_weight:
         loss = loss + list_weight * listwise.listwise_loss(logits[:, 1] - logits[:, 0], y)
+    if kd_weight:
+        loss = loss + kd_weight * listwise.kd_loss(logits, teacher, kd_T, kd_list_weight)
     return loss
 
 
@@ -215,30 +294,42 @@ def bench(args, device):
 
 def train(args, device):
     torch.manual_seed(args.seed)
-    os.makedirs(CKPT_DIR, exist_ok=True)
+    ckpt_dir = args.ckpt_dir
+    os.makedirs(ckpt_dir, exist_ok=True)
     model, tok, cfg, _ = load_base_model(args.base, device)
+    max_len = cfg["max_len"]
+    windows, window_range, wmax = window_plan(args.windows, args.window_range, max_len)
+    val_windows = list(args.val_windows or [wmax])
+    window_plan(val_windows, None, max_len)
     enc_p, head_p = set_trainable(model, args.top_layers)
     if args.grad_ckpt:
         enable_checkpointing(model)
-    print("trainable params %.1fM (top %d layers + head)" % (sum(p.numel() for p in enc_p + head_p) / 1e6,
-                                                           args.top_layers), flush=True)
+    print("trainable params %.1fM (top %d layers + head); max_len %d, windows %s, validation at %s" % (
+        sum(p.numel() for p in enc_p + head_p) / 1e6, args.top_layers, max_len,
+        window_range and "uniform %d-%d" % window_range or windows, val_windows), flush=True)
     opt = torch.optim.AdamW([{"params": enc_p, "lr": args.lr_enc, "weight_decay": 0.01},
                              {"params": head_p, "lr": args.lr_head, "weight_decay": 0.01}])
     base_lrs = [args.lr_enc, args.lr_head]
     t_enc = time.time()
-    # train on what production scores (the first SCORE_TOP candidates), lists with a positive among them;
-    # monitor on the same first SCORE_TOP of every validation list (the blend leaves the tail in lexical order)
-    def head(ls):
-        return [dict(l, candidates=l["candidates"][:listwise.SCORE_TOP]) for l in ls]
-
-    train_lists = [l for l in head(listwise.load_lists("train")) if any(c["label"] > 0 for c in l["candidates"])]
-    all_val = head(listwise.load_lists("val"))
-    val_lists = random.Random(7).sample(all_val, min(args.val_n, len(all_val)))
-    train_enc = encode_lists(tok, train_lists)
-    val_enc = encode_lists(tok, val_lists)
-    total_steps = args.steps or math.ceil(args.epochs * len(train_enc) / args.lists_per_step)
+    train_lists = training_lists(args.data)
+    val_lists = validation_lists(args.data, args.val_n)
+    kd, kd_T = None, 1.0
+    if args.kd_weight:
+        if not args.teacher_cache:
+            raise ValueError("--kd-weight needs --teacher-cache (finetune/teacher.py)")
+        import teacher
+        kd = teacher.load(args.teacher_cache)
+        kd.check(train_lists)  # every training list, with the same candidates
+        kd_T = float(kd.meta["T"])
+        print("distillation: weight %.2f (list %.2f) from %s at window %s, T %.4f" % (
+            args.kd_weight, args.kd_list_weight, kd.meta.get("teacher"), kd.meta.get("window"), kd_T), flush=True)
+    # state tokens cut once at the largest window; each step slices the drawn window (no re-tokenization)
+    train_sids = [listwise.list_state_ids(tok, l, cap=wmax) for l in train_lists]
+    train_lab = [labels_of(l) for l in train_lists]
+    val_sids = [listwise.list_state_ids(tok, l, cap=max(val_windows)) for l in val_lists]
+    total_steps = args.steps or math.ceil(args.epochs * len(train_lists) / args.lists_per_step)
     print("train lists %d, val lists %d, %d updates of %d lists; encoded in %.0fs" % (
-        len(train_enc), len(val_enc), total_steps, args.lists_per_step, time.time() - t_enc), flush=True)
+        len(train_lists), len(val_lists), total_steps, args.lists_per_step, time.time() - t_enc), flush=True)
 
     def progress(step, secs):
         return max(step / total_steps, secs / (args.max_hours * 3600) if args.max_hours else 0.0)
@@ -249,9 +340,11 @@ def train(args, device):
         return max(0.05, 1.0 - 0.95 * progress(step, secs))
 
     rng = random.Random(args.seed + 1)
+    wrng = random.Random(args.seed + 2)
     order, epoch = [], 0
     step, log, best, train_secs = 0, [], None, 0.0
-    last = os.path.join(CKPT_DIR, "last.pt")
+    seen, list_secs = {}, {}
+    last = os.path.join(ckpt_dir, "last.pt")
     if args.resume and os.path.exists(last):
         ck = torch.load(last, map_location="cpu", weights_only=False)
         with torch.no_grad():
@@ -260,18 +353,19 @@ def train(args, device):
                     p.copy_(ck["params"][n].to(device))
         opt.load_state_dict(ck["opt"])
         rng.setstate(ck["rng"])
+        if "wrng" in ck:
+            wrng.setstate(ck["wrng"])
         order, epoch = ck["order"], ck["epoch"]
         step, log, best, train_secs = ck["step"], ck["log"], ck.get("best"), ck.get("train_secs", 0.0)
+        seen = {int(k): v for k, v in ck.get("windows_seen", {}).items()}
+        list_secs = {int(k): v for k, v in ck.get("list_secs", {}).items()}
         print("resumed at step %d" % step, flush=True)
     else:
-        z = predict_lists(model, val_enc, device, tok.pad_token_id)
-        m0 = evaluate(z, val_lists, val_enc, T=noul_temperature(cfg))
-        m0f = evaluate(z, val_lists, val_enc)
-        log.append({"step": 0, "val_base_T": m0, "val": m0f})
+        m0 = validate(model, tok, val_lists, val_sids, val_windows, max_len, device, T=noul_temperature(cfg))
+        m0f = validate(model, tok, val_lists, val_sids, val_windows, max_len, device)
+        log.append({"step": 0, "val_base_T": m0, "val": m0f, "mem": memory_now(device)})
         print("step 0 val (base T) %s" % json.dumps(m0), flush=True)
         print("step 0 val (fitted T) %s" % json.dumps(m0f), flush=True)
-        if device.type == "mps":
-            torch.mps.empty_cache()  # the evaluation's cached blocks would otherwise sit under the training peak
     model.train()
     t0, ema, finished = time.time(), None, progress(step, train_secs) >= 1.0
     while not finished:
@@ -281,13 +375,20 @@ def train(args, device):
         tot = 0.0
         for _ in range(args.lists_per_step):
             if not order:
-                order = list(range(len(train_enc)))
+                order = list(range(len(train_lists)))
                 rng.shuffle(order)
                 epoch += 1
-            seqs, lab = train_enc[order.pop()]
-            loss = list_loss(model, seqs, lab, device, tok.pad_token_id, args.list_weight) / args.lists_per_step
+            i = order.pop()
+            w = draw_window(wrng, windows, window_range)
+            tl = time.perf_counter()
+            seqs = listwise.build_list(tok, train_lists[i], train_sids[i], window=w, max_len=max_len)
+            loss = list_loss(model, seqs, train_lab[i], device, tok.pad_token_id, args.list_weight,
+                             teacher=kd.lookup(train_lists[i]) if kd is not None else None,
+                             kd_weight=args.kd_weight, kd_T=kd_T, kd_list_weight=args.kd_list_weight) / args.lists_per_step
             loss.backward()
-            tot += loss.item()
+            tot += loss.item()  # syncs the device: the list time below covers forward + backward
+            seen[w] = seen.get(w, 0) + 1
+            list_secs[w] = list_secs.get(w, 0.0) + time.perf_counter() - tl
         if not math.isfinite(tot):
             print("non-finite loss at step %d; skipping update" % step, flush=True)
             opt.zero_grad(set_to_none=True)
@@ -302,32 +403,40 @@ def train(args, device):
         ema = tot if ema is None else 0.98 * ema + 0.02 * tot
         if step % 25 == 0:
             el = time.time() - t0
-            print("step %d loss %.4f (ema %.4f) lr %.2e | %.1fs/step progress %.3f epoch %d" % (
-                step, tot, ema, opt.param_groups[0]["lr"], el / 25, progress(step, train_secs), epoch), flush=True)
+            per_w = {w: round(list_secs[w] / seen[w], 2) for w in sorted(seen)}
+            print("step %d loss %.4f (ema %.4f) lr %.2e | %.1fs/step progress %.3f epoch %d | s/list by window %s %s" % (
+                step, tot, ema, opt.param_groups[0]["lr"], el / 25, progress(step, train_secs), epoch,
+                json.dumps(per_w), json.dumps(memory_now(device))), flush=True)
             t0 = time.time()
         if step % args.eval_every == 0 or finished:
             if device.type == "mps":
                 torch.mps.empty_cache()
-            m = evaluate(predict_lists(model, val_enc, device, tok.pad_token_id), val_lists, val_enc)
-            if device.type == "mps":
-                torch.mps.empty_cache()
-            log.append({"step": step, "train_loss_ema": round(ema, 4), "val": m})
+            m = validate(model, tok, val_lists, val_sids, val_windows, max_len, device)
+            log.append({"step": step, "train_loss_ema": round(ema, 4), "val": m, "mem": memory_now(device),
+                        "train_secs": round(train_secs, 1)})
             print("step %d val %s" % (step, json.dumps(m)), flush=True)
             if best is None or select_key(m) > tuple(best["key"]):
                 best = {"step": step, "key": list(select_key(m)), "val": m}
                 atomic_save({"params": trainable_state(model), "step": step, "val": m, "top_layers": args.top_layers},
-                            os.path.join(CKPT_DIR, "best.pt"))
+                            os.path.join(ckpt_dir, "best.pt"))
             t0 = time.time()
         if step % args.ckpt_every == 0 or finished:
             atomic_save({"params": trainable_state(model), "opt": opt.state_dict(), "rng": rng.getstate(),
-                         "order": order, "epoch": epoch, "step": step, "log": log, "best": best, "args": vars(args),
-                         "train_secs": train_secs}, last)
-    json.dump({"log": log, "best": best, "args": vars(args), "train_secs": train_secs},
-              open(os.path.join(CKPT_DIR, "train_log.json"), "w"), indent=1)
+                         "wrng": wrng.getstate(), "order": order, "epoch": epoch, "step": step, "log": log,
+                         "best": best, "args": vars(args), "train_secs": train_secs, "windows_seen": seen,
+                         "list_secs": list_secs}, last)
+    summary = {"log": log, "best": best, "args": vars(args), "train_secs": train_secs, "max_len": max_len,
+               "windows": {"set": windows, "range": window_range, "validation": val_windows},
+               "windows_seen": {str(k): v for k, v in sorted(seen.items())},
+               "list_secs_by_window": {str(k): round(list_secs[k] / seen[k], 3) for k in sorted(seen)},
+               "kd": {"weight": args.kd_weight, "list_weight": args.kd_list_weight,
+                      "teacher": kd.meta.get("teacher") if kd is not None else None,
+                      "teacher_window": kd.meta.get("window") if kd is not None else None, "T": kd_T}}
+    json.dump(summary, open(os.path.join(ckpt_dir, "train_log.json"), "w"), indent=1)
     print("done. best %s" % json.dumps(best), flush=True)
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default=common.BASE_MODEL, help="full model dir to warm start from")
     ap.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cpu")
@@ -348,7 +457,17 @@ def main():
     ap.add_argument("--max-hours", type=float, default=0.0, help="wall-clock budget for the optimisation loop")
     ap.add_argument("--bench", action="store_true")
     ap.add_argument("--bench-layers", type=int, nargs="*", default=[8, 12, 16])
-    args = ap.parse_args()
+    ap.add_argument("--data", default=None, help="dir of build_data.py lists (default WORK/data_v3)")
+    ap.add_argument("--ckpt-dir", default=CKPT_DIR, help="checkpoints (default $LAYA_CODEX_FT_CKPT or WORK/ckpt)")
+    ap.add_argument("--windows", type=int, nargs="+", default=None,
+                    help="state windows drawn per training list (default %d, r1's view)" % common.STATE_TOKENS)
+    ap.add_argument("--window-range", type=int, nargs=2, default=None, metavar=("LO", "HI"),
+                    help="draw the window uniformly from LO..HI instead of --windows")
+    ap.add_argument("--val-windows", type=int, nargs="+", default=None, help="validation windows (default: the largest)")
+    ap.add_argument("--kd-weight", type=float, default=0.0, help="weight of the distillation term (0 = off)")
+    ap.add_argument("--kd-list-weight", type=float, default=1.0, help="listwise part of the distillation term")
+    ap.add_argument("--teacher-cache", default=None, help="teacher logits from finetune/teacher.py")
+    args = ap.parse_args(argv)
     device = torch.device(args.device)
     if args.bench:
         bench(args, device)
