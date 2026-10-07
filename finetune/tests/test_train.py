@@ -55,6 +55,29 @@ def lst(repo, sha, n):
     return {"repo": repo, "sha": sha, "candidates": [{"label": 0.0}] * n}
 
 
+# ----------------------------------------------------------------------------- MPS cache release
+# Every new sequence length makes the MPS allocator cache another set of blocks: scoring 150 lists grew the driver
+# allocation from 2 GB to 22.5 GB with 1.6 GB live (and swapped). Releasing the cache every 10 batches held it at
+# <= 3.7 GB. predict_lists and the training loop must release it periodically.
+def test_predict_lists_releases_the_device_cache_periodically(monkeypatch):
+    import train
+    calls = []
+    monkeypatch.setattr(train, "release_cache", lambda device: calls.append(device.type))
+
+    class Tiny(torch.nn.Module):
+        def forward(self, ids, att, mpos, mmask, qtype):
+            return torch.zeros(ids.shape[0], 2), None
+
+    enc = [([([1, 2, 3 + i % 7], [0, 1])] * 4, np.zeros(4, np.float32)) for i in range(30)]  # 120 sequences
+    out = train.predict_lists(Tiny(), enc, torch.device("cpu"), 0, bs=4, release_every=10)
+    assert len(out) == 30 and len(calls) == 120 // 4 // 10 + 1  # every 10 batches, and once at the end
+
+
+def test_release_cache_is_a_no_op_off_mps():
+    import train
+    train.release_cache(torch.device("cpu"))
+
+
 def test_teacher_cache_round_trip_and_lookup(tmp_path):
     import teacher
     logits = {"r:a": np.arange(6, dtype=np.float32).reshape(3, 2), "r:b": np.ones((2, 2), np.float32)}

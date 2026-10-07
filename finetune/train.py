@@ -165,17 +165,28 @@ def noul_loss(logits2, y):
     return -(target * F.log_softmax(logits2, -1)).sum(-1).mean()
 
 
+def release_cache(device):
+    """Return the MPS allocator's cached blocks to the system. Every new sequence length makes it cache another set
+    of blocks and it does not reuse them across lengths: scoring 150 lists with r1 grew the driver allocation from 2 to
+    22.5 GB (1.6 GB live) and swapped; releasing every 10 batches held it at <= 3.7 GB. No-op off MPS."""
+    if device.type == "mps":
+        torch.mps.empty_cache()
+
+
 @torch.no_grad()
-def predict_lists(model, enc, device, pad_id, bs=48):
+def predict_lists(model, enc, device, pad_id, bs=48, release_every=10):
     """Raw (T=1) noul logits per list [n_i, 2]."""
     was = model.training
     model.train(False)
     flat = [s for seqs, _ in enc for s in seqs]
     order = sorted(range(len(flat)), key=lambda i: len(flat[i][0]))  # length-sorted: less padding
     out = np.zeros((len(flat), 2), np.float32)
-    for s in range(0, len(order), bs):
+    for k, s in enumerate(range(0, len(order), bs)):
         idx = order[s:s + bs]
         out[idx] = forward_logits(model, collate([flat[i] for i in idx], pad_id), device).cpu().numpy()
+        if (k + 1) % release_every == 0:
+            release_cache(device)
+    release_cache(device)
     model.train(was)
     res, k = [], 0
     for seqs, _ in enc:
@@ -224,8 +235,6 @@ def validate(model, tok, val_lists, val_sids, windows, max_len, device, T=None):
         enc = [(listwise.build_list(tok, l, s, window=w, max_len=max_len), labels_of(l))
                for l, s in zip(val_lists, val_sids)]
         out[str(w)] = evaluate(predict_lists(model, enc, device, tok.pad_token_id), val_lists, enc, T=T)
-        if device.type == "mps":
-            torch.mps.empty_cache()
     return out
 
 
@@ -397,6 +406,8 @@ def train(args, device):
         torch.nn.utils.clip_grad_norm_(enc_p + head_p, 1.0)
         opt.step()
         opt.zero_grad(set_to_none=True)
+        if step % args.release_every == 0:
+            release_cache(device)  # each list has its own length: without this the MPS cache grows without bound
         step += 1
         train_secs += time.time() - ts
         finished = progress(step, train_secs) >= 1.0
@@ -409,8 +420,7 @@ def train(args, device):
                 json.dumps(per_w), json.dumps(memory_now(device))), flush=True)
             t0 = time.time()
         if step % args.eval_every == 0 or finished:
-            if device.type == "mps":
-                torch.mps.empty_cache()
+            release_cache(device)
             m = validate(model, tok, val_lists, val_sids, val_windows, max_len, device)
             log.append({"step": step, "train_loss_ema": round(ema, 4), "val": m, "mem": memory_now(device),
                         "train_secs": round(train_secs, 1)})
@@ -467,6 +477,7 @@ def main(argv=None):
     ap.add_argument("--kd-weight", type=float, default=0.0, help="weight of the distillation term (0 = off)")
     ap.add_argument("--kd-list-weight", type=float, default=1.0, help="listwise part of the distillation term")
     ap.add_argument("--teacher-cache", default=None, help="teacher logits from finetune/teacher.py")
+    ap.add_argument("--release-every", type=int, default=1, help="release the MPS cache every N updates")
     args = ap.parse_args(argv)
     device = torch.device(args.device)
     if args.bench:
