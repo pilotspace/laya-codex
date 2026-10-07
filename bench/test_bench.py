@@ -189,6 +189,29 @@ class RunBench(unittest.TestCase):
         self.assertEqual(len(set(tags.values())), 6)
         self.assertEqual(self.rb.arm_flags("laya", "/cfg", 1), self.rb.arm_flags("laya", "/cfg", 1))
 
+    def test_each_session_gets_its_own_memo_salt_and_the_memo_stays_on(self):
+        # The follow-up must hit its own session's score cache (as in real use), but no session
+        # may read another arm's, task's, repeat's or attempt's cache.
+        base = {"PATH": "/bin"}
+        env = lambda arm, task, rep, sid: self.rb.session_env(arm, task, rep, sid, "/h.jsonl", "medium",
+                                                              {"LAYA_CODEX_HOME": "/home"}, base)
+        e = env("laya", "t1", 0, "s1")
+        self.assertNotIn("LAYA_CODEX_MEMO", e)  # memo on: follow-ups are served from the cache
+        self.assertEqual(e["LAYA_CODEX_HOOK_LOG"], "/h.jsonl")
+        self.assertEqual(e["CLAUDE_EFFORT"], "medium")
+        self.assertEqual(e["LAYA_CODEX_HOME"], "/home")
+        self.assertEqual(e["PATH"], "/bin")
+        salts = {env(a, t, r, s)["LAYA_CODEX_MEMO_SALT"]
+                 for a in ("laya", "gate") for t in ("t1", "t2") for r in (0, 1) for s in ("s1", "s2")}
+        self.assertEqual(len(salts), 16)
+        self.assertTrue(all(salts))
+        self.assertEqual(env("laya", "t1", 0, "s1"), e)
+
+    def test_an_explicit_memo_off_still_reaches_every_session(self):
+        e = self.rb.session_env("laya", "t1", 0, "s1", "/h.jsonl", "medium", None, {"LAYA_CODEX_MEMO": "0"})
+        self.assertEqual(e["LAYA_CODEX_MEMO"], "0")
+        self.assertIn("LAYA_CODEX_MEMO_SALT", e)
+
     def test_only_arms_with_their_own_binary_get_their_own_home_and_port(self):
         specs = [("baseline", None, None), ("laya-adaptive", "laya-adaptive", None),
                  ("v030", "laya-adaptive", "/x/v030"), ("new", "laya-adaptive", "/x/new")]

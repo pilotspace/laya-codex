@@ -408,6 +408,22 @@ def run_name(task_id, arm, rep):
     return "%s_%s" % (task_id, arm) + ("_r%d" % rep if rep else "")
 
 
+def session_env(arm, task_id, rep, sid, hook_log, effort, extra_env=None, environ=None):
+    """Environment of one session (`claude` and the hooks and MCP server it starts).
+
+    The daemon's probability cache stays on, so a follow-up is served from its own session's
+    scores as in real use. LAYA_CODEX_MEMO_SALT namespaces that cache per session attempt
+    (arm, task, repeat, session id): every first prompt scores cold, and no session can read
+    another arm's, task's, repeat's or earlier attempt's cache, even with a shared daemon. The
+    hook and MCP clients send the salt with each query; the daemon hashes it into the key.
+    An operator's `LAYA_CODEX_MEMO=0` (score every prompt, cache reads off) still passes through.
+    CLAUDE_EFFORT is set explicitly (not just inherited) so every arm is pinned to --effort rather
+    than whatever the parent shell happens to export (v8 silently ran the whole benchmark at medium)."""
+    return dict(os.environ if environ is None else environ, LAYA_CODEX_HOOK_LOG=hook_log,
+                LAYA_CODEX_MEMO_SALT="%s/%s/r%d/%s" % (arm, task_id, rep, sid), CLAUDE_EFFORT=effort,
+                **(extra_env or {}))
+
+
 def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None, versions=None, claude_version=None):
     """One task = one live Claude session of `args.turns` prompts (one process; see _claude_session)."""
     import uuid
@@ -415,14 +431,9 @@ def run_one(arm, task, args, cfg_dir, rep=0, extra_env=None, versions=None, clau
     os.makedirs(os.path.dirname(hook_log), exist_ok=True)
     if os.path.exists(hook_log):
         os.remove(hook_log)
-    # LAYA_CODEX_MEMO=0: score every prompt cold, as a new prompt is in real use; otherwise whichever arm
-    # runs a task first pays the model run and the others hit its cache.
-    # CLAUDE_EFFORT is set explicitly (not just inherited) so every arm is pinned to --effort rather
-    # than whatever the parent shell happens to export (v8 silently ran the whole benchmark at medium).
-    env = dict(os.environ, LAYA_CODEX_HOOK_LOG=hook_log, LAYA_CODEX_MEMO=os.environ.get("LAYA_CODEX_MEMO", "0"),
-               CLAUDE_EFFORT=args.effort, **(extra_env or {}))
     prompts = [PROMPT.format(task=task["task"])] + [FOLLOWUP] * (args.turns - 1)
     sid = str(uuid.uuid4())
+    env = session_env(arm, task["id"], rep, sid, hook_log, args.effort, extra_env)
     all_lines, wall, rcs = [], 0.0, []
     agg = {"reading_tokens": 0, "total_in": 0, "output": 0, "cost": 0.0, "turns": 0, "tool_calls": {}}
     answers = []
@@ -519,11 +530,12 @@ def run(args):
     envs = arm_env(args.out, specs)
     versions = arm_versions(specs)
     claude_version = _cli_version("claude")
-    # Restart each daemon with this run's environment (LAYA_CODEX_MEMO etc.), then warm it so the
-    # first session gets an indexed repo and a loaded model.
+    # Restart each daemon with this run's environment (an exported LAYA_CODEX_MEMO etc.), then warm
+    # it so the first session gets an indexed repo and a loaded model. The memo stays on unless the
+    # operator exports LAYA_CODEX_MEMO=0; sessions are kept apart by their memo salt (session_env).
     for name, template, binary in specs:
         if template is not None:
-            env = dict(envs[name], LAYA_CODEX_MEMO=os.environ.get("LAYA_CODEX_MEMO", "0"))
+            env = dict(envs[name])
             subprocess.run([binary or default_bin(), "stop"], capture_output=True, env=dict(os.environ, **env))
             mode = warm_arm(binary or default_bin(), env, args.repo)
             print("warmed %s: %s" % (name, mode), flush=True)

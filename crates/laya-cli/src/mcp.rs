@@ -129,6 +129,7 @@ fn call_tool(
             top_n
         },
         render: None,
+        memo_salt: None,
     };
     match api.call(req) {
         Ok(Response::Query { mut result, .. }) => {
@@ -533,6 +534,7 @@ fn ranked_paths(
         budget_ms: Some(budget_ms.min(RANK_BUDGET_MS)),
         top_n: Some(crate::protocol::MAX_TOP_N),
         render: None,
+        memo_salt: None,
     };
     let mut out: Vec<String> = Vec::new();
     if let Ok(Response::Query { result, .. }) = api.call(req) {
