@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
 use laya_core::QueryResult;
-use laya_core::{Chunk, Scorer, Store};
+use laya_core::{Chunk, ScoreStats, Scorer, Store};
 use laya_rank::{FollowUpIntent, Retriever, RetrieverConfig, SizeOpts, SpanKey};
 
 use crate::config::{Config, rel_path, repo_root};
@@ -92,12 +92,14 @@ impl MemoScorer {
     }
 
     /// Cached probabilities, then the model for the rest (all of them, or with `deadline` as
-    /// many as fit, in input order). Only probabilities the model produced are cached.
+    /// many as fit, in input order). Only probabilities the model produced are cached. Cache hits
+    /// and the model's batches are added to `stats`.
     fn run(
         &self,
         task: &str,
         chunks: &[&Chunk],
         deadline: Option<std::time::Instant>,
+        stats: &mut ScoreStats,
     ) -> laya_core::Result<Vec<Option<f32>>> {
         let keys: Vec<String> = chunks.iter().map(|c| self.key(task, c)).collect();
         let mut out: Vec<Option<f32>> = vec![None; chunks.len()];
@@ -113,6 +115,7 @@ impl MemoScorer {
                 None => miss.push(i),
             }
         }
+        stats.cached += chunks.len() - miss.len();
         if !miss.is_empty() {
             use std::sync::atomic::Ordering;
             if self
@@ -126,7 +129,7 @@ impl MemoScorer {
             let todo: Vec<&Chunk> = miss.iter().map(|&i| chunks[i]).collect();
             let t0 = std::time::Instant::now();
             let ps: Vec<Option<f32>> = match deadline {
-                Some(d) => self.inner.score_within(task, &todo, d)?,
+                Some(d) => self.inner.score_within_stats(task, &todo, d, stats)?,
                 None => self
                     .inner
                     .score(task, &todo)?
@@ -155,7 +158,7 @@ impl MemoScorer {
 impl Scorer for MemoScorer {
     fn score(&self, task: &str, chunks: &[&Chunk]) -> laya_core::Result<Vec<f32>> {
         Ok(self
-            .run(task, chunks, None)?
+            .run(task, chunks, None, &mut ScoreStats::default())?
             .into_iter()
             .map(|p| p.unwrap_or(f32::NAN))
             .collect())
@@ -167,7 +170,17 @@ impl Scorer for MemoScorer {
         chunks: &[&Chunk],
         deadline: std::time::Instant,
     ) -> laya_core::Result<Vec<Option<f32>>> {
-        self.run(task, chunks, Some(deadline))
+        self.run(task, chunks, Some(deadline), &mut ScoreStats::default())
+    }
+
+    fn score_within_stats(
+        &self,
+        task: &str,
+        chunks: &[&Chunk],
+        deadline: std::time::Instant,
+        stats: &mut ScoreStats,
+    ) -> laya_core::Result<Vec<Option<f32>>> {
+        self.run(task, chunks, Some(deadline), stats)
     }
 }
 
@@ -344,6 +357,7 @@ impl Daemon {
                 render,
                 memo_salt,
             } => {
+                let t_query = std::time::Instant::now();
                 let (root, id) = self.repo(&repo);
                 let mut cfg = self.base_cfg.clone();
                 if let Some(b) = budget_ms {
@@ -398,6 +412,7 @@ impl Daemon {
                         if let Some(s) = &session {
                             self.sessions().record_query(s, &result);
                         }
+                        let t_render = std::time::Instant::now();
                         let rendered = render.as_ref().map(|r| {
                             let r = RenderReq {
                                 budget_tokens: r.budget_tokens.min(MAX_RENDER_TOKENS),
@@ -412,6 +427,8 @@ impl Daemon {
                                 follow_up,
                             )
                         });
+                        let render_ms = laya_core::millis(t_render.elapsed());
+                        let total_ms = laya_core::millis(t_query.elapsed());
                         if let Some(t) = &self.capture {
                             let source = match (&session, &render) {
                                 (None, _) => "direct",
@@ -430,6 +447,8 @@ impl Daemon {
                                 capture: &capture,
                                 inlined: rendered.as_ref().map_or(&no_keys, |(_, k)| k),
                                 rendered_chars: rendered.as_ref().map(|(t, _)| t.chars().count()),
+                                render_ms,
+                                total_ms,
                             }));
                         }
                         let rendered = rendered.map(|(text, _)| text);
@@ -1544,6 +1563,94 @@ mod tests {
             "inlined blocks match the rendered context: {e}"
         );
         let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn a_record_times_each_stage_and_a_follow_up_shows_its_cache_hits() {
+        let (d0, repo) = daemon_with_files(WAL_FILES);
+        let file =
+            std::env::temp_dir().join(format!("laya-capture-stages-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        let cfg = RetrieverConfig {
+            laya_weight: Some(0.5),
+            p_threshold: 0.0,
+            ..RetrieverConfig::default()
+        };
+        let d = Daemon::with_capture(
+            d0.store.clone(),
+            cfg,
+            Some(crate::capture::Capture::new(
+                std::env::temp_dir(),
+                Some(file.display().to_string()),
+            )),
+        );
+        d.set_scorer(Arc::new(LowScorer), "laya-code");
+        ask_ranked(&d, &repo, "s1", "where is the wal segment replayed");
+        ask_ranked(&d, &repo, "s1", "where is the wal segment replayed");
+        let records: Vec<serde_json::Value> = std::fs::read_to_string(&file)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(records.len(), 2);
+        for e in &records {
+            let s = &e["stage_ms"];
+            for k in ["lexical", "model", "related", "render", "total"] {
+                assert!(s[k].as_f64().is_some_and(|v| v >= 0.0), "{k}: {e}");
+            }
+            assert!(s["batches"].is_array(), "{e}");
+            let parts: f64 = ["lexical", "model", "related", "render"]
+                .iter()
+                .map(|k| s[*k].as_f64().unwrap())
+                .sum();
+            assert!(parts <= s["total"].as_f64().unwrap() + 0.05, "{e}");
+        }
+        let (first, again) = (&records[0], &records[1]);
+        assert!(first["scored"].as_u64().unwrap() > 0, "{first}");
+        assert_eq!(first["cached"], 0, "{first}");
+        assert_eq!(
+            again["cached"], again["scored"],
+            "every probability of the repeat came from the cache: {again}"
+        );
+        assert!(again["stage_ms"]["batches"].as_array().unwrap().is_empty());
+    }
+
+    /// Reports one model batch per call.
+    struct BatchScorer;
+    impl Scorer for BatchScorer {
+        fn score(&self, _task: &str, chunks: &[&Chunk]) -> laya_core::Result<Vec<f32>> {
+            Ok(vec![0.3; chunks.len()])
+        }
+        fn score_within_stats(
+            &self,
+            _task: &str,
+            chunks: &[&Chunk],
+            _deadline: std::time::Instant,
+            stats: &mut laya_core::ScoreStats,
+        ) -> laya_core::Result<Vec<Option<f32>>> {
+            stats.batch_ms.push(7.0);
+            Ok(vec![Some(0.3); chunks.len()])
+        }
+    }
+
+    #[test]
+    fn memo_scorer_reports_cache_hits_and_passes_the_models_batches_through() {
+        let m = memo(Arc::new(BatchScorer));
+        let (a, b) = (chunk(10), chunk(20));
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut first = laya_core::ScoreStats::default();
+        m.score_within_stats("task", &[&a], deadline, &mut first)
+            .unwrap();
+        assert_eq!((first.batch_ms.as_slice(), first.cached), (&[7.0][..], 0));
+        let mut again = laya_core::ScoreStats::default();
+        m.score_within_stats("task", &[&a, &b], deadline, &mut again)
+            .unwrap();
+        assert_eq!((again.batch_ms.as_slice(), again.cached), (&[7.0][..], 1));
+        let mut cached = laya_core::ScoreStats::default();
+        m.score_within_stats("task", &[&a, &b], deadline, &mut cached)
+            .unwrap();
+        assert_eq!((cached.batch_ms.len(), cached.cached), (0, 2));
     }
 
     fn ask_ranked(

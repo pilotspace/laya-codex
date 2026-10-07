@@ -8,7 +8,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use laya_core::{Candidate, Chunk, QueryResult, RankMode, Result, Scorer, Store};
+use laya_core::{
+    Candidate, Chunk, QueryResult, RankMode, Result, ScoreStats, Scorer, Store, millis,
+};
 
 use crate::config::RetrieverConfig;
 use crate::fusion::fuse_ranked_lists;
@@ -140,7 +142,11 @@ impl<'a> Retriever<'a> {
             })
             .collect();
 
-        let (scored, mode, n_scored, n_offered) = self.laya_gate(&focus, candidates);
+        let lexical_ms = millis(start.elapsed());
+        let t_model = Instant::now();
+        let (scored, mode, n_scored, n_offered, score_stats) = self.laya_gate(&focus, candidates);
+        let model_ms = millis(t_model.elapsed());
+        let t_related = Instant::now();
         let p_by_id: HashMap<String, f32> = scored
             .iter()
             .filter_map(|s| s.p_relevant.map(|p| (s.chunk.id(), p)))
@@ -178,6 +184,13 @@ impl<'a> Retriever<'a> {
             related.splice(0..0, tests);
         }
 
+        let stages = StageTimes {
+            lexical_ms,
+            model_ms,
+            batch_ms: score_stats.batch_ms,
+            cached: score_stats.cached,
+            related_ms: millis(t_related.elapsed()),
+        };
         let result = QueryResult {
             spans,
             mode,
@@ -192,6 +205,7 @@ impl<'a> Retriever<'a> {
             CandidateCapture {
                 focus,
                 candidates: captured,
+                stages,
             },
         ))
     }
@@ -229,12 +243,12 @@ impl<'a> Retriever<'a> {
     /// only when nothing was scored (timeout, error, disabled scorer, malformed response) does
     /// the lexical order stand with `RankMode::Lexical`. Only the first `cfg.score_top`
     /// candidates go to the model. Also returns how many candidates the model scored and how many it
-    /// was given.
+    /// was given, and what the scorer reported spending.
     fn laya_gate(
         &self,
         prompt: &str,
         candidates: Vec<Candidate>,
-    ) -> (Vec<Scored>, RankMode, usize, usize) {
+    ) -> (Vec<Scored>, RankMode, usize, usize, ScoreStats) {
         let to_lexical = |cands: Vec<Candidate>| -> Vec<Scored> {
             cands
                 .into_iter()
@@ -247,7 +261,13 @@ impl<'a> Retriever<'a> {
         };
 
         let Some(scorer) = self.scorer.clone().filter(|_| self.cfg.use_laya) else {
-            return (to_lexical(candidates), RankMode::Lexical, 0, 0);
+            return (
+                to_lexical(candidates),
+                RankMode::Lexical,
+                0,
+                0,
+                ScoreStats::default(),
+            );
         };
 
         let to_score = match self.cfg.score_top {
@@ -258,14 +278,31 @@ impl<'a> Retriever<'a> {
             .iter()
             .map(|c| c.chunk.clone())
             .collect();
-        let mut probs = match call_scorer_bounded(
+        let (mut probs, stats) = match call_scorer_bounded(
             scorer,
             prompt.to_string(),
             owned_chunks,
             self.cfg.laya_budget,
         ) {
-            Some(p) if p.len() == to_score && p.iter().any(Option::is_some) => p,
-            _ => return (to_lexical(candidates), RankMode::Lexical, 0, to_score),
+            Some((p, stats)) if p.len() == to_score && p.iter().any(Option::is_some) => (p, stats),
+            Some((_, stats)) => {
+                return (
+                    to_lexical(candidates),
+                    RankMode::Lexical,
+                    0,
+                    to_score,
+                    stats,
+                );
+            }
+            None => {
+                return (
+                    to_lexical(candidates),
+                    RankMode::Lexical,
+                    0,
+                    to_score,
+                    ScoreStats::default(),
+                );
+            }
         };
         probs.resize(candidates.len(), None);
         let n_scored = probs.iter().filter(|p| p.is_some()).count();
@@ -326,7 +363,7 @@ impl<'a> Retriever<'a> {
             scored.retain(|s| s.p_relevant.unwrap_or(0.0) >= self.cfg.p_threshold);
         }
 
-        (scored, RankMode::Laya, n_scored, to_score)
+        (scored, RankMode::Laya, n_scored, to_score, stats)
     }
 }
 
@@ -426,6 +463,8 @@ pub struct CandidateCapture {
     pub focus: String,
     /// Every candidate in lexical order (after the prose demotion), as offered to the model.
     pub candidates: Vec<CapturedCandidate>,
+    /// Where the query's time went.
+    pub stages: StageTimes,
 }
 
 impl CandidateCapture {
@@ -433,8 +472,27 @@ impl CandidateCapture {
         Self {
             focus: focus.to_string(),
             candidates: Vec::new(),
+            stages: StageTimes::default(),
         }
     }
+}
+
+/// Where one query's time went, in milliseconds (see [`Retriever::query_with_capture`]). The
+/// stages run one after another, so they add up to about the query's elapsed time.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct StageTimes {
+    /// Candidate generation: signals, BM25 / defining / path lists, fusion, chunk fetch, caps.
+    pub lexical_ms: f64,
+    /// The Laya gate, wall-clock: hand-off to the scorer thread, cache lookups, every model
+    /// batch, and the wait up to the budget when the model is abandoned.
+    pub model_ms: f64,
+    /// Each forward batch the model ran, in order. Empty when every probability came from the
+    /// cache, when the model is off, or when it was abandoned at the budget.
+    pub batch_ms: Vec<f64>,
+    /// Probabilities served from the score cache instead of the model.
+    pub cached: usize,
+    /// After the model: span shaping, related code, usage lines and test pointers.
+    pub related_ms: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -469,8 +527,9 @@ fn elapsed_ms(start: Instant) -> u64 {
 /// Share of the Laya budget the scorer may spend before it must stop scoring.
 const SCORER_SHARE_OF_BUDGET: f32 = 0.85;
 
-/// Run `scorer.score_within(task, chunks, deadline)` on a detached worker thread, bounded by
-/// `budget`. Returns `None` on timeout, a channel error, or the scorer itself returning `Err`.
+/// Run `scorer.score_within_stats(task, chunks, deadline, ..)` on a detached worker thread,
+/// bounded by `budget`, returning the probabilities with what the scorer reported spending.
+/// Returns `None` on timeout, a channel error, or the scorer itself returning `Err`.
 /// A late result (the thread finishes after `budget` elapses) is simply dropped — the send on a
 /// disconnected receiver fails silently and the thread exits.
 ///
@@ -484,21 +543,22 @@ fn call_scorer_bounded(
     task: String,
     chunks: Vec<Chunk>,
     budget: Duration,
-) -> Option<Vec<Option<f32>>> {
-    let (tx, rx) = mpsc::channel::<Result<Vec<Option<f32>>>>();
+) -> Option<(Vec<Option<f32>>, ScoreStats)> {
+    let (tx, rx) = mpsc::channel::<(Result<Vec<Option<f32>>>, ScoreStats)>();
     // The scorer stops itself inside the budget, leaving room to hand the result back; the
     // `recv_timeout` below stays the hard stop for scorers that cannot.
     let deadline = Instant::now() + budget.mul_f32(SCORER_SHARE_OF_BUDGET);
 
     thread::spawn(move || {
         let refs: Vec<&Chunk> = chunks.iter().collect();
-        let result = scorer.score_within(&task, &refs, deadline);
-        let _ = tx.send(result);
+        let mut stats = ScoreStats::default();
+        let result = scorer.score_within_stats(&task, &refs, deadline, &mut stats);
+        let _ = tx.send((result, stats));
     });
 
     match rx.recv_timeout(budget) {
-        Ok(Ok(probs)) => Some(probs),
-        Ok(Err(_)) => None,
+        Ok((Ok(probs), stats)) => Some((probs, stats)),
+        Ok((Err(_), _)) => None,
         Err(_timeout_or_disconnected) => None,
     }
 }
@@ -639,6 +699,77 @@ mod tests {
             out.spans[0].path, "src/b.rs",
             "capture does not change the ranking"
         );
+    }
+
+    /// Scores every chunk 0.5 after `sleep`, reporting two model batches and one cache hit.
+    struct StatsScorer {
+        sleep: Duration,
+    }
+
+    impl Scorer for StatsScorer {
+        fn score(&self, _task: &str, _chunks: &[&Chunk]) -> Result<Vec<f32>> {
+            panic!("unbounded score call")
+        }
+        fn score_within_stats(
+            &self,
+            _task: &str,
+            chunks: &[&Chunk],
+            _deadline: Instant,
+            stats: &mut ScoreStats,
+        ) -> Result<Vec<Option<f32>>> {
+            thread::sleep(self.sleep);
+            stats.batch_ms = vec![1.5, 2.5];
+            stats.cached = 1;
+            Ok(vec![Some(0.5); chunks.len()])
+        }
+    }
+
+    #[test]
+    fn the_capture_times_the_lexical_model_and_related_stages() {
+        let store = FakeStore::new(abc_chunks());
+        let scorer = Arc::new(StatsScorer {
+            sleep: Duration::from_millis(20),
+        });
+        let r = Retriever::new(&store, Some(scorer), weighted_cfg());
+        let start = Instant::now();
+        let (_, cap) = r.query_with_capture("repo", "alpha beta gamma").unwrap();
+        let wall = start.elapsed().as_secs_f64() * 1e3;
+        let s = &cap.stages;
+        assert_eq!(s.batch_ms, [1.5, 2.5], "the model's own batches");
+        assert_eq!(s.cached, 1);
+        assert!(s.model_ms >= 20.0, "{s:?}");
+        assert!(s.lexical_ms >= 0.0 && s.related_ms >= 0.0, "{s:?}");
+        assert!(
+            s.lexical_ms + s.model_ms + s.related_ms <= wall + 0.01,
+            "{s:?} vs {wall}"
+        );
+    }
+
+    #[test]
+    fn a_scorer_without_stats_reports_no_batches() {
+        let store = FakeStore::new(abc_chunks());
+        let scorer = Arc::new(PartialScorer::new(vec![Some(0.1), Some(0.9), None]));
+        let r = Retriever::new(&store, Some(scorer), weighted_cfg());
+        let (_, cap) = r.query_with_capture("repo", "alpha beta gamma").unwrap();
+        assert!(cap.stages.batch_ms.is_empty());
+        assert_eq!(cap.stages.cached, 0);
+    }
+
+    #[test]
+    fn a_timed_out_model_keeps_its_wait_in_the_model_stage() {
+        let store = FakeStore::new(abc_chunks());
+        let scorer = Arc::new(StatsScorer {
+            sleep: Duration::from_millis(300),
+        });
+        let cfg = RetrieverConfig {
+            laya_budget: Duration::from_millis(40),
+            ..weighted_cfg()
+        };
+        let r = Retriever::new(&store, Some(scorer), cfg);
+        let (out, cap) = r.query_with_capture("repo", "alpha beta gamma").unwrap();
+        assert_eq!(out.mode, RankMode::Lexical);
+        assert!(cap.stages.model_ms >= 40.0, "{:?}", cap.stages);
+        assert!(cap.stages.batch_ms.is_empty(), "unknown when abandoned");
     }
 
     #[test]

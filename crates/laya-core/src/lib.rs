@@ -217,6 +217,20 @@ pub trait Store: Send + Sync {
     fn memo_put(&self, key: &str, value: &str, ttl_secs: u64) -> Result<()>;
 }
 
+/// What one scoring call spent, for the daemon's request records.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ScoreStats {
+    /// Wall-clock milliseconds of each model forward batch, in the order they ran.
+    pub batch_ms: Vec<f64>,
+    /// Probabilities served from a cache instead of the model.
+    pub cached: usize,
+}
+
+/// `d` in milliseconds, to 0.01 ms (the precision request records keep).
+pub fn millis(d: std::time::Duration) -> f64 {
+    (d.as_secs_f64() * 1e5).round() / 100.0
+}
+
 /// Relevance scorer contract (Laya). Returns P(relevant) per chunk, same order as input.
 pub trait Scorer: Send + Sync {
     fn score(&self, task: &str, chunks: &[&Chunk]) -> Result<Vec<f32>>;
@@ -233,5 +247,20 @@ pub trait Scorer: Send + Sync {
     ) -> Result<Vec<Option<f32>>> {
         let _ = deadline;
         Ok(self.score(task, chunks)?.into_iter().map(Some).collect())
+    }
+
+    /// [`score_within`], also adding what the call spent to `stats` (model batches, cache
+    /// hits). Default: [`score_within`], reporting nothing.
+    ///
+    /// [`score_within`]: Scorer::score_within
+    fn score_within_stats(
+        &self,
+        task: &str,
+        chunks: &[&Chunk],
+        deadline: std::time::Instant,
+        stats: &mut ScoreStats,
+    ) -> Result<Vec<Option<f32>>> {
+        let _ = stats;
+        self.score_within(task, chunks, deadline)
     }
 }
