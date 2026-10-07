@@ -117,6 +117,20 @@ impl Tracer {
     }
 }
 
+/// Append `entry` to `path` as one JSON line (the benchmark's hook log). The line is built in
+/// memory and handed to the kernel in one `write(2)` on an `O_APPEND` file, so lines that
+/// concurrent hooks append never interleave. (`writeln!` would format straight into the file,
+/// one `write(2)` per JSON token.)
+pub fn append_json_line(path: &Path, entry: &Value) -> std::io::Result<()> {
+    let mut line = serde_json::to_vec(entry)?;
+    line.push(b'\n');
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?
+        .write_all(&line)
+}
+
 /// A [`DaemonApi`] that remembers every call it forwards: request, response (or error) and time.
 pub struct Recording<'a> {
     inner: &'a dyn DaemonApi,
@@ -592,6 +606,36 @@ pub fn cmd_clear(home: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn concurrent_appends_never_interleave_a_line() {
+        // Hooks of one session run as separate processes and append to the same log at once
+        // (v14 had a line spliced from two of them); threads race the same way.
+        let path = scratch("append").join("hooks.jsonl");
+        let (writers, lines) = (8, 200);
+        std::thread::scope(|s| {
+            for w in 0..writers {
+                let path = &path;
+                s.spawn(move || {
+                    for i in 0..lines {
+                        let entry = json!({"writer": w, "i": i, "pad": "x".repeat(1500),
+                            "nested": {"a": [1, 2, 3], "b": "y".repeat(500)}});
+                        append_json_line(path, &entry).unwrap();
+                    }
+                });
+            }
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut seen = 0;
+        for line in text.lines() {
+            let v: Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("corrupt line ({e}): {:.120}", line));
+            assert_eq!(v["pad"].as_str().map(str::len), Some(1500));
+            seen += 1;
+        }
+        assert_eq!(seen, writers * lines);
+        assert!(text.ends_with('\n'));
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("laya-trace-{tag}-{}", std::process::id()));

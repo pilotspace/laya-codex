@@ -534,13 +534,6 @@ fn hook_inner(cfg: &Config) {
             "action": outcome.action, "injected_chars": outcome.injected_chars, "elapsed_ms": t0.elapsed().as_millis() as u64,
             "rank_mode": outcome.rank.map(|r| r.mode), "scored": outcome.rank.map(|r| r.scored), "offered": outcome.rank.map(|r| r.offered),
             "candidates": outcome.rank.map(|r| r.candidates)});
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log)
-        {
-            use std::io::Write;
-            let _ = writeln!(f, "{line}");
-        }
+        let _ = trace::append_json_line(log, &line);
     }
 }
