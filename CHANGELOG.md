@@ -46,6 +46,11 @@ All notable changes to this project are documented here. The format follows
   session's running total. The harness added them, charging every two-prompt session for prompt 1
   twice. `bench/recost.py` re-derives v12–v14 from the raw transcripts, and `bench/cost_floor.py`
   now uses Sonnet 5.5's list prices.
+- **Benchmark token counts match what Anthropic bills.** The harness counted code at 3.5 characters
+  per token. Regressing billed cache writes on characters gives 0.42–0.46 tokens per character on
+  Sonnet 5.5, so code read and code injected were both 1.5–1.6× low. `bench/runs.py` now keeps one
+  rate per kind (Read, Grep, Glob, `search`, injected), and `bench/recost.py tokens` re-derives
+  v12–v14: v13 code read + injected +9.5% → +10.4% (n.s.), v14 +49.9% → +50.9%.
 - **Benchmark arms no longer share a prompt cache.** Each arm and repeat gets its own system-prompt
   tag. Before, an arm whose first request matched another's read that arm's cache (v14).
 - **Benchmark arm order is balanced.** Every arm runs first for an equal share of tasks. One fixed

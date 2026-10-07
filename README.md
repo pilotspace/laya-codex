@@ -73,7 +73,7 @@ subagents, and where it helps less.
 | **Local** | No server, account or telemetry. Only injected code reaches Anthropic, like Claude's own reads. |
 | **Fail-open** | If laya-codex is missing, stopped or slow, Claude Code carries on unchanged. |
 
-The trade-off: about 1.8k injected tokens per session, so code read + injected is +10%
+The trade-off: about 2.9k injected tokens per session, so code read + injected is +10%
 ([limits](#what-limits-this-result-and-what-is-next)).
 
 ## Install
@@ -194,14 +194,14 @@ bootstrap CIs; grey = not significant.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-savings-dark.svg">
-  <img alt="laya-codex vs stock Claude Code: cost, code tokens reaching Claude and turns. Paired benchmark v13, 60 tasks on moon, httpx and hono, claude-sonnet-5-5 at medium effort, 95% confidence intervals: cost −14.8%; code read plus injected +9.5% (not significant); code-reading tokens −57.0%; turns −45.5%; total input tokens −31.7%; output tokens −25.6%; wall-clock time −19.2%" src="docs/assets/benchmark-savings-light.svg" width="760">
+  <img alt="laya-codex vs stock Claude Code: cost, code tokens reaching Claude and turns. Paired benchmark v13, 60 tasks on moon, httpx and hono, claude-sonnet-5-5 at medium effort, 95% confidence intervals: cost −14.8%; code read plus injected +10.4% (not significant); code-reading tokens −57.7%; turns −45.5%; total input tokens −31.7%; output tokens −25.6%; wall-clock time −19.2%" src="docs/assets/benchmark-savings-light.svg" width="760">
 </picture>
 
 | per session | stock | laya-codex | change | 95% CI |
 |---|---|---|---|---|
 | Cost (goal −15%) | $0.081 | $0.069 | **−14.8%** | −18.8% … −10.4% |
-| Code read + injected (tokens) | 2,755 | 3,017 | +9.5% | −1.6% … +22.6% |
-| Code-reading tokens | 2,755 | 1,184 | **−57.0%** | −65.2% … −47.8% |
+| Code read + injected (tokens) | 4,297 | 4,743 | +10.4% | −0.6% … +23.3% |
+| Code-reading tokens | 4,297 | 1,817 | **−57.7%** | −65.7% … −48.8% |
 | Total input tokens | | | **−31.7%** | −37.3% … −25.0% |
 | Output tokens | | | **−25.6%** | −28.9% … −22.2% |
 | Wall-clock time (goal −20%) | 23.2 s | 18.7 s | **−19.2%** | −23.3% … −14.7% |
@@ -212,7 +212,7 @@ bootstrap CIs; grey = not significant.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-reads-dark.svg">
-  <img alt="Finding the right code, benchmark v13, 60 paired tasks, stock vs laya-codex: relevant code found 50% → 78%, median turn the right code arrives 4 → 0, Reads on relevant code 70% → 76%, wasted read tokens 278 → 102" src="docs/assets/benchmark-reads-light.svg" width="760">
+  <img alt="Finding the right code, benchmark v13, 60 paired tasks, stock vs laya-codex: relevant code found 50% → 78%, median turn the right code arrives 4 → 0, Reads on relevant code 70% → 76%, wasted read tokens 413 → 152" src="docs/assets/benchmark-reads-light.svg" width="760">
 </picture>
 
 ### By repository
@@ -225,11 +225,11 @@ injection costs about what it saves:
 | Cost (95% CI) | **−23.6%** (−29.3% … −16.9%) | **−11.8%** (−18.4% … −4.8%) | +1.3% (−7.4% … +11.7%), n.s. |
 | Wall-clock time | **−28.7%** | **−20.5%** | −4.5%, n.s. |
 | Turns | **−58.9%** | **−45.7%** | **−27.6%** |
-| Code-reading tokens | **−72.0%** | **−44.9%** | **−38.1%** |
-| Code read + injected | **−22.6%** | +28.9% | +58.2% |
+| Code-reading tokens | **−72.4%** | **−45.6%** | **−39.2%** |
+| Code read + injected | **−22.1%** | +31.0% | +58.8% |
 
 Bold = significant improvement; the hono and httpx increases are significant too. Repositories
-weighted equally: cost −11.4% (−15.5% … −6.7%), read + injected +21.5% (+9.5% … +36.8%).
+weighted equally: cost −11.4% (−15.5% … −6.7%), read + injected +22.6% (+10.7% … +37.7%).
 
 ### On new tasks
 
@@ -238,7 +238,7 @@ laya-codex was tuned on these 60 tasks from v8 to v13. Benchmark v14 ran 60 new 
 - **Cost:** −3.4% (−9.7% … +3.6%), not significant. It fell only on moon (−12.5%).
 - **Time and turns:** time −12.1% (−17.9% … −5.3%), turns −37.6%.
 - **Right files on the first question:** 0.73 → 0.83 (+0.10, +0.04 … +0.16), no change over both.
-- **Code read + injected:** +49.9%. Stock read less on these tasks while the injection kept its
+- **Code read + injected:** +50.9%. Stock read less on these tasks while the injection kept its
   size.
 
 The gains in turns, time and first answers hold; the cost saving mostly does not.
@@ -258,13 +258,19 @@ v14 and fixed:
 - the harness counted prompt 1's cost twice (the costs here are re-derived);
 - arms with the same system prompt shared Anthropic's prompt cache.
 
+**Token counts re-derived (2026-10-07).** The harness counted code at 3.5 characters per token;
+the cache writes Anthropic bills show Sonnet 5.5 spends 0.42–0.46 tokens per character of code
+(`bench/runs.py`), so code read and code injected were both counted 1.5–1.6× too low. The
+v12–v14 figures here are re-derived from the raw transcripts: token counts rose 1.5–1.6×, pooled
+changes moved by about 1 point and per-repository ones by up to 2.1.
+
 ### What limits this result, and what is next
 
 | limit | why | next |
 |---|---|---|
-| **Cost −14.8%**, goal −15% | Most of the bill is Claude Code's own context and Claude's answers, paid by both arms; even with zero lookups a session with today's injection costs about $0.045 (−44%) | Don't inject where stock is already cheap (httpx) |
-| **New tasks (v14): cost −3.4%** (n.s.), read + injected +50% | Tuned on v13's tasks; stock reads less on new ones, the injection does not shrink with it | Judge changes on held-out tasks |
-| **Read + injected +9.5%** (n.s.; +21.5% repo-balanced), goal: not significantly worse | ~1.8k injected tokens replace reading about one for one | Smaller blocks made Claude read more (v11); same httpx fix |
+| **Cost −14.8%**, goal −15% | Most of the bill is Claude Code's own context and Claude's answers, paid by both arms; even with zero lookups a session with today's injection costs about $0.053 (−34%) | Don't inject where stock is already cheap (httpx) |
+| **New tasks (v14): cost −3.4%** (n.s.), read + injected +51% | Tuned on v13's tasks; stock reads less on new ones, the injection does not shrink with it | Judge changes on held-out tasks |
+| **Read + injected +10.4%** (n.s.; +22.6% repo-balanced), goal: not significantly worse | ~2.9k injected tokens replace reading about one for one | Smaller blocks made Claude read more (v11); same httpx fix |
 | **Time −19.2%**, goal −20% | Answers take about 12.4 s in both arms; the saving is all lookup round trips ([breakdown](docs/RESULTS.md)) | The small time levers, about −21% |
 | **httpx cost +1%** (n.s.) | Stock already finds httpx code fast; all 8 first-prompt injections Laya scored below p 0.1 were httpx | — |
 | **Model vs keywords**: no session difference | r1 wins offline (70 vs 62 of 115), not yet in v10/v12 ([details](#why-a-laya-model-on-top-of-keyword-search)) | — |

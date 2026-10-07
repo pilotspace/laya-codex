@@ -1,7 +1,7 @@
 | metric | baseline | laya | laya-lex |
 |---|---|---|---|
-| reading_tokens | 1878.0 | 1039.0 | 1177.8 |
-| injected_tokens | 0.0 | 1775.9 | 1707.5 |
+| reading_tokens | 2957.9 | 1616.4 | 1831.8 |
+| injected_tokens | 0.0 | 2835.9 | 2726.6 |
 | total_input_tokens | 52923.1 | 46267.8 | 47952.0 |
 | output_tokens | 1894.5 | 1595.5 | 1662.2 |
 | wall_s | 23.2 | 20.5 | 20.3 |
@@ -11,8 +11,8 @@
 | precision | 0.750 | 0.608 | 0.575 |
 | hit_any | 0.900 | 0.950 | 0.900 |
 | recall_all_turns | 0.883 | 0.917 | 0.867 |
-| **laya vs baseline** | reading+injected +49.9% · wall -11.5% · median wall ratio 0.88 · median total-input ratio 0.90 |
-| **laya-lex vs baseline** | reading+injected +53.6% · wall -12.2% · median wall ratio 0.95 · median total-input ratio 0.99 |
+| **laya vs baseline** | reading+injected +50.5% · wall -11.5% · median wall ratio 0.88 · median total-input ratio 0.90 |
+| **laya-lex vs baseline** | reading+injected +54.1% · wall -12.2% · median wall ratio 0.95 · median total-input ratio 0.99 |
 
 | arm | sessions | tool calls/session | Grep | Read | Glob | mcp__laya-codex__search | other | index_started | inject | note_ranged_read |
 |---|---|---|---|---|---|---|---|---|---|---|
