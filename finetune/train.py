@@ -140,8 +140,11 @@ def window_plan(windows, window_range, max_len):
     return windows, (tuple(window_range) if window_range else None), wmax
 
 
-def collate(seqs, pad_id):
+def collate(seqs, pad_id, multiple=1):
+    """Pad to the longest sequence, rounded up to `multiple`: bucketed lengths keep the number of distinct shapes
+    (and the MPS graphs and buffers cached per shape) bounded over a long run; padding is masked out."""
     n, L = len(seqs), max(len(s[0]) for s in seqs)
+    L = -(-L // multiple) * multiple
     ids = torch.full((n, L), pad_id, dtype=torch.long)
     att = torch.zeros((n, L), dtype=torch.long)
     mpos = torch.zeros((n, 2), dtype=torch.long)
@@ -174,7 +177,7 @@ def release_cache(device):
 
 
 @torch.no_grad()
-def predict_lists(model, enc, device, pad_id, bs=48, release_every=10):
+def predict_lists(model, enc, device, pad_id, bs=48, release_every=10, pad_multiple=64):
     """Raw (T=1) noul logits per list [n_i, 2]."""
     was = model.training
     model.train(False)
@@ -183,7 +186,7 @@ def predict_lists(model, enc, device, pad_id, bs=48, release_every=10):
     out = np.zeros((len(flat), 2), np.float32)
     for k, s in enumerate(range(0, len(order), bs)):
         idx = order[s:s + bs]
-        out[idx] = forward_logits(model, collate([flat[i] for i in idx], pad_id), device).cpu().numpy()
+        out[idx] = forward_logits(model, collate([flat[i] for i in idx], pad_id, pad_multiple), device).cpu().numpy()
         if (k + 1) % release_every == 0:
             release_cache(device)
     release_cache(device)
@@ -228,13 +231,13 @@ def select_key(m):
             round(float(np.mean([v["blend"]["mrr_pos"] for v in m.values()])), 4))
 
 
-def score_windows(model, tok, val_lists, val_sids, windows, max_len, device):
+def score_windows(model, tok, val_lists, val_sids, windows, max_len, device, pad_multiple=64):
     """{str(window): (raw logits per list, enc)} for the validation lists at each window."""
     out = {}
     for w in windows:
         enc = [(listwise.build_list(tok, l, s, window=w, max_len=max_len), labels_of(l))
                for l, s in zip(val_lists, val_sids)]
-        out[str(w)] = (predict_lists(model, enc, device, tok.pad_token_id), enc)
+        out[str(w)] = (predict_lists(model, enc, device, tok.pad_token_id, pad_multiple=pad_multiple), enc)
     return out
 
 
@@ -261,9 +264,9 @@ def trainable_state(model):
 
 
 def list_loss(model, seqs, labels, device, pad_id, list_weight, amp=False, teacher=None, kd_weight=0.0, kd_T=1.0,
-              kd_list_weight=1.0):
+              kd_list_weight=1.0, pad_multiple=1):
     """Gold loss (noul log loss + list_weight x listwise) + kd_weight x listwise.kd_loss against `teacher` logits."""
-    logits = forward_logits(model, collate(seqs, pad_id), device, amp)
+    logits = forward_logits(model, collate(seqs, pad_id, pad_multiple), device, amp)
     y = torch.tensor(labels, device=device)
     loss = noul_loss(logits, y)
     if list_weight:
@@ -375,7 +378,7 @@ def train(args, device):
         list_secs = {int(k): v for k, v in ck.get("list_secs", {}).items()}
         print("resumed at step %d" % step, flush=True)
     else:
-        scored = score_windows(model, tok, val_lists, val_sids, val_windows, max_len, device)
+        scored = score_windows(model, tok, val_lists, val_sids, val_windows, max_len, device, args.pad_multiple)
         m0, m0f = validate(scored, val_lists, T=noul_temperature(cfg)), validate(scored, val_lists)
         del scored
         log.append({"step": 0, "val_base_T": m0, "val": m0f, "mem": memory_now(device)})
@@ -399,7 +402,8 @@ def train(args, device):
             seqs = listwise.build_list(tok, train_lists[i], train_sids[i], window=w, max_len=max_len)
             loss = list_loss(model, seqs, train_lab[i], device, tok.pad_token_id, args.list_weight,
                              teacher=kd.lookup(train_lists[i]) if kd is not None else None,
-                             kd_weight=args.kd_weight, kd_T=kd_T, kd_list_weight=args.kd_list_weight) / args.lists_per_step
+                             kd_weight=args.kd_weight, kd_T=kd_T, kd_list_weight=args.kd_list_weight,
+                             pad_multiple=args.pad_multiple) / args.lists_per_step
             loss.backward()
             tot += loss.item()  # syncs the device: the list time below covers forward + backward
             seen[w] = seen.get(w, 0) + 1
@@ -427,7 +431,7 @@ def train(args, device):
             t0 = time.time()
         if step % args.eval_every == 0 or finished:
             release_cache(device)
-            m = validate(score_windows(model, tok, val_lists, val_sids, val_windows, max_len, device), val_lists)
+            m = validate(score_windows(model, tok, val_lists, val_sids, val_windows, max_len, device, args.pad_multiple), val_lists)
             log.append({"step": step, "train_loss_ema": round(ema, 4), "val": m, "mem": memory_now(device),
                         "train_secs": round(train_secs, 1)})
             print("step %d val %s" % (step, json.dumps(m)), flush=True)
@@ -484,6 +488,8 @@ def main(argv=None):
     ap.add_argument("--kd-list-weight", type=float, default=1.0, help="listwise part of the distillation term")
     ap.add_argument("--teacher-cache", default=None, help="teacher logits from finetune/teacher.py")
     ap.add_argument("--release-every", type=int, default=1, help="release the MPS cache every N updates")
+    ap.add_argument("--pad-multiple", type=int, default=64,
+                    help="pad each batch to a multiple of N tokens (bounded shapes; 1 = the longest sequence)")
     args = ap.parse_args(argv)
     device = torch.device(args.device)
     if args.bench:

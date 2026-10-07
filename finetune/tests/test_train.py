@@ -73,6 +73,31 @@ def test_predict_lists_releases_the_device_cache_periodically(monkeypatch):
     assert len(out) == 30 and len(calls) == 120 // 4 // 10 + 1  # every 10 batches, and once at the end
 
 
+def test_collate_pads_to_a_multiple_with_masked_padding():
+    import train
+    seqs = [([5, 6, 7], [0, 1]), ([5, 6, 7, 8, 9], [0, 2])]
+    b = train.collate(seqs, 0, multiple=4)
+    assert b["input_ids"].shape == (2, 8)
+    assert b["attention_mask"].tolist() == [[1, 1, 1, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 0, 0, 0]]
+    assert b["input_ids"][1, 5:].tolist() == [0, 0, 0]
+    assert train.collate(seqs, 0)["input_ids"].shape == (2, 5)  # default: the longest sequence, as before
+
+
+@needs_model
+def test_bucketed_padding_does_not_change_the_scores(setup):
+    import listwise
+    import train
+    _, init, data = setup
+    model, tok, cfg, _ = train.load_base_model(init, torch.device("cpu"))
+    lists = train.training_lists(data)[:3]
+    enc = [(listwise.encode_list(tok, l, window=w, max_len=cfg["max_len"]), train.labels_of(l))
+           for l, w in zip(lists, (16, 32, 64))]
+    a = train.predict_lists(model, enc, torch.device("cpu"), tok.pad_token_id, bs=4, pad_multiple=1)
+    b = train.predict_lists(model, enc, torch.device("cpu"), tok.pad_token_id, bs=4, pad_multiple=64)
+    for x, y in zip(a, b):
+        assert np.allclose(x, y, atol=1e-4)
+
+
 def test_release_cache_is_a_no_op_off_mps():
     import train
     train.release_cache(torch.device("cpu"))
