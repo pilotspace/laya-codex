@@ -95,8 +95,9 @@ class HookLog(unittest.TestCase):
         h = runs.read_hook_log(log)
         self.assertEqual(h["rank_modes"], ["laya", "laya-partial"])
         self.assertEqual(h["scored"], [16, 8])
-        self.assertEqual(h["injected_tokens"], 100 + 10 + 20)
-        self.assertEqual(h["prompt_injected_tokens"], [100, 20])
+        # 0.456 tokens per injected char: 350 -> 160, 35 -> 16, 70 -> 32
+        self.assertEqual(h["injected_tokens"], 160 + 16 + 32)
+        self.assertEqual(h["prompt_injected_tokens"], [160, 32])
         self.assertEqual(h["hook_actions"], {"index_started": 1, "inject": 2, "narrow_read": 1})
         self.assertEqual(h["prompt_actions"], ["inject", "inject"])
 
@@ -115,6 +116,49 @@ class HookLog(unittest.TestCase):
         ])
         h = runs.read_hook_log(log)
         self.assertEqual(h["prompt_actions"], ["inject", "query_failed"])
+
+
+class TokenEstimate(unittest.TestCase):
+    """Characters to tokens, per kind of text, calibrated on billed cache writes (v12-v14)."""
+
+    def test_rates_are_the_calibrated_tokens_per_char(self):
+        self.assertEqual(runs.TOKENS_PER_CHAR, {"Read": 0.424, "Grep": 0.460, "Glob": 0.554, "search": 0.445,
+                                                "injected": 0.456, "answer": 0.455})
+
+    def test_each_kind_converts_at_its_own_rate(self):
+        self.assertEqual(runs.tok_estimate(1000, "Read"), 424)
+        self.assertEqual(runs.tok_estimate(1000, "Grep"), 460)
+        self.assertEqual(runs.tok_estimate(1000, "search"), 445)
+        self.assertEqual(runs.tok_estimate(1000, "injected"), 456)
+        self.assertEqual(runs.tok_estimate(0, "Read"), 0)
+
+    def test_code_is_no_longer_counted_at_3_5_chars_per_token(self):
+        # 3.5 chars per token under-counted code ~1.6x against what the API bills.
+        self.assertGreater(runs.tok_estimate(3500, "injected"), 1500)
+
+    def test_unknown_kind_is_refused(self):
+        with self.assertRaises(KeyError):
+            runs.tok_estimate(10, "prose")
+
+
+class ParseStreamReading(unittest.TestCase):
+    """run_bench.parse_stream counts each tool result at its tool's rate."""
+
+    def stream(self, results):
+        uses = [{"type": "assistant", "message": {"id": "m%d" % i, "content": [
+            {"type": "tool_use", "id": "t%d" % i, "name": name, "input": {}}]}} for i, (name, _) in enumerate(results)]
+        res = [{"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t%d" % i, "content": body}]}} for i, (_, body) in enumerate(results)]
+        return [json.dumps(e) for pair in zip(uses, res) for e in pair]
+
+    def test_tool_results_are_counted_per_tool_kind(self):
+        import run_bench
+        listed = [{"type": "text", "text": "x" * 100}]
+        out = run_bench.parse_stream(self.stream([("Read", "a" * 1000), ("Grep", "b" * 1000), ("Glob", "c" * 1000),
+                                                  ("mcp__laya-codex__search", listed), ("Bash", "d" * 1000)]))
+        search = runs.tok_estimate(len(json.dumps(listed)), "search")
+        self.assertEqual(out["reading_tokens"], 424 + 460 + 554 + search)
+        self.assertEqual(out["read_bytes"], 3000 + len(json.dumps(listed)))
 
 
 class LoadRunsInjectionHealth(unittest.TestCase):

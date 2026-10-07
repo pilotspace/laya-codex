@@ -40,7 +40,7 @@ import sys
 import time
 
 import ledger
-from runs import load_runs, parse_arm, read_hook_log
+from runs import load_runs, parse_arm, read_hook_log, tok_estimate
 
 SRC_EXT = (".rs", ".py", ".ts", ".tsx", ".js", ".go", ".java", ".c", ".h", ".cc", ".cpp", ".hpp", ".rb", ".php", ".kt", ".swift", ".cs")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -265,8 +265,11 @@ def arm_flags(arm, cfg_dir, rep=0):
     return flags
 
 
-def tok_estimate(text):
-    return int(len(text) / 3.5)
+def reading_kind(tool):
+    """The runs.TOKENS_PER_CHAR kind of a tool whose result counts as code read; None for others."""
+    if tool in ("Read", "Grep", "Glob"):
+        return tool
+    return "search" if tool.startswith("mcp__laya") else None
 
 
 def parse_stream(lines):
@@ -291,8 +294,9 @@ def parse_stream(lines):
                     content = c.get("content")
                     text = content if isinstance(content, str) else json.dumps(content)
                     name = tool_names.get(c.get("tool_use_id"), "?")
-                    if name in ("Read", "Grep", "Glob") or name.startswith("mcp__laya"):
-                        out["reading_tokens"] += tok_estimate(text)
+                    kind = reading_kind(name)
+                    if kind:
+                        out["reading_tokens"] += tok_estimate(len(text), kind)
                         out["read_bytes"] += len(text)
         elif t == "system" and "hook" in str(e.get("subtype", "")):
             out["hook_events"] += 1
