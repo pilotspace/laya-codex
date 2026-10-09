@@ -135,6 +135,7 @@ fn heads_to_rows(out: &Tensor) -> candle_core::Result<Tensor> {
     dst.reshape((b, s, h * hd))
 }
 
+#[cfg_attr(not(feature = "metal"), allow(unused_variables))]
 fn ops(dev: &Device, cfg: &EncoderConfig, b: usize, s: usize, batch_ms: f64) -> anyhow::Result<()> {
     let dtype = if dev.is_cpu() { DType::F32 } else { DType::F16 };
     let (d, inter, h, hd) = (
@@ -205,6 +206,16 @@ fn ops(dev: &Device, cfg: &EncoderConfig, b: usize, s: usize, batch_ms: f64) -> 
         })?,
         layers,
     );
+    #[cfg(feature = "metal")]
+    if dev.is_metal() {
+        add(
+            "laya rope_thd (32-bit grid)",
+            timeit(dev, iters, || {
+                laya_model::nn_probe::rope_thd(&qk4, &cos, &sin)
+            })?,
+            0,
+        );
+    }
     #[cfg(feature = "metal")]
     if dev.is_metal() {
         let q = qk4.narrow(2, 0, h)?.transpose(1, 2)?;

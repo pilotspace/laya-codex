@@ -8,7 +8,7 @@ description = "Native (candle) inference for the Laya typed-decision model: Mode
 [features]
 default = []
 # Enables the Metal backend (macOS). Off by default so Linux builds stay pure CPU.
-metal = ["candle-core/metal", "candle-nn/metal"]
+metal = ["candle-core/metal", "candle-nn/metal", "dep:candle-metal-kernels", "dep:objc2-metal"]
 # Apple Accelerate BLAS for the CPU path on macOS.
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate"]
 
@@ -16,6 +16,9 @@ accelerate = ["candle-core/accelerate", "candle-nn/accelerate"]
 laya-core.workspace = true
 candle-core = "0.11"
 candle-nn = "0.11"
+# Custom Metal kernels (feature `metal`): same versions candle itself uses.
+candle-metal-kernels = { version = "0.11", optional = true }
+objc2-metal = { version = "0.3", optional = true }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 serde.workspace = true
 serde_json.workspace = true

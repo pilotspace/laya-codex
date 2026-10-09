@@ -19,11 +19,15 @@ pub mod config;
 mod encoder;
 pub mod error;
 mod head;
+#[cfg(feature = "metal")]
+mod metal_ops;
 mod model;
 mod nn;
-/// Internal ops exposed for the `profile_ops` example (not a stable API).
+/// Internal ops exposed for the profiling examples (not a stable API).
 #[doc(hidden)]
 pub mod nn_probe {
+    #[cfg(feature = "metal")]
+    pub use crate::metal_ops::rope_thd;
     pub use crate::nn::window_band;
 }
 mod scorer;
