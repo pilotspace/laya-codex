@@ -516,10 +516,12 @@ fn add_bias_with(source: &'static str, x: &Tensor, bias: &Tensor) -> Result<Tens
 /// `q`: `(b, h, lq, hd)`, `k` and `v`: `(b, h, kl, hd)` (any strides), `mask`: additive
 /// `(b, h, lq, kl)` (any strides, e.g. broadcast over heads). Needs `lq >= 2`.
 pub fn sdpa_rows(q: &Tensor, k: &Tensor, v: &Tensor, mask: &Tensor, scale: f32) -> Result<Tensor> {
+    // The kernel binds the mask buffer without its offset, and `contiguous()` returns an
+    // already-contiguous offset view unchanged: copy such a mask to a fresh buffer.
     let mask = if mask.layout().start_offset() == 0 {
         mask.clone()
     } else {
-        mask.contiguous()?
+        mask.force_contiguous()?
     };
     q.apply_op3_no_bwd(k, v, &SdpaRows { mask, scale })
 }
@@ -622,6 +624,23 @@ mod tests {
         let bias = randn(&[d], &dev, DType::BF16);
         let want = x.broadcast_add(&bias).unwrap();
         assert_eq!(max_abs_diff(&add_bias(&x, &bias).unwrap(), &want), 0.0);
+    }
+
+    #[test]
+    fn sdpa_rows_takes_a_mask_view_that_starts_at_an_offset() {
+        let Some(dev) = metal() else { return };
+        let (b, s, h, hd) = (2usize, 37usize, 4usize, 64usize);
+        let q = randn(&[b, h, s, hd], &dev, DType::F16);
+        let k = randn(&[b, h, s, hd], &dev, DType::F16);
+        let v = randn(&[b, h, s, hd], &dev, DType::F16);
+        // A contiguous view whose data starts one batch row into its buffer: `contiguous()`
+        // keeps such a view as is, and the kernel binds the mask without an offset.
+        let big = randn(&[b + 1, h, s, s], &dev, DType::F16);
+        let mask = big.narrow(0, 1, b).unwrap();
+        assert!(mask.is_contiguous() && mask.layout().start_offset() > 0);
+        let want = sdpa_rows(&q, &k, &v, &mask.force_contiguous().unwrap(), 0.125).unwrap();
+        let got = sdpa_rows(&q, &k, &v, &mask, 0.125).unwrap();
+        assert_eq!(max_abs_diff(&got, &want), 0.0);
     }
 
     #[test]
