@@ -1,6 +1,33 @@
 # Plan: release v0.5.0 (the faster, more accurate reranker)
 
-Status: proposed 2026-10-09. It follows [2026-10-lookup.md](2026-10-lookup.md).
+Status: steps 1–7 done 2026-10-09; results docs (step 8) in review. It follows
+[2026-10-lookup.md](2026-10-lookup.md).
+
+## Progress (2026-10-09)
+
+- **Merged:**
+
+  | PR | contents |
+  |---|---|
+  | #41 | plan |
+  | #42 | measurement |
+  | #43 | follow-up picks |
+  | #44 | student |
+  | #45 | kernels |
+  | #46 | Rust 1.99 build |
+  | #47 | r2 default |
+  | #48 | Metal on macOS before 15 |
+- **Hugging Face:** laya-code-r2 is on `tindang/laya-code` branch `r2` (831fa83), and the
+  installer pins it.
+- **Benchmark v15** (held-out, $11.37 of the $25 cap), rc vs v0.4.0:
+  - cost −1.2%, n.s.;
+  - first-question recall +0.035, n.s.;
+  - lookup calls −9.8%, n.s.;
+  - lookup time −16.7%, significant;
+  - wall-clock +2.0%, n.s., from one API outlier (−4.9% without it).
+
+  Nothing got worse. The score cache was off in both arms because of a full disk
+  ([RESULTS](../RESULTS.md#benchmark-v15-2026-10-09-v050-against-v040-held-out-tasks)).
 
 ## What ships
 

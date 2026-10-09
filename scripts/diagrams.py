@@ -176,7 +176,7 @@ def pipeline(t):
     stages = [
         (["Your prompt", "the task, as typed"], False),
         (["Keyword search", "BM25 + symbols + paths", "24 candidates"], False),
-        (["Laya re-ranker", "top 16 · about 0.5 s", "is it relevant?"], True),
+        (["Laya re-ranker", "top 12 · about 0.15 s", "is it relevant?"], True),
         (["Prompt + code", "up to 9,500 chars", "top 2 files + map"], True),
         (["Claude Code", "starts on the task"], False),
     ]
@@ -197,7 +197,7 @@ def pipeline(t):
                      "MCP search: Claude's own lookups (where is X, who calls X, which tests)", 12, t["fg"], "middle"))
     return doc(w, h, body, css, t, "How laya-codex picks the code: your repository is split by tree-sitter into 10–50-line "
                "chunks in Moon, a local keyword index; on every prompt keyword search finds 24 candidates, the Laya "
-               "re-ranker scores the top 16 in about 0.5 s, and up to 9,500 characters of code reach Claude Code with "
+               "re-ranker scores the top 12 in about 0.15 s, and up to 9,500 characters of code reach Claude Code with "
                "the prompt; Claude's own lookups go through MCP search")
 
 
@@ -211,7 +211,7 @@ def rerank_bars():
     return [
         {"label": "Whole repository", "note": "every chunk · not to scale", "n": None, "w": 24 * PITCH},
         {"label": "Keyword search", "note": "24 candidates", "n": 24, "w": 24 * PITCH},
-        {"label": "Laya re-ranker", "note": "scores the top 16 · about 0.5 s", "n": 16, "w": 16 * PITCH},
+        {"label": "Laya re-ranker", "note": "scores the top 12 · about 0.15 s", "n": 12, "w": 12 * PITCH},
         {"label": "Inlined in the prompt", "note": "top 2 files' code + a map", "n": 2, "w": 2 * PITCH},
     ]
 
@@ -245,7 +245,7 @@ def rerank(t):
         text(w / 2, 305, "final score = 0.5 × keyword rank + 0.5 × model probability", 14, t["fg"], "middle", "600"),
     ]))
     return doc(w, h, body, css, t, "Keywords find the candidates, Laya orders them: keyword search narrows the repository "
-               "to 24 candidate blocks, the Laya re-ranker scores the top 16 in about 0.5 s, and the code of the top 2 "
+               "to 24 candidate blocks, the Laya re-ranker scores the top 12 in about 0.15 s, and the code of the top 2 "
                "files is inlined; final score = 0.5 × keyword rank + 0.5 × model probability")
 
 

@@ -1,0 +1,249 @@
+{
+ "n_tasks": 60,
+ "unparsable_hook_lines": 2,
+ "arms": {
+  "v040": {
+   "answer_s": 11.352,
+   "lookups_s": 5.051,
+   "hook_s": 1.084,
+   "tools_s": 0.303,
+   "overhead_s": 0.309,
+   "wall_s": 18.098,
+   "lookup_calls": 2.033,
+   "lookup_s": 6.437
+  },
+  "baseline": {
+   "answer_s": 10.971,
+   "lookups_s": 10.356,
+   "hook_s": 0.0,
+   "tools_s": 0.195,
+   "overhead_s": 0.242,
+   "wall_s": 21.764,
+   "lookup_calls": 3.867,
+   "lookup_s": 10.551
+  },
+  "rc": {
+   "answer_s": 12.812,
+   "lookups_s": 4.845,
+   "hook_s": 0.298,
+   "tools_s": 0.22,
+   "overhead_s": 0.29,
+   "wall_s": 18.466,
+   "lookup_calls": 1.833,
+   "lookup_s": 5.363
+  }
+ },
+ "per_repo": {
+  "moon": {
+   "v040": {
+    "answer_s": 12.795,
+    "lookups_s": 4.404,
+    "hook_s": 1.135,
+    "tools_s": 0.391,
+    "overhead_s": 0.301,
+    "wall_s": 19.026,
+    "lookup_calls": 1.8,
+    "lookup_s": 5.93
+   },
+   "baseline": {
+    "answer_s": 12.219,
+    "lookups_s": 11.224,
+    "hook_s": 0.0,
+    "tools_s": 0.248,
+    "overhead_s": 0.249,
+    "wall_s": 23.939,
+    "lookup_calls": 4.1,
+    "lookup_s": 11.472
+   },
+   "rc": {
+    "answer_s": 16.389,
+    "lookups_s": 4.282,
+    "hook_s": 0.321,
+    "tools_s": 0.299,
+    "overhead_s": 0.3,
+    "wall_s": 21.59,
+    "lookup_calls": 1.7,
+    "lookup_s": 4.901
+   }
+  },
+  "httpx": {
+   "v040": {
+    "answer_s": 10.567,
+    "lookups_s": 6.144,
+    "hook_s": 1.036,
+    "tools_s": 0.288,
+    "overhead_s": 0.331,
+    "wall_s": 18.366,
+    "lookup_calls": 2.45,
+    "lookup_s": 7.468
+   },
+   "baseline": {
+    "answer_s": 10.216,
+    "lookups_s": 9.593,
+    "hook_s": 0.0,
+    "tools_s": 0.155,
+    "overhead_s": 0.231,
+    "wall_s": 20.195,
+    "lookup_calls": 3.65,
+    "lookup_s": 9.748
+   },
+   "rc": {
+    "answer_s": 10.999,
+    "lookups_s": 5.842,
+    "hook_s": 0.283,
+    "tools_s": 0.196,
+    "overhead_s": 0.275,
+    "wall_s": 17.594,
+    "lookup_calls": 2.1,
+    "lookup_s": 6.32
+   }
+  },
+  "hono": {
+   "v040": {
+    "answer_s": 10.695,
+    "lookups_s": 4.604,
+    "hook_s": 1.08,
+    "tools_s": 0.229,
+    "overhead_s": 0.295,
+    "wall_s": 16.903,
+    "lookup_calls": 1.85,
+    "lookup_s": 5.913
+   },
+   "baseline": {
+    "answer_s": 10.478,
+    "lookups_s": 10.25,
+    "hook_s": 0.0,
+    "tools_s": 0.183,
+    "overhead_s": 0.246,
+    "wall_s": 21.157,
+    "lookup_calls": 3.85,
+    "lookup_s": 10.433
+   },
+   "rc": {
+    "answer_s": 11.049,
+    "lookups_s": 4.41,
+    "hook_s": 0.292,
+    "tools_s": 0.167,
+    "overhead_s": 0.296,
+    "wall_s": 16.214,
+    "lookup_calls": 1.7,
+    "lookup_s": 4.869
+   }
+  }
+ },
+ "per_prompt": {
+  "baseline prompt 1": {
+   "answer_s": 4.951,
+   "lookups_s": 5.487,
+   "hook_s": 0.0,
+   "tools_s": 0.089,
+   "lookup_calls": 2.017,
+   "lookup_s": 5.576
+  },
+  "baseline prompt 2": {
+   "answer_s": 6.02,
+   "lookups_s": 4.869,
+   "hook_s": 0.0,
+   "tools_s": 0.106,
+   "lookup_calls": 1.85,
+   "lookup_s": 4.975
+  },
+  "rc prompt 1": {
+   "answer_s": 5.747,
+   "lookups_s": 1.921,
+   "hook_s": 0.148,
+   "tools_s": 0.029,
+   "lookup_calls": 0.633,
+   "lookup_s": 2.098
+  },
+  "rc prompt 2": {
+   "answer_s": 7.065,
+   "lookups_s": 2.924,
+   "hook_s": 0.151,
+   "tools_s": 0.191,
+   "lookup_calls": 1.2,
+   "lookup_s": 3.266
+  },
+  "v040 prompt 1": {
+   "answer_s": 5.485,
+   "lookups_s": 1.896,
+   "hook_s": 0.54,
+   "tools_s": 0.039,
+   "lookup_calls": 0.7,
+   "lookup_s": 2.475
+  },
+  "v040 prompt 2": {
+   "answer_s": 5.867,
+   "lookups_s": 3.155,
+   "hook_s": 0.543,
+   "tools_s": 0.264,
+   "lookup_calls": 1.333,
+   "lookup_s": 3.962
+  }
+ },
+ "paired": {
+  "rc vs baseline": {
+   "n_tasks": 60,
+   "lookup_s": {
+    "baseline": 10.5509,
+    "rc": 5.3634,
+    "diff": -5.1876,
+    "diff_ci": [
+     -6.0026,
+     -4.3604
+    ],
+    "change": -0.4917,
+    "change_ci": [
+     -0.5581,
+     -0.4215
+    ]
+   },
+   "lookup_calls": {
+    "baseline": 3.8667,
+    "rc": 1.8333,
+    "diff": -2.0333,
+    "diff_ci": [
+     -2.3167,
+     -1.75
+    ],
+    "change": -0.5259,
+    "change_ci": [
+     -0.5907,
+     -0.4574
+    ]
+   }
+  },
+  "v040 vs baseline": {
+   "n_tasks": 60,
+   "lookup_s": {
+    "baseline": 10.5509,
+    "v040": 6.4369,
+    "diff": -4.114,
+    "diff_ci": [
+     -4.9629,
+     -3.2714
+    ],
+    "change": -0.3899,
+    "change_ci": [
+     -0.4533,
+     -0.3223
+    ]
+   },
+   "lookup_calls": {
+    "baseline": 3.8667,
+    "v040": 2.0333,
+    "diff": -1.8333,
+    "diff_ci": [
+     -2.1667,
+     -1.5
+    ],
+    "change": -0.4741,
+    "change_ci": [
+     -0.5424,
+     -0.4027
+    ]
+   }
+  }
+ },
+ "label": "v15"
+}
