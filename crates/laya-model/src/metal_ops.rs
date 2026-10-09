@@ -1,7 +1,9 @@
-//! Metal replacements for two candle ops on the scorer's hot path, bit-identical to them.
+//! Metal replacements for three candle ops on the scorer's hot path, bit-identical to them.
 //!
 //! - [`rope_thd`]: candle's kernel indexes with 64-bit division per element, which made the
 //!   rotary embedding about 9% of a forward pass. Same arithmetic, 32-bit grid indexing.
+//! - [`add_bias`]: a linear layer's bias goes through candle's strided broadcast kernel (64-bit
+//!   `%` per dimension per element). Same `x + b`, one 2-D grid.
 //! - [`sdpa_rows`]: candle's fused attention writes `(b, h, l, hd)`, which then needs a
 //!   `b * h`-blit transpose. The same kernel takes output strides, so it writes the
 //!   `(b, l, h, hd)` layout the output projection reads, directly.
@@ -16,7 +18,8 @@ use std::sync::{Mutex, OnceLock};
 use candle_core::backend::BackendStorage;
 use candle_core::metal_backend::DeviceId;
 use candle_core::{
-    CpuStorage, CustomOp3, DType, Layout, MetalDevice, MetalStorage, Result, Shape, Tensor,
+    CpuStorage, CustomOp2, CustomOp3, DType, Layout, MetalDevice, MetalStorage, Result, Shape,
+    Tensor,
 };
 use candle_metal_kernels::metal::{ComputeCommandEncoder, ComputePipeline, Library};
 use candle_metal_kernels::{SdpaDType, call_sdpa_full};
@@ -48,6 +51,19 @@ METAL_FUNC void rope_thd(
     dst[i2] = src[i1] * s + src[i2] * c;
 }
 
+// `out = x + bias` over contiguous (rows, cols) with a (cols) bias; arithmetic as candle's add.
+template<typename T>
+METAL_FUNC void add_bias(
+    constant uint &cols, constant uint &rows,
+    device const T *x, device const T *bias, device T *out, uint2 gid
+) {
+    if (gid.x >= cols || gid.y >= rows) {
+        return;
+    }
+    const uint i = gid.y * cols + gid.x;
+    out[i] = x[i] + bias[gid.x];
+}
+
 #define LAYA_KERNELS(SUFFIX, T) \
 kernel void laya_rope_thd_##SUFFIX( \
     constant uint &t [[buffer(0)]], constant uint &h [[buffer(1)]], \
@@ -55,7 +71,12 @@ kernel void laya_rope_thd_##SUFFIX( \
     device const T *src [[buffer(4)]], device const T *cos [[buffer(5)]], \
     device const T *sin [[buffer(6)]], device T *dst [[buffer(7)]], \
     uint3 gid [[thread_position_in_grid]] \
-) { rope_thd<T>(t, h, d, bt, src, cos, sin, dst, gid); }
+) { rope_thd<T>(t, h, d, bt, src, cos, sin, dst, gid); } \
+kernel void laya_add_bias_##SUFFIX( \
+    constant uint &cols [[buffer(0)]], constant uint &rows [[buffer(1)]], \
+    device const T *x [[buffer(2)]], device const T *bias [[buffer(3)]], \
+    device T *out [[buffer(4)]], uint2 gid [[thread_position_in_grid]] \
+) { add_bias<T>(cols, rows, x, bias, out, gid); }
 
 LAYA_KERNELS(f32, float)
 LAYA_KERNELS(f16, half)
@@ -115,6 +136,11 @@ const ROPE_KERNELS: [&str; 3] = [
     "laya_rope_thd_f32",
     "laya_rope_thd_f16",
     "laya_rope_thd_bf16",
+];
+const BIAS_KERNELS: [&str; 3] = [
+    "laya_add_bias_f32",
+    "laya_add_bias_f16",
+    "laya_add_bias_bf16",
 ];
 
 /// Fits a 32-bit index, as the kernels use.
@@ -204,6 +230,82 @@ impl CustomOp3 for RopeThd {
         Ok((
             MetalStorage::new(output, device.clone(), el, dtype),
             l_src.shape().clone(),
+        ))
+    }
+}
+
+struct AddBias;
+
+impl CustomOp2 for AddBias {
+    fn name(&self) -> &'static str {
+        "laya-add-bias"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _: &CpuStorage,
+        _: &Layout,
+        _: &CpuStorage,
+        _: &Layout,
+    ) -> Result<(CpuStorage, Shape)> {
+        no_cpu()
+    }
+
+    fn metal_fwd(
+        &self,
+        x: &MetalStorage,
+        l_x: &Layout,
+        bias: &MetalStorage,
+        l_bias: &Layout,
+    ) -> Result<(MetalStorage, Shape)> {
+        let dtype = x.dtype();
+        if bias.dtype() != dtype {
+            candle_core::bail!("laya add_bias: dtype mismatch");
+        }
+        let cols = *l_x.dims().last().unwrap_or(&0);
+        if l_bias.dims() != [cols] || cols == 0 {
+            candle_core::bail!(
+                "laya add_bias: bias {:?} for x {:?}",
+                l_bias.dims(),
+                l_x.dims()
+            );
+        }
+        let el = l_x.shape().elem_count();
+        let rows = el / cols;
+        check_u32(el, "laya add_bias elements")?;
+        let device = x.device();
+        let p = pipeline(device, kernel_for(BIAS_KERNELS, dtype)?)?;
+        let output = device
+            .new_buffer_builder()
+            .with_size_for(el, dtype)
+            .with_label("laya_add_bias")
+            .build()?;
+        let size = dtype.size_in_bytes();
+        let guard = device.command_encoder()?;
+        let enc: &ComputeCommandEncoder = guard.as_ref();
+        enc.set_compute_pipeline_state(&p);
+        enc.set_bytes(0, &(cols as u32));
+        enc.set_bytes(1, &(rows as u32));
+        enc.set_input_buffer(2, Some(x.buffer()), l_x.start_offset() * size);
+        enc.set_input_buffer(3, Some(bias.buffer()), l_bias.start_offset() * size);
+        enc.set_output_buffer(4, Some(&output), 0);
+        let width = cols.clamp(1, 64);
+        let height = rows.clamp(1, (256 / width).max(1));
+        enc.dispatch_threads(
+            MTLSize {
+                width: cols,
+                height: rows,
+                depth: 1,
+            },
+            MTLSize {
+                width,
+                height,
+                depth: 1,
+            },
+        );
+        Ok((
+            MetalStorage::new(output, device.clone(), el, dtype),
+            l_x.shape().clone(),
         ))
     }
 }
@@ -328,6 +430,15 @@ pub fn rope_thd(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     x.apply_op3_no_bwd(cos, sin, &RopeThd)
 }
 
+/// `x + bias` over the last dim (as `x.broadcast_add(bias)`, bit for bit). A non-contiguous `x`
+/// takes candle's broadcast path.
+pub fn add_bias(x: &Tensor, bias: &Tensor) -> Result<Tensor> {
+    if !x.is_contiguous() || !bias.is_contiguous() {
+        return x.broadcast_add(bias);
+    }
+    x.apply_op2_no_bwd(bias, &AddBias)
+}
+
 /// `softmax(q k^T * scale + mask) v` with candle's fused kernel, written as `(b, lq, h, hd)`.
 ///
 /// `q`: `(b, h, lq, hd)`, `k` and `v`: `(b, h, kl, hd)` (any strides), `mask`: additive
@@ -365,6 +476,21 @@ mod tests {
             let got = rope_thd(&x, &cos, &sin).unwrap();
             assert_eq!(got.dims(), want.dims());
             assert_eq!(max_abs_diff(&got, &want), 0.0, "{dtype:?}");
+        }
+    }
+
+    #[test]
+    fn add_bias_is_bit_identical_to_broadcast_add() {
+        let Some(dev) = metal() else { return };
+        for dtype in [DType::F16, DType::F32] {
+            for shape in [vec![5usize, 37, 96], vec![11, 96]] {
+                let x = randn(&shape, &dev, dtype);
+                let bias = randn(&[96], &dev, dtype);
+                let want = x.broadcast_add(&bias).unwrap();
+                let got = add_bias(&x, &bias).unwrap();
+                assert_eq!(got.dims(), want.dims());
+                assert_eq!(max_abs_diff(&got, &want), 0.0, "{dtype:?} {shape:?}");
+            }
         }
     }
 

@@ -11,9 +11,9 @@
 //! query row, so the scored rows are the same as with the whole sequence.
 
 use candle_core::{DType, Result, Tensor};
-use candle_nn::{Linear, Module, VarBuilder};
+use candle_nn::{Module, VarBuilder};
 
-use crate::nn::{Norm, QkvProj, apply, attention, linear, self_attention};
+use crate::nn::{Dense, Norm, QkvProj, apply, attention, linear, self_attention};
 
 /// Bias-ful LayerNorm epsilon of `nn.TransformerEncoderLayer` / `nn.LayerNorm` defaults.
 const HEAD_NORM_EPS: f64 = 1e-5;
@@ -26,17 +26,17 @@ enum InProj {
     /// `[q | k]` and `v` over every position (all layers but the last).
     Packed(QkvProj),
     /// Separate `q`, `k`, `v`: the last layer projects `q` at the option positions only.
-    Split { q: Linear, k: Linear, v: Linear },
+    Split { q: Dense, k: Dense, v: Dense },
 }
 
 #[derive(Debug, Clone)]
 struct HeadLayer {
     norm1: Norm,
     in_proj: InProj,
-    out_proj: Linear,
+    out_proj: Dense,
     norm2: Norm,
-    linear1: Linear,
-    linear2: Linear,
+    linear1: Dense,
+    linear2: Dense,
 }
 
 impl HeadLayer {
@@ -53,8 +53,8 @@ pub struct DecisionHead {
     type_emb: Tensor,
     layers: Vec<HeadLayer>,
     scorer_norm: Norm,
-    scorer_l1: Linear,
-    scorer_l2: Linear,
+    scorer_l1: Dense,
+    scorer_l2: Dense,
     heads: usize,
     head_dim: usize,
 }
@@ -69,8 +69,8 @@ impl DecisionHead {
             let w = lvb.get((3 * d, d), "self_attn.in_proj_weight")?;
             let bias = lvb.get(3 * d, "self_attn.in_proj_bias")?;
             let in_proj = if i + 1 == n_layers {
-                let part = |j: usize| -> Result<Linear> {
-                    Ok(Linear::new(
+                let part = |j: usize| -> Result<Dense> {
+                    Ok(Dense::new(
                         w.narrow(0, j * d, d)?.contiguous()?,
                         Some(bias.narrow(0, j * d, d)?.contiguous()?),
                     ))

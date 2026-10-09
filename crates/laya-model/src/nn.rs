@@ -35,13 +35,56 @@ impl Norm {
     }
 }
 
-/// Load a linear layer (`weight` of shape `(out, in)`, optional `bias`).
-pub fn linear(vb: VarBuilder, in_dim: usize, out_dim: usize, with_bias: bool) -> Result<Linear> {
-    if with_bias {
-        candle_nn::linear(in_dim, out_dim, vb)
-    } else {
-        candle_nn::linear_no_bias(in_dim, out_dim, vb)
+/// `y = x @ w.t() + b`: `candle_nn::Linear` with the bias added by the crate's Metal kernel.
+///
+/// candle adds a linear layer's bias with its strided broadcast kernel, which indexes with
+/// 64-bit `%` per dimension per element: on Metal that doubled the cost of the decision head's
+/// projections. The matmul is candle's; the add is the same `x + b` in the same dtype, so the
+/// result is bit-identical. On the CPU it is `candle_nn::Linear` exactly.
+#[derive(Debug, Clone)]
+pub struct Dense {
+    linear: Linear,
+    bias: Option<Tensor>,
+}
+
+impl Dense {
+    /// `weight` of shape `(out, in)`, optional `bias` of shape `(out)`.
+    pub fn new(weight: Tensor, bias: Option<Tensor>) -> Self {
+        Self {
+            linear: Linear::new(weight, None),
+            bias,
+        }
     }
+}
+
+impl Module for Dense {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let y = self.linear.forward(x)?;
+        match &self.bias {
+            None => Ok(y),
+            Some(b) => add_bias(&y, b),
+        }
+    }
+}
+
+/// `x + bias` over the last dim (`x.broadcast_add(bias)`, through the crate's kernel on Metal).
+fn add_bias(x: &Tensor, bias: &Tensor) -> Result<Tensor> {
+    #[cfg(feature = "metal")]
+    if x.device().is_metal() {
+        return crate::metal_ops::add_bias(x, bias);
+    }
+    x.broadcast_add(bias)
+}
+
+/// Load a linear layer (`weight` of shape `(out, in)`, optional `bias`).
+pub fn linear(vb: VarBuilder, in_dim: usize, out_dim: usize, with_bias: bool) -> Result<Dense> {
+    let weight = vb.get((out_dim, in_dim), "weight")?;
+    let bias = if with_bias {
+        Some(vb.get(out_dim, "bias")?)
+    } else {
+        None
+    };
+    Ok(Dense::new(weight, bias))
 }
 
 /// Additive mask value for "cannot attend": finite so masked rows never turn into NaN.
@@ -107,8 +150,8 @@ pub struct Rope<'a> {
 /// `(b, s, 3d)` output instead would cost two extra copies per layer.
 #[derive(Debug, Clone)]
 pub struct QkvProj {
-    qk: Linear,
-    v: Linear,
+    qk: Dense,
+    v: Dense,
 }
 
 impl QkvProj {
@@ -134,8 +177,8 @@ impl QkvProj {
             None => (None, None),
         };
         Ok(Self {
-            qk: Linear::new(w_qk, b_qk),
-            v: Linear::new(w_v, b_v),
+            qk: Dense::new(w_qk, b_qk),
+            v: Dense::new(w_v, b_v),
         })
     }
 
@@ -363,6 +406,24 @@ pub(crate) mod tests {
             m[r * s..r * s + l].fill(1.0);
         }
         Tensor::from_vec(m, (lens.len(), s), dev).unwrap()
+    }
+
+    #[test]
+    fn dense_is_bit_identical_to_candles_linear() {
+        for (dev, dtype) in devices() {
+            let w = randn(&[48, 32], &dev, dtype);
+            let bias = randn(&[48], &dev, dtype);
+            for shape in [vec![3usize, 7, 32], vec![5, 32]] {
+                let x = randn(&shape, &dev, dtype);
+                for b in [Some(bias.clone()), None] {
+                    let want = Linear::new(w.clone(), b.clone()).forward(&x).unwrap();
+                    let got = Dense::new(w.clone(), b.clone()).forward(&x).unwrap();
+                    assert_eq!(got.dims(), want.dims());
+                    let diff = max_abs_diff(&got, &want);
+                    assert_eq!(diff, 0.0, "{dev:?} {shape:?} bias {}", b.is_some());
+                }
+            }
+        }
     }
 
     #[test]
