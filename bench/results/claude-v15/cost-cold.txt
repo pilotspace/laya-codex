@@ -1,0 +1,9 @@
+rc vs baseline, cost with cross-arm cache reads re-priced as writes (paired tasks: 60)
+  pooled -6.6% [-11.6, -1.1]; mean $0.0615 vs $0.0658
+  moon -12.8% [-20.4, -4.2]; httpx +6.8% [-2.9, +18.0]; hono -5.0% [-12.2, +3.5]
+v040 vs baseline, cost with cross-arm cache reads re-priced as writes (paired tasks: 60)
+  pooled -5.4% [-10.2, -0.5]; mean $0.0622 vs $0.0658
+  moon -13.9% [-20.4, -6.9]; httpx +10.7% [+1.4, +20.0]; hono -1.6% [-9.9, +8.1]
+rc vs v040, cost with cross-arm cache reads re-priced as writes (paired tasks: 60)
+  pooled -1.2% [-6.2, +4.3]; mean $0.0615 vs $0.0622
+  moon +1.2% [-6.7, +10.4]; httpx -3.6% [-11.6, +6.7]; hono -3.4% [-12.1, +5.8]

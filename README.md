@@ -17,8 +17,8 @@ laya-codex indexes your repository locally and hands Claude the code each task n
 | cost per session | time per session | tool calls per session | right files in Claude's first answer |
 
 <sub>Benchmark v13 vs stock Claude Code · 60 paired tasks · 3 repositories · Claude Sonnet 5.5 · 95% CI.
-Trade-off: code read + injected +10% (not significant). On 60 new tasks (v14): cost −3% (not
-significant), time −12%, first answers 73% → 83%. <a href="#benchmark">Details</a></sub>
+Trade-off: code read + injected +10% (not significant). On 60 new tasks with v0.5.0 (v15): cost
+−7%, time −15%, first answers 73% → 84%, lookups 3.9 → 1.8 per session. <a href="#benchmark">Details</a></sub>
 
 **[Install](#install)** · **[What changes](#what-changes-for-claude)** · **[How it works](#how-it-works)** · **[Benchmark](#benchmark)** · **[FAQ](#faq)**
 
@@ -116,7 +116,7 @@ prompt. Check the setup with `laya-codex doctor --repo .`.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagram-pipeline-dark.svg">
-  <img alt="How laya-codex picks the code: once, then on every edit, your repository is split by tree-sitter into 10–50-line chunks (14 languages) and stored in Moon, a local keyword index. On every prompt, keyword search (BM25 + symbols + paths) finds 24 candidates, the Laya re-ranker scores the top 16 in about 0.5 s, and up to 9,500 characters (the top 2 files' code and a map) are added to the prompt before Claude Code starts. Claude's own lookups go through the MCP search tool" src="docs/assets/diagram-pipeline-light.svg" width="760">
+  <img alt="How laya-codex picks the code: once, then on every edit, your repository is split by tree-sitter into 10–50-line chunks (14 languages) and stored in Moon, a local keyword index. On every prompt, keyword search (BM25 + symbols + paths) finds 24 candidates, the Laya re-ranker scores the top 12 in about 0.15 s, and up to 9,500 characters (the top 2 files' code and a map) are added to the prompt before Claude Code starts. Claude's own lookups go through the MCP search tool" src="docs/assets/diagram-pipeline-light.svg" width="760">
 </picture>
 
 - **Index:** [tree-sitter](https://tree-sitter.github.io/) chunks stored in Moon, a local search
@@ -138,7 +138,7 @@ relevance instead, on the few candidates keywords find:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagram-rerank-dark.svg">
-  <img alt="Keywords find the candidates, Laya orders them: keyword search narrows the whole repository to 24 candidate blocks, the Laya re-ranker scores the top 16 in about 0.5 s, and the code of the top 2 files is inlined in the prompt with a map of the rest; final score = 0.5 × keyword rank + 0.5 × model probability" src="docs/assets/diagram-rerank-light.svg" width="760">
+  <img alt="Keywords find the candidates, Laya orders them: keyword search narrows the whole repository to 24 candidate blocks, the Laya re-ranker scores the top 12 in about 0.15 s, and the code of the top 2 files is inlined in the prompt with a map of the rest; final score = 0.5 × keyword rank + 0.5 × model probability" src="docs/assets/diagram-rerank-light.svg" width="760">
 </picture>
 
 - **Direct judgment:** a cross-encoder reads task and code together and returns *P(relevant)*,
@@ -156,8 +156,9 @@ Ranking the files real changes touched (40 recent Moon commits, 24 candidates ea
 | base Laya | 0.479 | 0.348 | 0.362 |
 | **laya-code** | **0.702** | **0.405** | **0.049** |
 
-**No end-to-end gain yet:** better ranking has not shown up as lower cost or better recall in
-sessions (benchmarks v10, v12). It stays on because choosing the code is what laya-codex is for;
+**No significant end-to-end gain yet:** better ranking has not shown up as significantly lower
+cost or better recall in sessions (benchmarks v10, v12; in v15, r2 over r1 moved first-question
+recall +0.035, not significant). It stays on because choosing the code is what laya-codex is for;
 closing that gap tops the roadmap. Keywords only: `LAYA_CODEX_NO_MODEL=1` or `--no-model`.
 
 <details>
@@ -167,8 +168,8 @@ closing that gap tops the roadmap. Keywords only: `LAYA_CODEX_NO_MODEL=1` or `--
   [tindang/laya-code](https://huggingface.co/tindang/laya-code/tree/r2): a ModernBERT-base
   re-ranker trained on the same candidate lists as r1, served at 128 tokens per candidate with the
   top 12 scored. In the offline replay (tasks-v8 and held-out tasks, 120 first prompts) it inlines
-  141 of 238 gold files against 132 for r1 and 118 for keywords, and the hook takes 165 ms (p50)
-  instead of 517 ms. It installs to `models/laya-code-r2`. An existing r1 install in
+  141 of 238 gold files against 132 for r1 and 118 for keywords. With exact Metal speed-ups of
+  the forward pass, the hook takes about 130 ms (p50) on an idle M4 Pro instead of 517 ms. It installs to `models/laya-code-r2`. An existing r1 install in
   `models/laya-code` keeps working, and `laya-codex doctor` shows the upgrade command.
 - **Previous model:** revision `25f97e5` on the `r1` branch, retrained on fixed commits
   of 7 repositories using laya-codex's own candidate lists; benchmark and evaluation repositories
@@ -183,6 +184,9 @@ closing that gap tops the roadmap. Keywords only: `LAYA_CODEX_NO_MODEL=1` or `--
   −4.2% (−19.1% … +12.3%), first-question recall 0.90 vs 0.91.
 - **Benchmark v12** (Sonnet 5.5, 60 tasks): cost −0.2% (−3.1% … +2.9%), recall 0.90 vs 0.88, time
   +5% (+1.0% … +9.9%) with the model. 51–60 tasks are too few to show the offline gain.
+- **Benchmark v15** (held-out, v0.5.0 with r2 vs v0.4.0 with r1): first-question recall 0.81 →
+  0.84 (+0.035, n.s.), cost −1.2% (n.s.), lookup time −16.7%. r2's offline gain (+9 of 238) points
+  the same way but is too small to show significantly in 60 tasks.
 - **Benchmark v2** found the model 13% slower but did not record how many prompts it ranked
   ([caveat](docs/RESULTS.md#caveat-the-model-may-not-have-ranked-every-prompt)).
 
@@ -239,16 +243,27 @@ weighted equally: cost −11.4% (−15.5% … −6.7%), read + injected +22.6% (
 
 ### On new tasks
 
-laya-codex was tuned on these 60 tasks from v8 to v13. Benchmark v14 ran 60 new ones
-(`bench/tasks-heldout`) under the same model and harness:
-- **Cost:** −3.4% (−9.7% … +3.6%), not significant. It fell only on moon (−12.5%).
-- **Time and turns:** time −12.1% (−17.9% … −5.3%), turns −37.6%.
-- **Right files on the first question:** 0.73 → 0.83 (+0.10, +0.04 … +0.16), no change over both.
-- **Code read + injected:** +50.9%. Stock read less on these tasks while the injection kept its
-  size.
+laya-codex was tuned on these 60 tasks from v8 to v13. Benchmarks v14 and v15 ran 60 new ones
+(`bench/tasks-heldout`) under the same model and harness. v15 (2026-10-09, Claude Code 2.1.292)
+measured v0.5.0, with laya-code-r2, against stock Claude Code and v0.4.0:
 
-The gains in turns, time and first answers hold; the cost saving mostly does not.
-[Details](docs/RESULTS.md#benchmark-v14-2026-09-30-held-out-tasks-the-low-confidence-gate-does-nothing)
+| per session, vs stock | v0.4.0 (r1) | v0.5.0 (r2) |
+|---|---|---|
+| Cost | −5.4% (−10.2% … −0.5%) | **−6.6%** (−11.6% … −1.1%) |
+| Wall-clock time | −16.8% | **−15.2%** (−23.7% … −1.6%) |
+| Lookup calls (3.87 for stock) | 2.03 | **1.83** |
+| Lookup time (10.6 s for stock) | 6.4 s | **5.4 s** |
+| Right files, first question (0.73 for stock) | 0.81 | **0.84** (+0.11, +0.04 … +0.18) |
+| Right files, both questions (0.92 for stock) | 0.89 | 0.91 (n.s.) |
+| Code read + injected | +35.9% | +32.2% |
+
+- **v0.5.0 vs v0.4.0:** lookup time −16.7% (significant). Cost (−1.2%) and first-question recall
+  (+0.035) are not significant.
+- **One outlier:** wall-clock +2.0%, n.s., from one API outlier. Without that task: −4.9%.
+- **Where cost falls:** only on moon (−12.8%).
+- **Code read + injected:** stock reads less on these tasks while the injection keeps its size.
+
+[Details](docs/RESULTS.md#benchmark-v15-2026-10-09-v050-against-v040-held-out-tasks)
 
 ### Where the saving comes from
 
@@ -275,7 +290,7 @@ changes moved by about 1 point and per-repository ones by up to 2.1.
 | limit | why | next |
 |---|---|---|
 | **Cost −14.8%**, goal −15% | Most of the bill is Claude Code's own context and Claude's answers, paid by both arms; even with zero lookups a session with today's injection costs about $0.053 (−34%) | Don't inject where stock is already cheap (httpx) |
-| **New tasks (v14): cost −3.4%** (n.s.), read + injected +51% | Tuned on v13's tasks; stock reads less on new ones, the injection does not shrink with it | Judge changes on held-out tasks |
+| **New tasks (v15): cost −6.6%, time −15.2%**, read + injected +32% | Tuned on v13's tasks; stock reads less on new ones, the injection does not shrink with it | Judge changes on held-out tasks |
 | **Read + injected +10.4%** (n.s.; +22.6% repo-balanced), goal: not significantly worse | ~2.9k injected tokens replace reading about one for one | Smaller blocks made Claude read more (v11); same httpx fix |
 | **Time −19.2%**, goal −20% | Answers take about 12.4 s in both arms; the saving is all lookup round trips ([breakdown](docs/RESULTS.md)) | The small time levers, about −21% |
 | **httpx cost +1%** (n.s.) | Stock already finds httpx code fast; all 8 first-prompt injections Laya scored below p 0.1 were httpx | — |
@@ -315,8 +330,8 @@ Full method, raw data and the next run: [docs/RESULTS.md](docs/RESULTS.md).
 <details>
 <summary><b>What does it cost to run?</b></summary>
 
-- **Money:** free. Per session, Claude cost −14.8% in benchmark v13 and −3.4% (not significant) on
-  new tasks in v14.
+- **Money:** free. Per session, Claude cost −14.8% in benchmark v13 and −6.6% on new tasks with
+  v0.5.0 (v15).
 - **Disk:** about 45 MB of binaries plus the ~330 MB model.
 - **Memory:** about 1 GB of RAM while the daemon runs.
 
@@ -396,7 +411,8 @@ code: review it before attaching it to an [issue](https://github.com/pilotspace/
   not injecting where stock Claude Code is already cheap (httpx).
 - **Time:** reach −20% (−19.2% now); answers are a fixed ~12.4 s, so only lookups and the hook can shrink.
 - **Real sessions:** confirm the gains on locally recorded rankings, not just the benchmark.
-- **Model:** turn r1's better offline ranking into a session-level gain (none yet in v10, v12).
+- **Model:** turn better offline ranking into a session-level gain (r2 vs r1 in v15:
+  first-question recall +0.035, not significant).
 - **Upkeep:** compact Moon's data log automatically (it reached 4.1 GB); a faster model for Linux.
 
 See [ROADMAP.md](ROADMAP.md) for the full plan to 1.0.
