@@ -792,7 +792,7 @@ mod tests {
         let d = scratch("model");
         assert_eq!(check_model(false, None, &[]).level, Level::Pass);
 
-        let searched = [d.join("models/laya-code"), d.join("models/laya-base")];
+        let searched = model_candidates(&d);
         let c = check_model(true, None, &searched);
         assert_eq!(c.level, Level::Warn);
         assert!(
@@ -807,7 +807,7 @@ mod tests {
         );
         // The manual download pins the same revision as install.sh, never the repo's main branch.
         let hf = format!(
-            "hf download tindang/laya-code --revision 25f97e5a2ec5f8cf7218a4f67504367d8832e1fe --local-dir {}",
+            "hf download tindang/laya-code --revision {LAYA_CODE_REVISION} --local-dir {}",
             searched[0].display()
         );
         assert!(fix.contains(&hf), "{fix}");
