@@ -22,8 +22,11 @@ RELEASES_URL="${LAYA_CODEX_RELEASES_URL:-https://github.com/$REPO/releases}"
 # The laya-code revision this installer downloads: a Hugging Face commit of tindang/laya-code (never a
 # branch, so a later upload cannot change what this version installs), and the sha256 of its
 # MANIFEST.sha256, a copy of release/hf-laya-code/MANIFEST.sha256 (scripts/test-install.sh checks both).
-MODEL_REVISION="${LAYA_CODEX_MODEL_REVISION:-25f97e5a2ec5f8cf7218a4f67504367d8832e1fe}"
-MODEL_MANIFEST_SHA256="${LAYA_CODEX_MODEL_MANIFEST_SHA256:-c32745e3b27956d194bd49db2bc1e8d1f212d536fc45c738e431c7f302451b81}"
+# laya-code-r2 (the ModernBERT-base student, on the repo's `r2` branch) goes to its own directory,
+# MODEL_NAME, which laya-codex looks in first; an older install in models/laya-code stays as it was.
+MODEL_NAME="laya-code-r2"
+MODEL_REVISION="${LAYA_CODEX_MODEL_REVISION:-831fa8321213ab66a8085d39f0014c5f9f8b5f91}"
+MODEL_MANIFEST_SHA256="${LAYA_CODEX_MODEL_MANIFEST_SHA256:-f5d20914a7b4ff44eedbb95418ac1fa07af128c576a59607e97dc7fdb570a623}"
 MODEL_URL="${LAYA_CODEX_MODEL_URL:-https://huggingface.co/tindang/laya-code/resolve/$MODEL_REVISION}"
 MODEL="${LAYA_CODEX_MODEL:-auto}"
 MODEL_ONLY=0
@@ -37,11 +40,12 @@ Usage: install.sh [--version vX.Y.Z] [--dir DIR] [--no-model | --model | --model
 
   --version   release tag to install (default: the latest release)
   --dir       where laya-codex and moon go (default: ~/.local/bin)
-  --no-model  skip the ~850 MB re-ranker download (laya-codex then ranks lexically)
+  --no-model  skip the ~330 MB re-ranker download (laya-codex then ranks lexically)
   --model     download the re-ranker even on Linux (it runs on CPU there, which is slow)
   --model-only
-              download and verify only the re-ranker into $LAYA_CODEX_HOME/models/laya-code and leave
-              the binaries alone (for installs made another way, e.g. Homebrew)
+              download and verify only the re-ranker into $LAYA_CODEX_HOME/models/laya-code-r2, restart
+              a running daemon so it loads it, and leave the binaries alone (for installs made another
+              way, e.g. Homebrew, and to upgrade the model of an existing install)
 EOF
 }
 
@@ -90,34 +94,53 @@ fetch() {
 
 # Download the laya-code re-ranker listed in the Hugging Face MANIFEST.sha256, verifying each file.
 get_model() {
-    dest="$LAYA_CODEX_HOME/models/laya-code"
-    say "fetching the laya-code re-ranker manifest"
+    dest="$LAYA_CODEX_HOME/models/$MODEL_NAME"
+    say "fetching the $MODEL_NAME re-ranker manifest"
     fetch "$MODEL_URL/MANIFEST.sha256" "$tmp/MANIFEST.sha256" 60 || die "could not fetch the model manifest"
     # The manifest decides which checksums the files must match, so it must be the pinned one.
     [ "$(sha256 "$tmp/MANIFEST.sha256")" = "$MODEL_MANIFEST_SHA256" ] ||
         die "model manifest checksum mismatch (expected the manifest of laya-code revision $MODEL_REVISION)"
-    mkdir -p "$dest"
+    # laya-codex loads the first model directory that holds weights, so a first download goes to a
+    # staging directory, renamed into place once every file checks out (a re-run resumes it). An
+    # existing directory is repaired in place, file by file.
+    if [ -d "$dest" ]; then work="$dest"; else work="$dest.part"; fi
+    mkdir -p "$work"
     # One "<sha256>  <path>" line per file; download only what is missing or stale.
     while read -r want file; do
         [ -n "$file" ] || continue
         case "$file" in /* | *..*) die "unsafe path in model manifest: $file" ;; esac
-        if [ -f "$dest/$file" ] && [ "$(sha256 "$dest/$file")" = "$want" ]; then
+        if [ -f "$work/$file" ] && [ "$(sha256 "$work/$file")" = "$want" ]; then
             continue
         fi
         say "downloading model file $file"
-        mkdir -p "$(dirname "$dest/$file")"
-        fetch "$MODEL_URL/$file" "$dest/$file.part" 3600 || die "download failed: model $file"
-        got="$(sha256 "$dest/$file.part")"
-        [ "$got" = "$want" ] || { rm -f "$dest/$file.part"; die "checksum mismatch for model $file"; }
-        mv -f "$dest/$file.part" "$dest/$file"
+        mkdir -p "$(dirname "$work/$file")"
+        fetch "$MODEL_URL/$file" "$work/$file.part" 3600 || die "download failed: model $file"
+        got="$(sha256 "$work/$file.part")"
+        [ "$got" = "$want" ] || { rm -f "$work/$file.part"; die "checksum mismatch for model $file"; }
+        mv -f "$work/$file.part" "$work/$file"
     done <"$tmp/MANIFEST.sha256"
+    # `laya-codex doctor` reports which revision is installed.
+    printf '%s\n' "$MODEL_REVISION" >"$work/REVISION"
+    [ "$work" = "$dest" ] || mv "$work" "$dest"
     say "model ready in $dest"
+    old="$LAYA_CODEX_HOME/models/laya-code"
+    if [ -f "$old/model.safetensors" ]; then
+        say "note: the previous model in $old is no longer used (laya-codex loads $dest first); free its disk space with: rm -rf $old"
+    fi
 }
 
 if [ "$MODEL_ONLY" = 1 ]; then
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT INT TERM
     get_model
+    # A running daemon keeps the model it loaded at start: stop it, and the next prompt starts one
+    # with this model.
+    for bin in "$(command -v laya-codex 2>/dev/null || true)" "$INSTALL_DIR/laya-codex"; do
+        if [ -n "$bin" ] && [ -x "$bin" ]; then
+            LAYA_CODEX_HOME="$LAYA_CODEX_HOME" "$bin" stop >/dev/null 2>&1 || true
+            break
+        fi
+    done
     exit 0
 fi
 

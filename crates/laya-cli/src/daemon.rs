@@ -194,6 +194,19 @@ pub struct Daemon {
     pub base_cfg: RetrieverConfig,
     /// Where each ranking is recorded (see [`crate::capture`]); `None` = never (tests).
     capture: Option<crate::capture::Capture>,
+    /// What the model directory asks for beyond `base_cfg` (see [`crate::serving`]).
+    served: Served,
+}
+
+/// The model the daemon serves and how many candidates it scores for a search.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Served {
+    /// The model directory, reported by `Ping` so `doctor` can tell a daemon still serving
+    /// another model (started before an upgrade) from one serving the installed model.
+    pub model_dir: Option<PathBuf>,
+    /// Candidates the model scores for a query without a session (the MCP `search` tool and
+    /// its lookups); `None` = as many as for a prompt (`base_cfg.score_top`).
+    pub search_score_top: Option<usize>,
 }
 
 /// Whether `prompt` names identifiers or file paths.
@@ -212,13 +225,14 @@ impl Daemon {
     /// A daemon that records nothing (tests).
     #[cfg(test)]
     pub fn new(store: Arc<dyn Store>, base_cfg: RetrieverConfig) -> Arc<Self> {
-        Daemon::with_capture(store, base_cfg, None)
+        Daemon::with_capture(store, base_cfg, None, Served::default())
     }
 
     pub fn with_capture(
         store: Arc<dyn Store>,
         base_cfg: RetrieverConfig,
         capture: Option<crate::capture::Capture>,
+        served: Served,
     ) -> Arc<Self> {
         Arc::new(Daemon {
             store,
@@ -227,6 +241,7 @@ impl Daemon {
             indexing: Mutex::new(HashSet::new()),
             base_cfg,
             capture,
+            served,
         })
     }
 
@@ -347,6 +362,11 @@ impl Daemon {
             Request::Ping => Response::Pong {
                 model_ready: self.scorer.read().map(|s| s.is_some()).unwrap_or(false),
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                model: self
+                    .served
+                    .model_dir
+                    .as_ref()
+                    .map(|d| d.display().to_string()),
             },
             Request::Query {
                 repo,
@@ -368,6 +388,11 @@ impl Daemon {
                 }
                 if let Some(n) = top_n {
                     cfg.top_n = n.clamp(1, MAX_TOP_N);
+                }
+                // A query without a session is Claude searching (the MCP `search` tool): the
+                // model scores as many candidates as its serving block gives a search.
+                if let (None, Some(n)) = (&session, self.served.search_score_top) {
+                    cfg.score_top = n;
                 }
                 // A follow-up is retrieved as the session's topic (see `effective_query`); what it
                 // asks for on top of that (tests, callers) shapes the lists that answer it.
@@ -857,17 +882,43 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     if let Some(m) = env_num::<usize>("LAYA_CODEX_MIN_KEEP") {
         base.min_keep = m;
     }
-    if let Some(n) = env_num::<usize>("LAYA_CODEX_SCORE_TOP") {
-        base.score_top = n;
+    // The model's window and candidate counts come from its directory (see `serving`); a model
+    // without them, or one that cannot be read, is served with the defaults.
+    let model_dir = cfg.model_dir.clone().filter(|_| cfg.use_model);
+    let block = match model_dir.as_deref().map(crate::serving::read_model_serving) {
+        Some(Ok(b)) => b,
+        Some(Err(e)) => {
+            eprintln!("[laya-codex] {e}; serving with the default window and candidate counts");
+            None
+        }
+        None => None,
+    };
+    let env = crate::serving::EnvServing::from_env();
+    for c in crate::serving::env_conflicts(block, env) {
+        eprintln!("[laya-codex] {c}");
     }
-    let state_tokens = env_num::<usize>("LAYA_CODEX_STATE_TOKENS").unwrap_or(128);
-    eprintln!("[laya-codex] retriever config {base:?} state_tokens={state_tokens}");
+    let serving = crate::serving::resolve(block, env, base.score_top);
+    base.score_top = serving.score_top;
+    let state_tokens = serving.state_tokens;
+    eprintln!(
+        "[laya-codex] retriever config {base:?} state_tokens={state_tokens} search_score_top={} (serving block: {})",
+        serving.search_score_top,
+        if block.is_some() {
+            "model"
+        } else {
+            "none, defaults"
+        }
+    );
     let capture = crate::capture::Capture::from_env(&cfg.home);
     match capture.target() {
         Some(t) => eprintln!("[laya-codex] capturing requests to {}", t.path.display()),
         None => eprintln!("[laya-codex] request capture off"),
     }
-    let daemon = Daemon::with_capture(Arc::clone(&store), base, Some(capture));
+    let served = Served {
+        model_dir,
+        search_score_top: Some(serving.search_score_top),
+    };
+    let daemon = Daemon::with_capture(Arc::clone(&store), base, Some(capture), served);
 
     if let (true, Some(dir)) = (cfg.use_model, cfg.model_dir.clone()) {
         let d = Arc::clone(&daemon);
@@ -1275,6 +1326,79 @@ mod tests {
         assert_eq!(query(None), 3 * first, "and then hits the unsalted cache");
     }
 
+    #[test]
+    fn a_search_scores_the_model_s_search_count_and_a_prompt_its_prompt_count() {
+        let (d0, repo) = daemon_with_code();
+        let cfg = RetrieverConfig {
+            score_top: 3,
+            ..RetrieverConfig::default()
+        };
+        let served = Served {
+            model_dir: None,
+            search_score_top: Some(1),
+        };
+        let d = Daemon::with_capture(d0.store.clone(), cfg, None, served);
+        let inner = Arc::new(CountingScorer(AtomicUsize::new(0)));
+        d.set_scorer(inner.clone(), "laya-code-r2-s128");
+        let scored = |session: Option<&str>| {
+            let before = inner.0.load(Ordering::SeqCst);
+            let resp = d.handle(Request::Query {
+                repo: repo.clone(),
+                session: session.map(str::to_string),
+                prompt: "replay wal segment".into(),
+                budget_ms: Some(10_000),
+                top_n: None,
+                render: None,
+                memo_salt: Some(format!("t-{session:?}")),
+            });
+            assert!(matches!(resp, Response::Query { .. }), "{resp:?}");
+            inner.0.load(Ordering::SeqCst) - before
+        };
+        assert_eq!(scored(None), 1, "the MCP search scores search_score_top");
+        assert_eq!(scored(Some("s1")), 3, "a prompt scores score_top");
+    }
+
+    #[test]
+    fn without_a_search_count_a_search_scores_like_a_prompt() {
+        let (d0, repo) = daemon_with_code();
+        let cfg = RetrieverConfig {
+            score_top: 2,
+            ..RetrieverConfig::default()
+        };
+        let d = Daemon::with_capture(d0.store.clone(), cfg, None, Served::default());
+        let inner = Arc::new(CountingScorer(AtomicUsize::new(0)));
+        d.set_scorer(inner.clone(), "laya-code-s128");
+        let resp = d.handle(Request::Query {
+            repo,
+            session: None,
+            prompt: "replay wal segment".into(),
+            budget_ms: Some(10_000),
+            top_n: None,
+            render: None,
+            memo_salt: None,
+        });
+        assert!(matches!(resp, Response::Query { .. }), "{resp:?}");
+        assert_eq!(inner.0.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn ping_names_the_model_directory_the_daemon_serves() {
+        let store: Arc<dyn Store> = Arc::new(MemoStore::default());
+        let served = Served {
+            model_dir: Some(PathBuf::from("/m/laya-code-r2")),
+            search_score_top: None,
+        };
+        let d = Daemon::with_capture(store.clone(), RetrieverConfig::default(), None, served);
+        match d.handle(Request::Ping) {
+            Response::Pong { model, .. } => assert_eq!(model.as_deref(), Some("/m/laya-code-r2")),
+            other => panic!("{other:?}"),
+        }
+        match Daemon::new(store, RetrieverConfig::default()).handle(Request::Ping) {
+            Response::Pong { model, .. } => assert_eq!(model, None),
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// A repo on disk with four one-function files, indexed with their real hashes (the
     /// adaptive render only inlines code whose file still matches the index).
     fn daemon_with_code() -> (Arc<Daemon>, String) {
@@ -1586,6 +1710,7 @@ mod tests {
                 std::env::temp_dir(),
                 Some(file.display().to_string()),
             )),
+            Served::default(),
         );
         d.set_scorer(Arc::new(LowScorer), "laya-code");
         let (_, rendered) = ask_ranked(&d, &repo, "s1", "where is the wal segment replayed");
@@ -1625,6 +1750,7 @@ mod tests {
                 std::env::temp_dir(),
                 Some(file.display().to_string()),
             )),
+            Served::default(),
         );
         d.set_scorer(Arc::new(LowScorer), "laya-code");
         ask_ranked(&d, &repo, "s1", "where is the wal segment replayed");

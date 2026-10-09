@@ -98,10 +98,13 @@ The pipeline has six steps. Each step is a function in `crates/laya-rank`.
    ```
 
    The state is `file: <path> (lines a-b)` followed by the chunk text, cut to 128 tokens. The
-   answer is a calibrated probability **P** that the chunk is relevant. The model is the
-   fine-tuned [laya-code](https://huggingface.co/tindang/laya-code/tree/r1) (revision `25f97e5` on the
-   `r1` branch, which the installer pins), which runs on Metal on Apple
-   Silicon. Probabilities are memoised per prompt and chunk, so a repeated prompt skips the model.
+   answer is a calibrated probability **P** that the chunk is relevant. The model is
+   [laya-code-r2](https://huggingface.co/tindang/laya-code/tree/r2) (the `r2` branch, which the
+   installer pins): a ModernBERT-base re-ranker that runs on Metal on Apple Silicon. The model
+   directory says how to serve it, in the `serving` block of its `rl_agent_config.json`: 128 tokens
+   per chunk, the top 12 candidates scored per prompt and per `search`. A model without that block
+   (laya-code-r1) is served with 128 tokens and 16 candidates, as before. Probabilities are
+   memoised per prompt and chunk, so a repeated prompt skips the model.
 4. **Fusion.** Candidates are ordered by
 
    ```
@@ -306,7 +309,7 @@ used before; see [RESULTS.md](RESULTS.md).)
 | `LAYA_CODEX_RENDER` | compact | `full` inlines every span (bigger, and not what the benchmark measured) |
 | `LAYA_CODEX_NO_MODEL` | unset | `1` gives lexical-only ranking with no model load |
 | `LAYA_CODEX_BUDGET_MS` | 1200 | Laya's time budget per prompt. The model scores as many candidates as fit; the lexical ranking is used only if none do |
-| `LAYA_CODEX_SCORE_TOP` | 16 | Candidates the model scores, best first (of 24); `0` = all |
+| `LAYA_CODEX_SCORE_TOP` | the model's: 12 for laya-code-r2, 16 for older models | Candidates the model scores per prompt and per `search`, best first (of 24); `0` = all. Overrides the `serving` block of the model's `rl_agent_config.json`, as `LAYA_CODEX_STATE_TOKENS` does for the window (128) |
 | `LAYA_CODEX_WEIGHT` | 0.5 | Laya's weight in the fusion; `rrf` switches to rank fusion |
 
 `LAYA_CODEX_SCOPE`, `LAYA_CODEX_SCOPE_P`, `LAYA_CODEX_TAU_FULL`, `LAYA_CODEX_TAU_MAP` and
@@ -341,8 +344,8 @@ WARN  mcp     no laya-codex server in /home/me/laya-codex/.mcp.json (the search 
 | `home` | `LAYA_CODEX_HOME` (default `~/.cache/laya-codex`) is not writable | Make it writable, or set `LAYA_CODEX_HOME` to a writable directory. The daemon socket lives there, so keep the path short. A very long path fails with "path must be shorter than SUN_LEN". |
 | `moon` | `moon binary not found; tried …` or `not runnable` | laya-codex looks for `moon` beside its own binary (after resolving symlinks), then in `../libexec` next to it (the Homebrew layout), then on `PATH`. Re-run the installer, which puts both in one directory, or `brew reinstall laya-codex`. You can also set `LAYA_CODEX_MOON_BIN=/path/to/moon`. |
 | `auth` | port served by another Moon, or `cannot load laya-codex's Moon password` | Another server holds laya-codex's port (default 16379): stop it, or set `LAYA_CODEX_MOON_PORT` to a free port. For a password error, delete `$LAYA_CODEX_HOME/moon.acl` and run `laya-codex stop`; both are recreated. A Moon started by an older laya-codex without a password is replaced at the next daemon start. |
-| `model` | `no model found` (lexical-only), `incomplete`, or `runs on CPU here` | Get the re-ranker with `curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh \| sh -s -- --model-only`, which fetches and verifies it into `$LAYA_CODEX_HOME/models/laya-code` (or `hf download tindang/laya-code --revision 25f97e5a2ec5f8cf7218a4f67504367d8832e1fe --local-dir ~/.cache/laya-codex/models/laya-code`), or set `LAYA_CODEX_MODEL_DIR`. On Linux the model runs on CPU and is too slow for interactive use, so set `LAYA_CODEX_NO_MODEL=1`. laya-codex still works lexically. |
-| `daemon` | `not running` (WARN), or `running daemon is vX, this binary is vY` | The daemon starts on demand at the first hook, and `laya-codex doctor --start` starts it now. After an upgrade, run `laya-codex stop` so the next hook starts the new build. If it won't come up, see `$LAYA_CODEX_HOME/daemon.log`. |
+| `model` | `no model found` (lexical-only), `incomplete`, `on CPU`, `no serving block`, or an override that differs from the model | The line names the model, its revision, its window, the candidates it scores per prompt and per search, and the engine. Get the re-ranker with `curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh \| sh -s -- --model-only`, which fetches and verifies it into `$LAYA_CODEX_HOME/models/laya-code-r2` and restarts the daemon (or `hf download tindang/laya-code --revision 831fa8321213ab66a8085d39f0014c5f9f8b5f91 --local-dir ~/.cache/laya-codex/models/laya-code-r2`), or set `LAYA_CODEX_MODEL_DIR`. The same command upgrades a model without a serving block (laya-code-r1 in `models/laya-code`, which keeps working until then). Unset `LAYA_CODEX_STATE_TOKENS` / `LAYA_CODEX_SCORE_TOP` to serve the model as calibrated. On Linux the model runs on CPU and is too slow for interactive use, so set `LAYA_CODEX_NO_MODEL=1`. laya-codex still works lexically. |
+| `daemon` | `not running` (WARN), `running daemon is vX, this binary is vY`, or `serving <dir>, but <dir> is the model installed now` | The daemon starts on demand at the first hook, and `laya-codex doctor --start` starts it now. After an upgrade of the binary or the model, run `laya-codex stop` so the next hook starts the new build with the installed model. If it won't come up, see `$LAYA_CODEX_HOME/daemon.log`. |
 | `index` | `has no indexed files` or `cannot read the index` | Run `laya-codex index /path/to/repo`. `SessionStart` indexes git repositories in the background, and edits are re-indexed file by file. |
 | `hooks` | hooks missing, or `a laya-codex hook runs …, which is not an executable` | Run `laya-codex init --repo …` or install the plugin. If the hook points at a path that no longer exists (for example a versioned Homebrew Cellar path written by an older release), re-run `laya-codex init`; with `laya-codex` on `PATH` it writes the bare command. Hooks written by 0.1.x (`laya hook`) are not recognised: delete them. |
 | `mcp` | no `laya-codex` server in `.mcp.json` (WARN) | `laya-codex init --repo …` adds it, and the plugin provides it. Only the `search` tool is missing; the hooks still work. |

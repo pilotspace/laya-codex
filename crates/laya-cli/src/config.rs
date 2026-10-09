@@ -3,7 +3,7 @@
 //! | env | default |
 //! |---|---|
 //! | `LAYA_CODEX_HOME` | `~/.cache/laya-codex` |
-//! | `LAYA_CODEX_MODEL_DIR` | `$LAYA_CODEX_HOME/models/laya-code`, else `$LAYA_CODEX_HOME/models/laya-base` |
+//! | `LAYA_CODEX_MODEL_DIR` | the first of `$LAYA_CODEX_HOME/models/{laya-code-r2,laya-code,laya-base}` holding weights |
 //! | `LAYA_CODEX_MOON_BIN` | `moon` beside the `laya-codex` binary, else on PATH |
 //! | `LAYA_CODEX_MOON_PORT` | `16379` |
 //! | `LAYA_CODEX_MOON_START_SECS` | `30` (how long a spawned Moon may take to answer) |
@@ -157,8 +157,10 @@ pub fn is_executable(p: &Path) -> bool {
 }
 
 /// Model directories searched, in order, when `LAYA_CODEX_MODEL_DIR` is unset.
+/// The model install.sh puts in [`LAYA_CODE_MODEL`] comes first; `laya-code` (where 0.4 and
+/// earlier installed laya-code-r1) and `laya-base` keep an older install working.
 pub fn model_candidates(home: &Path) -> Vec<PathBuf> {
-    ["laya-code", "laya-base"]
+    [LAYA_CODE_MODEL, "laya-code", "laya-base"]
         .iter()
         .map(|m| home.join("models").join(m))
         .collect()
@@ -168,9 +170,14 @@ pub fn model_candidates(home: &Path) -> Vec<PathBuf> {
 pub const INSTALL_SH: &str =
     "https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh";
 
-/// The Hugging Face commit of `tindang/laya-code` this version uses: the retrained re-ranker, on the
-/// repo's `r1` branch. Must equal `MODEL_REVISION` in install.sh (scripts/test-install.sh checks).
-pub const LAYA_CODE_REVISION: &str = "25f97e5a2ec5f8cf7218a4f67504367d8832e1fe";
+/// The model directory (under `$LAYA_CODEX_HOME/models`) this version installs and looks in first.
+/// Must equal `MODEL_NAME` in install.sh.
+pub const LAYA_CODE_MODEL: &str = "laya-code-r2";
+
+/// The Hugging Face commit of `tindang/laya-code` this version uses: laya-code-r2, the
+/// ModernBERT-base student, on the repo's `r2` branch. Must equal `MODEL_REVISION` in install.sh
+/// (scripts/test-install.sh checks).
+pub const LAYA_CODE_REVISION: &str = "831fa8321213ab66a8085d39f0014c5f9f8b5f91";
 
 /// How to get a Moon binary.
 pub const MOON_FIX: &str = "re-run the installer (https://github.com/pilotspace/laya-codex#install), which puts moon \
@@ -295,6 +302,20 @@ pub fn rel_path(root: &Path, p: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_installed_r2_is_looked_for_first_then_older_installs() {
+        let home = Path::new("/h");
+        assert_eq!(
+            model_candidates(home),
+            vec![
+                home.join("models/laya-code-r2"),
+                home.join("models/laya-code"),
+                home.join("models/laya-base"),
+            ]
+        );
+        assert_eq!(LAYA_CODE_MODEL, "laya-code-r2");
+    }
 
     #[test]
     fn an_unset_or_empty_memo_salt_is_none() {

@@ -22,6 +22,26 @@ All notable changes to this project are documented here. The format follows
     `LAYA_CODEX_CAPTURE=0` also turns it off, and `laya-codex capture status` shows the state.
 
 ### Changed
+- **laya-code-r2 is the default re-ranker.** It is a ModernBERT-base model trained on the same
+  candidate lists as laya-code-r1, published on the `r2` branch of
+  [tindang/laya-code](https://huggingface.co/tindang/laya-code/tree/r2). It is served at 128 tokens
+  per candidate with the top 12 scored, for prompts and for `search`.
+  - **Why:** in the offline replay (tasks-v8 and the held-out tasks, 120 first prompts, through the
+    real hook), it inlines 141 of 238 gold files against 132 for r1 and 118 for keywords. The hook
+    takes 165 ms (p50) instead of 517 ms, and a `search` lookup 178 ms instead of 279 ms. The
+    download is about 330 MB instead of 850 MB.
+  - **Where it goes:** `$LAYA_CODEX_HOME/models/laya-code-r2`, which laya-codex looks in first. An
+    r1 install in `models/laya-code` keeps working unchanged. `install.sh --model-only` upgrades it
+    and restarts the daemon. A first download is staged and moved into place only once every file
+    checks out.
+- **The model directory says how to serve it.** A `serving` block in its `rl_agent_config.json`
+  sets the window (`state_tokens`) and the candidates scored per prompt (`score_top`) and per
+  `search` (`search_score_top`). A model without it is served as before: 128 tokens and 16
+  candidates. `LAYA_CODEX_STATE_TOKENS` and `LAYA_CODEX_SCORE_TOP` still override it, and
+  `laya-codex doctor` warns when they differ from the model's block.
+- **`laya-codex doctor` names the model.** It shows the model directory, revision, window,
+  candidates per prompt and per search, and Metal or CPU. It suggests the upgrade for a model
+  without a serving block, and flags a daemon still serving another model than the one installed.
 - **One file can no longer fill the candidate pool.** The 24 lexical candidates hold at most 3
   chunks from any one file, and the freed places go to the next files in order. One moon test
   file used to take 18 of the 24. In the offline replay of the 60 benchmark tasks, one more

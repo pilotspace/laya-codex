@@ -53,8 +53,10 @@ run --model >"$T/out1" 2>&1 || { cat "$T/out1"; fail "clean install exited non-z
 [ -x "$T/bin/laya-codex" ] && [ -x "$T/bin/moon" ] || fail "binaries not installed"
 [ ! -e "$T/bin/laya" ] || fail "a binary named laya was installed"
 [ "$("$T/bin/moon")" = "moon stub" ] || fail "moon is not the release binary"
-[ -f "$T/home/models/laya-code/tokenizer/tokenizer.json" ] || fail "model subdirectory file missing"
+[ -f "$T/home/models/laya-code-r2/tokenizer/tokenizer.json" ] || fail "model subdirectory file missing"
 [ -f "$T/home/share/moon-LICENSE" ] && [ -f "$T/home/share/moon-SOURCE" ] || fail "moon license/source missing"
+[ ! -e "$T/home/models/laya-code-r2.part" ] || fail "the model's staging directory was left behind"
+[ -s "$T/home/models/laya-code-r2/REVISION" ] || fail "the installed model does not record its revision"
 grep -q "laya-codex init" "$T/out1" || fail "no next-step hint"
 grep -q "^laya-codex-install: installed laya-codex $V" "$T/out1" || { cat "$T/out1"; fail "no laya-codex-install: summary"; }
 pass "clean install"
@@ -137,7 +139,7 @@ LAYA_CODEX_RELEASES_URL="file://$T/nonexistent" LAYA_CODEX_MODEL_URL="file://$mo
     LAYA_CODEX_MODEL_MANIFEST_SHA256="$(sum "$model/MANIFEST.sha256")" \
     sh "$here/install.sh" --dir "$T/bin2" --model-only >"$T/out6" 2>&1 && rc=0 || rc=$?
 [ "$rc" -eq 0 ] || { cat "$T/out6"; fail "--model-only exited non-zero"; }
-[ -f "$T/home2/models/laya-code/tokenizer/tokenizer.json" ] || fail "--model-only did not fetch the model"
+[ -f "$T/home2/models/laya-code-r2/tokenizer/tokenizer.json" ] || fail "--model-only did not fetch the model"
 [ ! -e "$T/bin2" ] || fail "--model-only installed binaries"
 if grep -q "downloading laya-codex-" "$T/out6"; then fail "--model-only downloaded a release asset"; fi
 pass "--model-only"
@@ -159,8 +161,52 @@ LAYA_CODEX_RELEASES_URL="file://$T/nonexistent" LAYA_CODEX_MODEL_URL="file://$mo
     sh "$here/install.sh" --dir "$T/bin3" --model-only >"$T/out8" 2>&1 && rc=0 || rc=$?
 [ "$rc" -ne 0 ] || fail "a manifest that is not the pinned one was accepted"
 grep -q "model manifest checksum mismatch" "$T/out8" || { cat "$T/out8"; fail "no manifest checksum error"; }
-[ ! -e "$T/home3/models/laya-code/model.safetensors" ] || fail "a model file was fetched from an unpinned manifest"
+[ ! -e "$T/home3/models/laya-code-r2/model.safetensors" ] || fail "a model file was fetched from an unpinned manifest"
 pass "unpinned model manifest refused"
+
+# 8b. An interrupted first download leaves no model directory the daemon would pick: files go to a
+#     staging directory that is renamed into place only once every file checks out, and a re-run
+#     resumes from it.
+rm -rf "$T/home4"
+cp "$model/MANIFEST.sha256" "$T/manifest.ok"
+echo "$(sum "$model/model.safetensors")  missing.bin" >>"$model/MANIFEST.sha256"
+LAYA_CODEX_RELEASES_URL="file://$T/nonexistent" LAYA_CODEX_MODEL_URL="file://$model" LAYA_CODEX_HOME="$T/home4" \
+    LAYA_CODEX_MODEL_MANIFEST_SHA256="$(sum "$model/MANIFEST.sha256")" \
+    sh "$here/install.sh" --dir "$T/bin4" --model-only >"$T/out8b" 2>&1 && rc=0 || rc=$?
+[ "$rc" -ne 0 ] || fail "a download with a missing file succeeded"
+[ ! -e "$T/home4/models/laya-code-r2" ] || fail "a partly downloaded model was put where the daemon looks"
+[ -f "$T/home4/models/laya-code-r2.part/model.safetensors" ] || fail "finished files of the partial download were not kept"
+mv "$T/manifest.ok" "$model/MANIFEST.sha256"
+LAYA_CODEX_RELEASES_URL="file://$T/nonexistent" LAYA_CODEX_MODEL_URL="file://$model" LAYA_CODEX_HOME="$T/home4" \
+    LAYA_CODEX_MODEL_MANIFEST_SHA256="$(sum "$model/MANIFEST.sha256")" LAYA_CODEX_MODEL_REVISION=abc123 \
+    sh "$here/install.sh" --dir "$T/bin4" --model-only >"$T/out8c" 2>&1 || { cat "$T/out8c"; fail "the resumed download failed"; }
+[ -f "$T/home4/models/laya-code-r2/tokenizer/tokenizer.json" ] && [ ! -e "$T/home4/models/laya-code-r2.part" ] ||
+    fail "the resumed download was not moved into place"
+if grep -q "downloading model file model.safetensors" "$T/out8c"; then fail "the resumed download fetched a finished file again"; fi
+[ "$(cat "$T/home4/models/laya-code-r2/REVISION")" = abc123 ] || fail "REVISION does not name the installed revision"
+pass "interrupted model download staged, resumed and moved into place"
+
+# 8c. --model-only restarts a running daemon (it would keep serving the previous model) and says
+#     the previous model's directory is no longer used, without removing it.
+mkdir -p "$T/bin5" "$T/home5/models/laya-code"
+printf '#!/bin/sh\necho "$LAYA_CODEX_HOME $*" >>"%s/stub5-calls"\n' "$T" >"$T/bin5/laya-codex"
+chmod 755 "$T/bin5/laya-codex"
+echo old >"$T/home5/models/laya-code/model.safetensors"
+PATH="$T/bin5:$PATH" LAYA_CODEX_RELEASES_URL="file://$T/nonexistent" LAYA_CODEX_MODEL_URL="file://$model" \
+    LAYA_CODEX_HOME="$T/home5" LAYA_CODEX_MODEL_MANIFEST_SHA256="$(sum "$model/MANIFEST.sha256")" \
+    sh "$here/install.sh" --model-only >"$T/out8d" 2>&1 || { cat "$T/out8d"; fail "--model-only over an old model failed"; }
+grep -qx "$T/home5 stop" "$T/stub5-calls" 2>/dev/null || { cat "$T/out8d"; fail "--model-only did not restart this home's daemon"; }
+grep -q "$T/home5/models/laya-code is no longer used" "$T/out8d" ||
+    { cat "$T/out8d"; fail "no note about the previous model directory"; }
+[ -f "$T/home5/models/laya-code/model.safetensors" ] || fail "the previous model was removed"
+pass "--model-only restarts the daemon and leaves the previous model with a note"
+
+# 8d. laya-codex looks first in the directory the installer fills.
+name="$(sed -n 's/^MODEL_NAME="\([^"]*\)"$/\1/p' "$here/install.sh")"
+[ -n "$name" ] || fail "install.sh sets no MODEL_NAME"
+grep -q "^pub const LAYA_CODE_MODEL: &str = \"$name\";" "$here/crates/laya-cli/src/config.rs" ||
+    fail "crates/laya-cli/src/config.rs LAYA_CODE_MODEL is not install.sh's MODEL_NAME $name"
+pass "laya-codex looks first in models/$name, where the installer puts the model"
 
 # 9. The defaults pin one Hugging Face revision of laya-code (a commit SHA, not a branch) and the
 #    manifest committed in release/hf-laya-code, so a later upload to the model repo cannot change
