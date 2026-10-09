@@ -14,6 +14,16 @@
 //! assert!(p[0] >= 0.0 && p[0] <= 1.0);
 //! # Ok::<(), laya_model::ModelError>(())
 //! ```
+//!
+//! # Tests
+//!
+//! Tests that need Metal (the `metal` feature and a Metal device) skip themselves when it is
+//! missing. Set `LAYA_REQUIRE_METAL=1` to make them fail instead, on any machine that must run
+//! them:
+//!
+//! ```text
+//! LAYA_REQUIRE_METAL=1 cargo test -p laya-model --release --features metal
+//! ```
 
 pub mod config;
 mod encoder;

@@ -365,14 +365,27 @@ pub fn apply(m: &impl Module, x: &Tensor) -> Result<Tensor> {
 pub(crate) mod tests {
     use super::*;
 
-    /// Devices to test on: always the CPU (f32), plus Metal (f16) when built and available.
-    #[cfg_attr(not(feature = "metal"), allow(unused_mut))]
-    pub(crate) fn devices() -> Vec<(Device, DType)> {
-        let mut out = vec![(Device::Cpu, DType::F32)];
+    /// The Metal device, or `None` when the crate was built without the `metal` feature or no
+    /// device exists. With `LAYA_REQUIRE_METAL=1` a missing device fails the test instead, so
+    /// a Metal CI job cannot pass by skipping every Metal check.
+    pub(crate) fn metal_device() -> Option<Device> {
         #[cfg(feature = "metal")]
         if candle_core::utils::metal_is_available() {
-            out.push((Device::new_metal(0).expect("metal device"), DType::F16));
+            return Some(Device::new_metal(0).expect("metal device"));
         }
+        let required = std::env::var_os("LAYA_REQUIRE_METAL").is_some_and(|v| v == "1");
+        assert!(
+            !required,
+            "LAYA_REQUIRE_METAL=1 but Metal is unavailable (built without the `metal` feature, \
+             or no Metal device)"
+        );
+        None
+    }
+
+    /// Devices to test on: always the CPU (f32), plus Metal (f16) when built and available.
+    pub(crate) fn devices() -> Vec<(Device, DType)> {
+        let mut out = vec![(Device::Cpu, DType::F32)];
+        out.extend(metal_device().map(|d| (d, DType::F16)));
         out
     }
 

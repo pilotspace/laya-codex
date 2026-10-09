@@ -552,7 +552,7 @@ mod tests {
     use crate::nn::tests::{max_abs_diff, randn};
 
     fn metal() -> Option<Device> {
-        candle_core::utils::metal_is_available().then(|| Device::new_metal(0).unwrap())
+        crate::nn::tests::metal_device()
     }
 
     #[test]
@@ -679,34 +679,67 @@ mod tests {
         assert_eq!(max_abs_diff(&got, &want), 0.0);
     }
 
+    /// candle's fused attention on the same views, transposed to rows.
+    fn sdpa_reference(q: &Tensor, k: &Tensor, v: &Tensor, m: &Tensor) -> Tensor {
+        candle_nn::ops::sdpa(q, k, v, Some(m), false, 0.125, 1.0)
+            .unwrap()
+            .transpose(1, 2)
+            .unwrap()
+            .contiguous()
+            .unwrap()
+    }
+
     #[test]
     fn sdpa_rows_is_bit_identical_to_sdpa_then_transpose() {
         let Some(dev) = metal() else { return };
-        let (b, s, h, hd) = (3usize, 37usize, 4usize, 64usize);
-        // Strided views of a packed q|k projection, as the encoder hands them over.
-        let qk = randn(&[b, s, 2 * h, hd], &dev, DType::F16);
-        let v = randn(&[b, s, h, hd], &dev, DType::F16);
-        let mask = randn(&[b, 1, s, s], &dev, DType::F16);
-        for lq in [s, 2] {
-            let q = qk.narrow(2, 0, h).unwrap().narrow(1, 0, lq).unwrap();
-            let q = q.transpose(1, 2).unwrap();
-            let k = qk.narrow(2, h, h).unwrap().transpose(1, 2).unwrap();
-            let vv = v.transpose(1, 2).unwrap();
-            let m = mask
-                .narrow(2, 0, lq)
-                .unwrap()
-                .broadcast_as((b, h, lq, s))
-                .unwrap();
-            let want = candle_nn::ops::sdpa(&q, &k, &vv, Some(&m), false, 0.125, 1.0)
-                .unwrap()
-                .transpose(1, 2)
-                .unwrap()
-                .contiguous()
-                .unwrap();
-            let got = sdpa_rows(&q, &k, &vv, &m, 0.125).unwrap();
-            assert_eq!(got.dims(), &[b, lq, h, hd]);
-            assert!(got.is_contiguous());
-            assert_eq!(max_abs_diff(&got, &want), 0.0, "lq {lq}");
+        let (h, hd) = (4usize, 64usize);
+        // f16 and f32; one row and three; an odd key length and the kernel's aligned paths
+        // (multiples of its 32-row blocks), up to the student's max_len of 704.
+        for dtype in [DType::F16, DType::F32] {
+            for b in [1usize, 3] {
+                for s in [37usize, 64, 704] {
+                    // Strided views of a packed q|k projection, as the encoder hands them over.
+                    let qk = randn(&[b, s, 2 * h, hd], &dev, dtype);
+                    let v = randn(&[b, s, h, hd], &dev, dtype);
+                    let mask = randn(&[b, 1, s, s], &dev, dtype);
+                    for lq in [s, 2] {
+                        let q = qk.narrow(2, 0, h).unwrap().narrow(1, 0, lq).unwrap();
+                        let q = q.transpose(1, 2).unwrap();
+                        let k = qk.narrow(2, h, h).unwrap().transpose(1, 2).unwrap();
+                        let vv = v.transpose(1, 2).unwrap();
+                        let m = mask.narrow(2, 0, lq).unwrap();
+                        let m = m.broadcast_as((b, h, lq, s)).unwrap();
+                        let want = sdpa_reference(&q, &k, &vv, &m);
+                        let got = sdpa_rows(&q, &k, &vv, &m, 0.125).unwrap();
+                        assert_eq!(got.dims(), &[b, lq, h, hd]);
+                        assert!(got.is_contiguous());
+                        let diff = max_abs_diff(&got, &want);
+                        assert_eq!(diff, 0.0, "{dtype:?} b {b} s {s} lq {lq}");
+                    }
+                }
+            }
         }
+    }
+
+    #[test]
+    fn sdpa_rows_refuses_a_single_query_row() {
+        let Some(dev) = metal() else { return };
+        let (b, s, h, hd) = (2usize, 37usize, 4usize, 64usize);
+        let q = randn(&[b, h, 1, hd], &dev, DType::F16);
+        let k = randn(&[b, h, s, hd], &dev, DType::F16);
+        let mask = randn(&[b, h, 1, s], &dev, DType::F16);
+        // The single-query kernel would ignore the mask: refused, never silently wrong.
+        let err = sdpa_rows(&q, &k, &k, &mask, 0.125).unwrap_err();
+        assert!(err.to_string().contains("unsupported lq 1"), "{err}");
+    }
+
+    #[test]
+    fn add_bias_on_a_non_contiguous_input_matches_broadcast_add() {
+        let Some(dev) = metal() else { return };
+        let x = randn(&[96, 11], &dev, DType::F16).t().unwrap();
+        assert!(!x.is_contiguous());
+        let bias = randn(&[96], &dev, DType::F16);
+        let want = x.contiguous().unwrap().broadcast_add(&bias).unwrap();
+        assert_eq!(max_abs_diff(&add_bias(&x, &bias).unwrap(), &want), 0.0);
     }
 }

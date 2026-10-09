@@ -187,6 +187,10 @@ fn cpu_f32_parity_with_python_reference() {
 fn metal_parity_with_python_reference() {
     let Some(dir) = model_dir() else { return };
     if !laya_model::metal_available() {
+        assert!(
+            std::env::var_os("LAYA_REQUIRE_METAL").is_none_or(|v| v != "1"),
+            "LAYA_REQUIRE_METAL=1 but no Metal device is available"
+        );
         eprintln!("SKIP: metal not available at runtime");
         return;
     }
