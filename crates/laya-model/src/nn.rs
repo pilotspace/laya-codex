@@ -35,13 +35,56 @@ impl Norm {
     }
 }
 
-/// Load a linear layer (`weight` of shape `(out, in)`, optional `bias`).
-pub fn linear(vb: VarBuilder, in_dim: usize, out_dim: usize, with_bias: bool) -> Result<Linear> {
-    if with_bias {
-        candle_nn::linear(in_dim, out_dim, vb)
-    } else {
-        candle_nn::linear_no_bias(in_dim, out_dim, vb)
+/// `y = x @ w.t() + b`: `candle_nn::Linear` with the bias added by the crate's Metal kernel.
+///
+/// candle adds a linear layer's bias with its strided broadcast kernel, which indexes with
+/// 64-bit `%` per dimension per element: on Metal that doubled the cost of the decision head's
+/// projections. The matmul is candle's; the add is the same `x + b` in the same dtype, so the
+/// result is bit-identical. On the CPU it is `candle_nn::Linear` exactly.
+#[derive(Debug, Clone)]
+pub struct Dense {
+    linear: Linear,
+    bias: Option<Tensor>,
+}
+
+impl Dense {
+    /// `weight` of shape `(out, in)`, optional `bias` of shape `(out)`.
+    pub fn new(weight: Tensor, bias: Option<Tensor>) -> Self {
+        Self {
+            linear: Linear::new(weight, None),
+            bias,
+        }
     }
+}
+
+impl Module for Dense {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let y = self.linear.forward(x)?;
+        match &self.bias {
+            None => Ok(y),
+            Some(b) => add_bias(&y, b),
+        }
+    }
+}
+
+/// `x + bias` over the last dim (`x.broadcast_add(bias)`, through the crate's kernel on Metal).
+fn add_bias(x: &Tensor, bias: &Tensor) -> Result<Tensor> {
+    #[cfg(feature = "metal")]
+    if x.device().is_metal() {
+        return crate::metal_ops::add_bias(x, bias);
+    }
+    x.broadcast_add(bias)
+}
+
+/// Load a linear layer (`weight` of shape `(out, in)`, optional `bias`).
+pub fn linear(vb: VarBuilder, in_dim: usize, out_dim: usize, with_bias: bool) -> Result<Dense> {
+    let weight = vb.get((out_dim, in_dim), "weight")?;
+    let bias = if with_bias {
+        Some(vb.get(out_dim, "bias")?)
+    } else {
+        None
+    };
+    Ok(Dense::new(weight, bias))
 }
 
 /// Additive mask value for "cannot attend": finite so masked rows never turn into NaN.
@@ -52,11 +95,15 @@ pub fn mask_value(dtype: DType) -> f64 {
     }
 }
 
-/// Precomputed additive masks for one padded micro-batch, both `(b, 1, s, s)` and contiguous
-/// (the fused Metal attention kernel accepts them broadcast over heads without a copy).
+/// Precomputed additive masks for one padded micro-batch. `global` and `local` are `(b, 1, s, s)`
+/// and contiguous (the fused Metal attention kernel accepts them broadcast over heads without a
+/// copy).
 #[derive(Debug, Clone)]
 pub struct AttnMasks {
-    /// 0 for real keys, `mask_value` for padding.
+    /// Key padding only, `(b, 1, 1, s)`: 0 for real keys, `mask_value` for padding. The same for
+    /// every query row, so it broadcasts to any number of them.
+    pub key_row: Tensor,
+    /// `key_row` for every query row.
     pub global: Tensor,
     /// Padding mask plus the sliding-window band.
     pub local: Tensor,
@@ -68,12 +115,14 @@ impl AttnMasks {
         let (b, s) = attention_mask.dims2()?;
         let neg = mask_value(dtype);
         let inv = (1.0 - attention_mask.to_dtype(dtype)?)?;
-        let global = (inv * neg)?
-            .reshape((b, 1, 1, s))?
-            .broadcast_as((b, 1, s, s))?
-            .contiguous()?;
+        let key_row = (inv * neg)?.reshape((b, 1, 1, s))?;
+        let global = key_row.broadcast_as((b, 1, s, s))?.contiguous()?;
         let local = global.broadcast_add(window)?;
-        Ok(Self { global, local })
+        Ok(Self {
+            key_row,
+            global,
+            local,
+        })
     }
 }
 
@@ -107,8 +156,8 @@ pub struct Rope<'a> {
 /// `(b, s, 3d)` output instead would cost two extra copies per layer.
 #[derive(Debug, Clone)]
 pub struct QkvProj {
-    qk: Linear,
-    v: Linear,
+    qk: Dense,
+    v: Dense,
 }
 
 impl QkvProj {
@@ -134,8 +183,8 @@ impl QkvProj {
             None => (None, None),
         };
         Ok(Self {
-            qk: Linear::new(w_qk, b_qk),
-            v: Linear::new(w_v, b_v),
+            qk: Dense::new(w_qk, b_qk),
+            v: Dense::new(w_v, b_v),
         })
     }
 
@@ -158,9 +207,9 @@ impl QkvProj {
 /// Two layouts are used, chosen by device:
 /// - **Metal**: the fused `sdpa` kernel reads `q/k/v` and the mask through their strides, so
 ///   `q` and `k` are rotated once in `(b, s, 2h, hd)` layout (`rope_thd`, a free reshape of
-///   `qk`) and handed over as transposed *views*; only the head-to-row assembly at the end
-///   touches memory. A generic 4-D transpose copy on Metal costs more than the attention
-///   itself, which is why the layout avoids it entirely.
+///   `qk`) and handed over as transposed *views*, and the kernel writes its output straight
+///   into `(b, s, h, hd)` rows. A generic 4-D transpose copy on Metal costs more than the
+///   attention itself, which is why the layout avoids it entirely.
 /// - **CPU**: contiguous `(b, h, s, hd)` tensors (the gemm backend needs a single batch stride)
 ///   and the explicit matmul → mask → softmax → matmul chain.
 pub fn self_attention(
@@ -184,55 +233,259 @@ pub fn self_attention(
     if qk.device().is_metal() {
         let qk = qk.reshape((b, s, 2 * heads, head_dim))?;
         let qk = match rope {
-            Some(r) => candle_nn::rotary_emb::rope_thd(&qk, r.cos, r.sin)?,
+            Some(r) => rope_thd_metal(&qk, r.cos, r.sin)?,
             None => qk,
         };
         let q = qk.narrow(2, 0, heads)?.transpose(1, 2)?;
         let k = qk.narrow(2, heads, heads)?.transpose(1, 2)?;
         let v = v.reshape((b, s, heads, head_dim))?.transpose(1, 2)?;
-        let mask = mask.broadcast_as((b, heads, s, s))?;
-        let out = candle_nn::ops::sdpa(&q, &k, &v, Some(&mask), false, scale as f32, 1.0)?;
-        heads_to_rows(&out)
+        attend_metal(&q, &k, &v, mask, scale)
     } else {
-        let to_bhsd = |t: &Tensor, offset: usize| -> Result<Tensor> {
-            t.narrow(2, offset, d)?
-                .reshape((b, s, heads, head_dim))?
-                .transpose(1, 2)?
-                .contiguous()
-        };
-        let (mut q, mut k, v) = (to_bhsd(qk, 0)?, to_bhsd(qk, d)?, to_bhsd(v, 0)?);
+        let (mut q, mut k, v) = (
+            to_bhsd(qk, 0, heads, head_dim)?,
+            to_bhsd(qk, d, heads, head_dim)?,
+            to_bhsd(v, 0, heads, head_dim)?,
+        );
         if let Some(r) = rope {
             q = candle_nn::rotary_emb::rope(&q, r.cos, r.sin)?;
             k = candle_nn::rotary_emb::rope(&k, r.cos, r.sin)?;
         }
-        let att = (q.matmul(&k.transpose(D::Minus2, D::Minus1)?.contiguous()?)? * scale)?;
-        let att = att.broadcast_add(mask)?;
-        let att = candle_nn::ops::softmax_last_dim(&att)?;
-        att.matmul(&v)?.transpose(1, 2)?.reshape((b, s, d))
+        attend_cpu(&q, &k, &v, mask, scale)
     }
 }
 
-/// `(b, h, s, hd)` contiguous → `(b, s, h * hd)` contiguous.
+/// Multi-head attention of a few query rows over a whole sequence, without rotary embedding.
 ///
-/// Every `(batch, head)` tile is an `(s, hd)` block that is contiguous on both sides, so the
-/// transpose is assembled from `b * h` 2-D copies (`slice_set` → `copy2d` blits). On Metal this
-/// is ~3x faster than the generic strided-copy kernel that `transpose(1, 2).contiguous()`
-/// would dispatch, at the same result bit-for-bit.
-fn heads_to_rows(out: &Tensor) -> Result<Tensor> {
-    let (b, h, s, hd) = out.dims4()?;
-    let dst = Tensor::zeros((b, s, h, hd), out.dtype(), out.device())?;
-    for bi in 0..b {
-        let dst_b = dst.narrow(0, bi, 1)?;
-        let out_b = out.narrow(0, bi, 1)?;
-        for i in 0..h {
-            let src = out_b.narrow(1, i, 1)?.reshape((1, s, 1, hd))?;
-            dst_b.slice_set(&src, 2, i)?;
-        }
+/// - `q`: `(b, lq, heads * head_dim)` contiguous
+/// - `k`, `v`: `(b, s, heads * head_dim)` contiguous
+/// - `mask`: additive `(b, 1, lq, s)` or `(b, 1, 1, s)` (one row for every query) in the model
+///   dtype; it may be a strided view
+///
+/// Returns `(b, lq, heads * head_dim)`. Each query row's result is the same as that row of
+/// [`self_attention`] over the whole sequence: attention is independent per query row.
+pub fn attention(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    heads: usize,
+    head_dim: usize,
+    mask: &Tensor,
+    scale: f64,
+) -> Result<Tensor> {
+    let (b, lq, d) = q.dims3()?;
+    let s = k.dim(1)?;
+    if d != heads * head_dim || k.dims3()? != (b, s, d) || v.dims3()? != (b, s, d) {
+        candle_core::bail!(
+            "attention: q {:?} / k {:?} / v {:?} do not match {heads} heads x {head_dim}",
+            q.shape(),
+            k.shape(),
+            v.shape()
+        );
     }
-    dst.reshape((b, s, h * hd))
+    if q.device().is_metal() {
+        let split = |t: &Tensor, l: usize| t.reshape((b, l, heads, head_dim))?.transpose(1, 2);
+        attend_metal(&split(q, lq)?, &split(k, s)?, &split(v, s)?, mask, scale)
+    } else {
+        attend_cpu(
+            &to_bhsd(q, 0, heads, head_dim)?,
+            &to_bhsd(k, 0, heads, head_dim)?,
+            &to_bhsd(v, 0, heads, head_dim)?,
+            mask,
+            scale,
+        )
+    }
+}
+
+/// Rotary embedding of a contiguous `(b, s, h, hd)` tensor on Metal: the crate's 32-bit-indexed
+/// kernel, bit-identical to `candle_nn::rotary_emb::rope_thd` and 12x faster at b=8, s=187.
+fn rope_thd_metal(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
+    #[cfg(feature = "metal")]
+    return crate::metal_ops::rope_thd(x, cos, sin);
+    #[cfg(not(feature = "metal"))]
+    candle_nn::rotary_emb::rope_thd(x, cos, sin)
+}
+
+/// `(b, l, ·)` → contiguous `(b, h, l, hd)` of the `h * hd` columns starting at `offset`.
+fn to_bhsd(t: &Tensor, offset: usize, heads: usize, head_dim: usize) -> Result<Tensor> {
+    let (b, l, _) = t.dims3()?;
+    t.narrow(2, offset, heads * head_dim)?
+        .reshape((b, l, heads, head_dim))?
+        .transpose(1, 2)?
+        .contiguous()
+}
+
+/// Explicit `softmax(q k^T * scale + mask) v` over contiguous `(b, h, l, hd)` tensors, returned
+/// as `(b, lq, h * hd)`.
+fn attend_cpu(q: &Tensor, k: &Tensor, v: &Tensor, mask: &Tensor, scale: f64) -> Result<Tensor> {
+    let (b, h, lq, hd) = q.dims4()?;
+    let att = (q.matmul(&k.transpose(D::Minus2, D::Minus1)?.contiguous()?)? * scale)?;
+    let att = att.broadcast_add(mask)?;
+    let att = candle_nn::ops::softmax_last_dim(&att)?;
+    att.matmul(v)?.transpose(1, 2)?.reshape((b, lq, h * hd))
+}
+
+/// Fused attention on Metal over `(b, h, l, hd)` views; returns `(b, lq, h * hd)`.
+///
+/// The fused kernel needs at least two query rows: with one it dispatches the single-query
+/// kernel, which ignores the mask, so a single row takes the explicit path instead.
+fn attend_metal(q: &Tensor, k: &Tensor, v: &Tensor, mask: &Tensor, scale: f64) -> Result<Tensor> {
+    let (b, h, lq, _) = q.dims4()?;
+    let s = k.dim(2)?;
+    if lq < 2 {
+        return attend_cpu(
+            &q.contiguous()?,
+            &k.contiguous()?,
+            &v.contiguous()?,
+            mask,
+            scale,
+        );
+    }
+    let mask = mask.broadcast_as((b, h, lq, s))?;
+    let hd = q.dim(3)?;
+    fused_attention_rows(q, k, v, &mask, scale as f32)?.reshape((b, lq, h * hd))
+}
+
+/// candle's fused attention kernel writing its `(b, lq, h, hd)` output directly in the row
+/// layout the output projection reads (no `(b, h, lq, hd)` → rows transpose afterwards).
+fn fused_attention_rows(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    mask: &Tensor,
+    scale: f32,
+) -> Result<Tensor> {
+    #[cfg(feature = "metal")]
+    return crate::metal_ops::sdpa_rows(q, k, v, mask, scale);
+    #[cfg(not(feature = "metal"))]
+    {
+        let _ = (q, k, v, mask, scale);
+        candle_core::bail!("fused attention needs the metal feature")
+    }
 }
 
 /// Apply a module and keep the result contiguous.
 pub fn apply(m: &impl Module, x: &Tensor) -> Result<Tensor> {
     m.forward(x)
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// The Metal device, or `None` when the crate was built without the `metal` feature or no
+    /// device exists. With `LAYA_REQUIRE_METAL=1` a missing device fails the test instead, so
+    /// a Metal CI job cannot pass by skipping every Metal check.
+    pub(crate) fn metal_device() -> Option<Device> {
+        #[cfg(feature = "metal")]
+        if candle_core::utils::metal_is_available() {
+            return Some(Device::new_metal(0).expect("metal device"));
+        }
+        let required = std::env::var_os("LAYA_REQUIRE_METAL").is_some_and(|v| v == "1");
+        assert!(
+            !required,
+            "LAYA_REQUIRE_METAL=1 but Metal is unavailable (built without the `metal` feature, \
+             or no Metal device)"
+        );
+        None
+    }
+
+    /// Devices to test on: always the CPU (f32), plus Metal (f16) when built and available.
+    pub(crate) fn devices() -> Vec<(Device, DType)> {
+        let mut out = vec![(Device::Cpu, DType::F32)];
+        out.extend(metal_device().map(|d| (d, DType::F16)));
+        out
+    }
+
+    pub(crate) fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
+        (a.to_dtype(DType::F32).unwrap() - b.to_dtype(DType::F32).unwrap())
+            .unwrap()
+            .abs()
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .max(0)
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap()
+    }
+
+    /// Random normal tensor made on the CPU (so every device sees the same values).
+    pub(crate) fn randn(shape: &[usize], dev: &Device, dtype: DType) -> Tensor {
+        Tensor::randn(0f32, 1.0, shape, &Device::Cpu)
+            .unwrap()
+            .to_dtype(dtype)
+            .unwrap()
+            .to_device(dev)
+            .unwrap()
+    }
+
+    /// Padding mask (b, s) with row `r` padded after `lens[r]` tokens.
+    pub(crate) fn padding(lens: &[usize], s: usize, dev: &Device) -> Tensor {
+        let mut m = vec![0f32; lens.len() * s];
+        for (r, &l) in lens.iter().enumerate() {
+            m[r * s..r * s + l].fill(1.0);
+        }
+        Tensor::from_vec(m, (lens.len(), s), dev).unwrap()
+    }
+
+    #[test]
+    fn dense_is_bit_identical_to_candles_linear() {
+        for (dev, dtype) in devices() {
+            let w = randn(&[48, 32], &dev, dtype);
+            let bias = randn(&[48], &dev, dtype);
+            for shape in [vec![3usize, 7, 32], vec![5, 32]] {
+                let x = randn(&shape, &dev, dtype);
+                for b in [Some(bias.clone()), None] {
+                    let want = Linear::new(w.clone(), b.clone()).forward(&x).unwrap();
+                    let got = Dense::new(w.clone(), b.clone()).forward(&x).unwrap();
+                    assert_eq!(got.dims(), want.dims());
+                    let diff = max_abs_diff(&got, &want);
+                    assert_eq!(diff, 0.0, "{dev:?} {shape:?} bias {}", b.is_some());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn attention_for_a_subset_of_queries_matches_those_rows_of_full_attention() {
+        let (b, s, heads, hd) = (2usize, 37usize, 2usize, 64usize);
+        let d = heads * hd;
+        for (dev, dtype) in devices() {
+            let (qk, v) = (
+                randn(&[b, s, 2 * d], &dev, dtype),
+                randn(&[b, s, d], &dev, dtype),
+            );
+            let band = window_band(s, 8, dtype, &dev).unwrap();
+            let masks = AttnMasks::new(&padding(&[s, 23], s, &dev), &band, dtype).unwrap();
+            let full = self_attention(&qk, &v, heads, hd, None, &masks.global, 0.125).unwrap();
+            let k = qk.narrow(2, d, d).unwrap().contiguous().unwrap();
+            // One, two and three query rows per batch row (one row takes another code path on
+            // Metal: the fused single-query kernel ignores masks).
+            for rows in [vec![5usize], vec![0, 22], vec![1, 9, 30]] {
+                let n = rows.len();
+                let ids: Vec<u32> = rows.iter().map(|&r| r as u32).collect();
+                let idx = Tensor::from_vec(ids, n, &dev).unwrap();
+                let q = qk
+                    .narrow(2, 0, d)
+                    .unwrap()
+                    .contiguous()
+                    .unwrap()
+                    .index_select(&idx, 1)
+                    .unwrap();
+                let want = full.index_select(&idx, 1).unwrap();
+                let tol = if dtype == DType::F32 { 1e-5 } else { 2e-3 };
+                // The query rows of the square mask, and the key-padding row broadcast to them.
+                for mask in [masks.global.narrow(2, 0, n).unwrap(), masks.key_row.clone()] {
+                    let got = attention(&q, &k, &v, heads, hd, &mask, 0.125).unwrap();
+                    assert_eq!(got.dims(), want.dims());
+                    let diff = max_abs_diff(&got, &want);
+                    assert!(
+                        diff <= tol,
+                        "{dev:?} rows {rows:?} mask {:?}: max |d| {diff}",
+                        mask.dims()
+                    );
+                }
+            }
+        }
+    }
 }

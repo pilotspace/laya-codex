@@ -51,8 +51,10 @@ fn fixtures() -> Fixtures {
         .unwrap_or_else(|| {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/laya_parity.json")
         });
-    let text = std::fs::read_to_string(&path).expect("fixtures/laya_parity.json");
-    serde_json::from_str(&text).expect("valid fixtures")
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read parity fixtures {}: {e}", path.display()));
+    serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("parity fixtures {} are not valid: {e}", path.display()))
 }
 
 /// The three questions used by `spike/make_parity_fixtures.py`, in fixture order.
@@ -187,6 +189,10 @@ fn cpu_f32_parity_with_python_reference() {
 fn metal_parity_with_python_reference() {
     let Some(dir) = model_dir() else { return };
     if !laya_model::metal_available() {
+        assert!(
+            std::env::var_os("LAYA_REQUIRE_METAL").is_none_or(|v| v != "1"),
+            "LAYA_REQUIRE_METAL=1 but no Metal device is available"
+        );
         eprintln!("SKIP: metal not available at runtime");
         return;
     }

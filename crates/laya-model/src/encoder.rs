@@ -8,7 +8,7 @@ use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{Embedding, Linear, Module, VarBuilder};
 
 use crate::config::EncoderConfig;
-use crate::nn::{AttnMasks, Norm, QkvProj, Rope, apply, linear, self_attention};
+use crate::nn::{AttnMasks, Dense, Norm, QkvProj, Rope, apply, linear, self_attention};
 
 /// Rotary cos/sin tables `(max_pos, head_dim / 2)`, computed in f32 and cast once.
 #[derive(Debug, Clone)]
@@ -52,13 +52,13 @@ impl RopeTable {
 struct Layer {
     attn_norm: Option<Norm>,
     wqkv: QkvProj,
-    wo: Linear,
+    wo: Dense,
     mlp_norm: Norm,
     /// First half of `mlp.Wi` (the GeGLU input branch).
     wi_input: Linear,
     /// Second half of `mlp.Wi` (the GeGLU gate branch).
     wi_gate: Linear,
-    wo_mlp: Linear,
+    wo_mlp: Dense,
     global: bool,
 }
 
