@@ -100,6 +100,10 @@ pub enum Response {
     Pong {
         model_ready: bool,
         version: String,
+        /// The model directory the daemon serves (absent from older daemons and when it serves
+        /// no model).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     Query {
         result: QueryResult,

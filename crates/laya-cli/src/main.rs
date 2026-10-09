@@ -27,6 +27,7 @@ mod indexer;
 mod init;
 mod mcp;
 mod protocol;
+mod serving;
 mod session;
 mod sys;
 mod trace;
@@ -337,7 +338,7 @@ fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
     outln!(
         "{}",
         json!({"socket": cfg.socket_path(), "model_dir": cfg.model_dir, "moon_port": cfg.moon_port,
-        "daemon": match r { Ok(Response::Pong { model_ready, version }) => json!({"up": true, "model_ready": model_ready, "version": version}),
+        "daemon": match r { Ok(Response::Pong { model_ready, version, model }) => json!({"up": true, "model_ready": model_ready, "version": version, "model": model}),
                             _ => json!({"up": false}) }})
     );
     Ok(())

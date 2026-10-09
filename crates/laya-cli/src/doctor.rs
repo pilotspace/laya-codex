@@ -861,7 +861,8 @@ mod tests {
             check_daemon(
                 Ok(Response::Pong {
                     model_ready: true,
-                    version: me
+                    version: me,
+                    model: None
                 }),
                 sock
             )
@@ -872,7 +873,8 @@ mod tests {
             check_daemon(
                 Ok(Response::Pong {
                     model_ready: false,
-                    version: "0.0.1".into()
+                    version: "0.0.1".into(),
+                    model: None
                 }),
                 sock
             )
