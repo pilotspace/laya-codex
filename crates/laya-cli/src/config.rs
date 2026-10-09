@@ -177,7 +177,7 @@ pub const LAYA_CODE_MODEL: &str = "laya-code-r2";
 /// The Hugging Face commit of `tindang/laya-code` this version uses: laya-code-r2, the
 /// ModernBERT-base student, on the repo's `r2` branch. Must equal `MODEL_REVISION` in install.sh
 /// (scripts/test-install.sh checks).
-pub const LAYA_CODE_REVISION: &str = "REPLACE_WITH_HF_R2_REVISION_SHA_AFTER_UPLOAD";
+pub const LAYA_CODE_REVISION: &str = "831fa8321213ab66a8085d39f0014c5f9f8b5f91";
 
 /// How to get a Moon binary.
 pub const MOON_FIX: &str = "re-run the installer (https://github.com/pilotspace/laya-codex#install), which puts moon \

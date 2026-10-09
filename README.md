@@ -500,7 +500,7 @@ and `.mcp.json`: `{"mcpServers": {"laya-codex": {"command": "laya-codex", "args"
 Requirements:
 - **Rust:** 1.90+ (edition 2024).
 - **Moon:** a [Moon](https://github.com/pilotspace/moon) binary built with its `text-index` feature. laya-codex uses `LAYA_CODEX_MOON_BIN` if set, else looks beside the (symlink-resolved) `laya-codex` binary, then in `../libexec`, then on `PATH`.
-- **Model weights (optional):** `hf download tindang/laya-code --revision REPLACE_WITH_HF_R2_REVISION_SHA_AFTER_UPLOAD --local-dir ~/.cache/laya-codex/models/laya-code-r2` (the revision `install.sh` pins; the repo's `main` and `r1` branches hold older models). Without them, laya-codex ranks by keywords alone.
+- **Model weights (optional):** `hf download tindang/laya-code --revision 831fa8321213ab66a8085d39f0014c5f9f8b5f91 --local-dir ~/.cache/laya-codex/models/laya-code-r2` (the revision `install.sh` pins; the repo's `main` and `r1` branches hold older models). Without them, laya-codex ranks by keywords alone.
 
 ```sh
 cargo build --release -p laya-cli        # target/release/laya-codex (fat LTO, mimalloc, Metal on macOS)

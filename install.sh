@@ -25,7 +25,7 @@ RELEASES_URL="${LAYA_CODEX_RELEASES_URL:-https://github.com/$REPO/releases}"
 # laya-code-r2 (the ModernBERT-base student, on the repo's `r2` branch) goes to its own directory,
 # MODEL_NAME, which laya-codex looks in first; an older install in models/laya-code stays as it was.
 MODEL_NAME="laya-code-r2"
-MODEL_REVISION="${LAYA_CODEX_MODEL_REVISION:-REPLACE_WITH_HF_R2_REVISION_SHA_AFTER_UPLOAD}"
+MODEL_REVISION="${LAYA_CODEX_MODEL_REVISION:-831fa8321213ab66a8085d39f0014c5f9f8b5f91}"
 MODEL_MANIFEST_SHA256="${LAYA_CODEX_MODEL_MANIFEST_SHA256:-f5d20914a7b4ff44eedbb95418ac1fa07af128c576a59607e97dc7fdb570a623}"
 MODEL_URL="${LAYA_CODEX_MODEL_URL:-https://huggingface.co/tindang/laya-code/resolve/$MODEL_REVISION}"
 MODEL="${LAYA_CODEX_MODEL:-auto}"
