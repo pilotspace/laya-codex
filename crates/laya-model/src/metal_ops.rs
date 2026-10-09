@@ -427,6 +427,13 @@ impl CustomOp3 for SdpaRows {
         let candle_core::Storage::Metal(mask_s) = &*mask_s else {
             candle_core::bail!("laya sdpa_rows: mask is not on the metal device");
         };
+        // The kernel reads every row with unit stride along the last dim: it takes only the
+        // (batch, head, row) strides of q, k, v, the mask and the output.
+        if [q_l, k_l, v_l, mask_l].iter().any(|l| l.stride()[3] != 1) {
+            candle_core::bail!(
+                "laya sdpa_rows: the last dim of q, k, v and the mask needs stride 1"
+            );
+        }
         // The kernel binds the mask buffer without an offset.
         if mask_l.dims() != [b, h, lq, kl] || mask_l.start_offset() != 0 {
             candle_core::bail!(
@@ -513,17 +520,28 @@ fn add_bias_with(source: &'static str, x: &Tensor, bias: &Tensor) -> Result<Tens
 
 /// `softmax(q k^T * scale + mask) v` with candle's fused kernel, written as `(b, lq, h, hd)`.
 ///
-/// `q`: `(b, h, lq, hd)`, `k` and `v`: `(b, h, kl, hd)` (any strides), `mask`: additive
-/// `(b, h, lq, kl)` (any strides, e.g. broadcast over heads). Needs `lq >= 2`.
+/// - `q`: `(b, h, lq, hd)`; `k`, `v`: `(b, h, kl, hd)`; `mask`: additive `(b, h, lq, kl)`.
+/// - Any (batch, head, row) strides are read in place (transposed views, a mask broadcast over
+///   heads or rows). The kernel needs the last dim at unit stride: an input without it is
+///   copied to a contiguous tensor first, as is a mask that does not start at offset 0 (the
+///   kernel binds the mask without its offset). The values, and so the result, are the same.
+/// - Needs `lq >= 2` (the single-query kernel ignores the mask) and a supported head dim.
 pub fn sdpa_rows(q: &Tensor, k: &Tensor, v: &Tensor, mask: &Tensor, scale: f32) -> Result<Tensor> {
-    // The kernel binds the mask buffer without its offset, and `contiguous()` returns an
-    // already-contiguous offset view unchanged: copy such a mask to a fresh buffer.
+    let unit = |t: &Tensor| -> Result<Tensor> {
+        if t.stride().last() == Some(&1) {
+            Ok(t.clone())
+        } else {
+            t.force_contiguous()
+        }
+    };
+    // `contiguous()` would return an already-contiguous offset view unchanged: copy instead.
     let mask = if mask.layout().start_offset() == 0 {
-        mask.clone()
+        unit(mask)?
     } else {
         mask.force_contiguous()?
     };
-    q.apply_op3_no_bwd(k, v, &SdpaRows { mask, scale })
+    let (q, k, v) = (unit(q)?, unit(k)?, unit(v)?);
+    q.apply_op3_no_bwd(&k, &v, &SdpaRows { mask, scale })
 }
 
 #[cfg(test)]
@@ -624,6 +642,24 @@ mod tests {
         let bias = randn(&[d], &dev, DType::BF16);
         let want = x.broadcast_add(&bias).unwrap();
         assert_eq!(max_abs_diff(&add_bias(&x, &bias).unwrap(), &want), 0.0);
+    }
+
+    #[test]
+    fn sdpa_rows_reads_inputs_whose_last_dim_is_not_unit_stride() {
+        let Some(dev) = metal() else { return };
+        let (b, s, h, hd) = (2usize, 37usize, 4usize, 64usize);
+        // `(b, h, rows, cols)` views of transposed storage: the last dim has stride `rows`.
+        let t = |rows: usize, cols: usize| {
+            randn(&[b, h, cols, rows], &dev, DType::F16)
+                .transpose(2, 3)
+                .unwrap()
+        };
+        let (q, k, v, mask) = (t(s, hd), t(s, hd), t(s, hd), t(s, s));
+        assert!(q.stride()[3] != 1 && mask.stride()[3] != 1);
+        let c = |x: &Tensor| x.force_contiguous().unwrap();
+        let want = sdpa_rows(&c(&q), &c(&k), &c(&v), &c(&mask), 0.125).unwrap();
+        let got = sdpa_rows(&q, &k, &v, &mask, 0.125).unwrap();
+        assert_eq!(max_abs_diff(&got, &want), 0.0);
     }
 
     #[test]
