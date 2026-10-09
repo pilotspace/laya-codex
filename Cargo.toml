@@ -42,3 +42,7 @@ debug = false
 # Fast iteration profile that still optimizes dependencies (model math is unusable in debug).
 [profile.dev.package."*"]
 opt-level = 3
+
+# candle-metal-kernels 0.11.0 opens Metal devices only on macOS 15+; see vendor/candle-metal-kernels/PATCHED.md.
+[patch.crates-io]
+candle-metal-kernels = { path = "vendor/candle-metal-kernels" }

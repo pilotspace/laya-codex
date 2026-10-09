@@ -1,7 +1,9 @@
 //! Request capture: one JSON line per ranking the daemon serves (a prompt from the hook, a
 //! `search` from the MCP server, a `query` from the CLI), holding what the Laya model saw and
 //! decided: the task focus, every candidate in lexical order with its probability, the spans
-//! returned and the blocks inlined. Joined with Claude Code's own session transcript (by session
+//! returned and the blocks inlined, and where the time went (`stage_ms`: lexical candidates, the
+//! model gate with each forward batch, related lists, render and total; `cached`: probabilities
+//! served from the score cache). Joined with Claude Code's own session transcript (by session
 //! id), it shows which offered code Claude went on to read, the evidence and training labels the
 //! benchmark alone cannot give.
 //!
@@ -158,6 +160,10 @@ pub struct Request<'a> {
     /// Spans inlined as full code, `(path, start, end)`.
     pub inlined: &'a [(String, u32, u32)],
     pub rendered_chars: Option<usize>,
+    /// Milliseconds spent rendering the injection (0 when nothing was rendered).
+    pub render_ms: f64,
+    /// Milliseconds from the request's arrival to its reply being ready (before this record).
+    pub total_ms: f64,
 }
 
 pub fn entry(r: &Request) -> Value {
@@ -166,6 +172,7 @@ pub fn entry(r: &Request) -> Value {
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
     let prompt: String = r.prompt.chars().take(PROMPT_CHARS).collect();
+    let stages = &r.capture.stages;
     json!({
         "v": 1,
         "ts": ts,
@@ -187,6 +194,15 @@ pub fn entry(r: &Request) -> Value {
         })).collect::<Vec<_>>(),
         "inlined": r.inlined,
         "rendered_chars": r.rendered_chars,
+        "cached": stages.cached,
+        "stage_ms": {
+            "lexical": stages.lexical_ms,
+            "model": stages.model_ms,
+            "batches": stages.batch_ms,
+            "related": stages.related_ms,
+            "render": r.render_ms,
+            "total": r.total_ms,
+        },
     })
 }
 
@@ -269,6 +285,13 @@ mod tests {
         let capture = CandidateCapture {
             focus: "alpha beta".into(),
             candidates: vec![cand("src/a.rs", 0, None), cand("src/b.rs", 1, Some(0.9))],
+            stages: laya_rank::StageTimes {
+                lexical_ms: 1.25,
+                model_ms: 260.5,
+                batch_ms: vec![130.0, 129.5],
+                cached: 3,
+                related_ms: 2.0,
+            },
         };
         let long = "x".repeat(PROMPT_CHARS + 50);
         let inlined = vec![("src/b.rs".to_string(), 1, 3)];
@@ -283,7 +306,15 @@ mod tests {
             capture: &capture,
             inlined: &inlined,
             rendered_chars: Some(120),
+            render_ms: 0.75,
+            total_ms: 265.0,
         });
+        assert_eq!(
+            e["stage_ms"],
+            json!({"lexical": 1.25, "model": 260.5, "batches": [130.0, 129.5],
+                   "related": 2.0, "render": 0.75, "total": 265.0})
+        );
+        assert_eq!(e["cached"], 3);
         assert_eq!(e["candidates"].as_array().unwrap().len(), 2);
         assert_eq!(e["candidates"][0]["p"], Value::Null);
         assert_eq!(e["candidates"][1]["lexical_rank"], 1);

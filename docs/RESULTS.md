@@ -1,4 +1,4 @@
-# laya-codex — results (updated 2026-09-30)
+# laya-codex — results (updated 2026-10-07)
 
 All numbers are reproducible from this repo; raw per-run rows are in `bench/results/`.
 Hardware: Apple M4 Pro, 24 GB. Agent: Claude Code (version per run), model `sonnet` alias at
@@ -18,6 +18,112 @@ harness added them, so every two-prompt session was charged prompt 1 twice (v14 
   Their dollar figures would then be about 1.6× too high, and their cost changes over-weight
   prompt 1: v13 moved from −13.7% to −14.8%, and v12 from +0.6% to +7.7%.
 - **Tokens, turns, time and recall** never came from that field and are unaffected.
+
+**Token counts, corrected 2026-10-07.** The harness turned characters into tokens at 3.5
+characters per token, for code Claude reads through tools and for code laya-codex injects alike.
+What Anthropic bills says otherwise. Regressing the cache write of the API call after each tool
+result on that result's characters (1,241 calls, v12–v14, R² 0.98), and the follow-up's first
+cache write on the injected characters (241 sessions), gives Sonnet 5.5's tokens per character
+(95% CI):
+
+| text | tokens per character | characters per token |
+|---|---|---|
+| `Read` output | 0.424 [0.416, 0.434] | 2.36 |
+| `Grep` output | 0.460 [0.451, 0.470] | 2.17 |
+| `Glob` output (little of it) | 0.554 [0.494, 0.624] | 1.81 |
+| laya-codex `search` output | 0.445 [0.436, 0.455] | 2.25 |
+| injected code | 0.456 [0.444, 0.468] | 2.19 |
+| Claude's first answer (prose; the cost floor's answer tokens) | 0.455 [0.433, 0.478] | 2.20 |
+
+- **Each run alone** gives the same code rates within 0.02 (the answer rate within 0.04).
+- **The old rate counted both sides 1.5–1.6× low.** The rates differ by tool, and the arms use
+  different tools (stock mostly Grep, laya-codex more `search` and injected code), so
+  `bench/runs.py` now keeps one rate per kind.
+- **Re-derived:** v12, v13 and v14, from the raw transcripts and hook logs (`bench/recost.py
+  tokens`; each row keeps its old values as `*_at_3_5`). Their token counts below rose 1.5–1.6×.
+  Pooled changes moved by about 1 point, per-repository ones by up to 2.1.
+- **Not re-derived:** runs before v12 and the 2026-09-29 pilots. Their token figures are at 3.5
+  characters per token, and v1–v11 ran on earlier models, which the rates were not measured on.
+
+## Follow-up picks (2026-10-07): not built
+
+**The question.** The 2026-09-30 replay (v13 below) chose by rule which names' lists the follow-up
+hook would inject, and covered too little. Could a picker that sees the follow-up question, such as
+the Laya model, choose what to inject so that Claude skips its follow-up lookups? Before building
+one, we bounded it with an oracle that knows which lookups Claude will make. The bar was set before
+the replay: cover at least 50% of the follow-up's lookup calls, and be cost-neutral (added
+injection cost below calls removed × $0.005).
+
+**Method.** `bench/followup_picks.py` (tests: `bench/test_followup_picks.py`; data:
+`bench/results/followup-picks-v13-v14.json`) replays the laya-codex sessions of v13 (tuned tasks)
+and v14 (held-out tasks) against the benchmark checkouts, offline:
+- **Candidates:** the names Claude put in backticks in its first answer, plus the definitions
+  prompt 1 inlined, about 19 names per session.
+- **What could be injected:** each candidate's `file:lines` list (the `search` name-lookup rules),
+  and code snippets for Reads whose range holds a use of a candidate.
+- **Coverage:**
+  - a `search` or Grep is covered if every name it asks for has its list in the lookup's scope;
+  - a model call is removable if every tool use in it is covered (the 2026-09-30 rule).
+- **Name parsing, fixed from 2026-09-30:**
+  - `\bparse` was read as `bparse`;
+  - `content-type` and `middleware/etag` were split into words;
+  - a `fn test_` Grep counted `test_` as a name.
+
+**Calls removable, out of the follow-up's lookup calls** (budget = injected characters per
+follow-up; the pass bar is 50%):
+
+| picker | 1k | 2k | 4k | 8k | no limit |
+|---|---|---|---|---|---|
+| oracle, v13 + v14 (138 calls) | 36% | 46% | **53%** [44, 62] | 57% | 59% |
+| oracle, held-out v14 (70 calls) | 29% | 36% | **40%** [28, 52] | 46% | 51% |
+| oracle, the planned shape (lists + at most 1 snippet), v13 + v14 | 36% | 44% | 48% | 49% | 52% |
+| perfect picker of at most 3 names (whole lists), v13 + v14 | – | 33% | 37% | 38% | – |
+| best of six rules without a model, v13 + v14 | 22% | 28% | 33% | 41% | – |
+
+95% bootstrap CIs over sessions are in brackets. The 2026-09-30 bar was every lookup covered in
+69% of follow-ups. The oracle covers every lookup in 37 of 58 v13 follow-ups at 4k chars, and 19 of
+54 in v14.
+
+**Why the oracle misses** (v13 + v14, 197 follow-up tool uses, oracle at 8k chars):
+
+| outcome | uses | share |
+|---|---|---|
+| covered | 128 | 65% |
+| a name Claude first thinks of on the follow-up (not in its answer or any injection) | 46 | 23% |
+| a generic word (more than 100 uses) | 7 | 4% |
+| a Grep for test or definition structure only | 4 | 2% |
+| a list over 8k chars by itself | 4 | 2% |
+| a name only in the ranked symbols, not the answer | 4 | 2% |
+| a name absent from the checkout | 3 | 2% |
+| a `search` in words | 1 | 1% |
+
+With no candidate limit (any name Claude asked for), the oracle reaches 85% at 4k. The list design
+works; the names can't be known in advance.
+
+**Cost was not the limit.**
+- **Saving per removed call:** a removed follow-up lookup call saves $0.0093 (mean of 138, median
+  $0.0083). This counts its read of the cached prefix, its output, and its tool_use and
+  tool_result, which the next call writes to the cache and every later call reads again. Each
+  token is counted once, at Sonnet 5.5 prices. If its output moved into the final answer, it
+  would still save $0.0076.
+- **Injection price:** 0.455 tokens per char. This is regressed from the follow-up's billed cache
+  writes on v13 + v14 (R² 0.99), not the bench's 3.5 chars per token, which is being corrected
+  separately. The text is written once at $4/M and read by each later call at $0.20/M.
+- **Break-even:** 4,877 injected chars per removed call (2,616 at the plan's $0.005).
+- **Oracle:** at 4k it injects 522 chars and removes 0.61 calls per follow-up, for a net
+  −$0.0047 (−$0.0021 at $0.005).
+- **Rules:** rules that inject whole lists without seeing the follow-up are not cost-neutral.
+  Every rule at 2k–8k costs more than the plan's $0.005 per call; all answer names at 4k inject
+  3,720 chars for 0.37 calls.
+- **Time:** at v13's 2.3 s per follow-up lookup call, the held-out oracle at 4k (0.47 calls per
+  session) would save about 1.1 s per session.
+
+**Conclusion: parked, owner decision 2026-10-07.**
+- The limit is the names, not the picker or the cost. About 23% of follow-up tool uses ask for
+  names Claude only thinks of on the follow-up, and no injection made before it can hold them.
+- Even an oracle covers 40% of held-out follow-up lookups at 4k chars (bar 50%). With the planned
+  shape it covers 48% on all tasks.
+- Don't retry without new evidence that Claude's follow-up names can be known before it asks.
 
 ## Benchmark v14 (2026-09-30): held-out tasks; the low-confidence gate does nothing
 
@@ -58,8 +164,8 @@ Data: `bench/results/claude-v14/` (`cost-cold.txt` holds the costs to quote).
 | metric | stock | `main` | change | moon | httpx | hono |
 |---|---|---|---|---|---|---|
 | Cost (cross-arm reads re-priced) | $0.062 | $0.060 | **−3.4%** [−9.7, +3.6], n.s. | −12.5% | +6.4%, n.s. | +8.9%, n.s. |
-| Code read + injected | 1,911 | 2,863 | +49.9% [+29.8, +74.3] | +12.5%, n.s. | +68.3% | +124.9% |
-| Code-reading tokens | 1,911 | 1,051 | −45.0% [−57.0, −30.7] | −56.1% | −49.3% | −9.4%, n.s. |
+| Code read + injected | 2,998 | 4,522 | +50.9% [+30.9, +75.0] | +13.1%, n.s. | +69.9% | +126.7% |
+| Code-reading tokens | 2,998 | 1,629 | −45.7% [−57.5, −31.8] | −56.6% | −49.8% | −10.6%, n.s. |
 | Output tokens | 1,966 | 1,597 | −18.8% [−23.5, −13.6] | −24.9% | −14.1% | −14.8% |
 | Wall-clock time | 20.5 s | 18.0 s | **−12.1%** [−17.9, −5.3] | −11.2%, n.s. | −10.7% | −14.8% |
 | Turns | 7.1 | 4.4 | −37.6% [−43.5, −31.2] | −46.6% | −30.3% | −33.6% |
@@ -73,7 +179,7 @@ differ, so it never shared a cache with either laya-codex arm.
 **What held-out tasks change:**
 - **Cost:** the v13 saving (−14.8%) does not carry over. Only moon saves (−12.5%); httpx and hono
   cost more, though not significantly.
-- **Code read + injected rises by half.** Stock read only 1,911 tokens here against 2,755 on
+- **Code read + injected rises by half.** Stock read only 2,998 tokens here against 4,297 on
   v13's tasks, while the injection stays about the same size.
 - **Against the targets on held-out tasks:**
   - **Met:** no both-question loss.
@@ -84,7 +190,7 @@ differ, so it never shared a cache with either laya-codex arm.
 
 **The gate vs `main`:** no effect on any measure, and not merged (PR #39 closed, branch kept).
 - **Cost (re-priced):** −1.8% [−5.6, +2.3].
-- **Code read + injected:** −5.8% [−12.1, +0.6].
+- **Code read + injected:** −6.0% [−12.1, +0.2].
 - **Other measures:** wall-clock +2.6% [−5.8, +10.6], turns +4.5% [−4.3, +14.8], first-question
   recall +0.017 [−0.022, +0.064], both questions +0.018 [−0.017, +0.061].
 - **The 9 tasks it skipped:** `main`'s injection still paid there (−6.5% against stock), while
@@ -119,8 +225,8 @@ Data: `bench/results/claude-v13/`. Headline: `bench/results/headline-v13.json`.
 | metric | stock | laya-codex | change | moon | httpx | hono |
 |---|---|---|---|---|---|---|
 | Cost | $0.081 | $0.069 | **−14.8%** [−18.8, −10.4] (repo-balanced −11.4% [−15.5, −6.7]) | −23.6% | +1.3%, n.s. | −11.8% |
-| Code read + injected | 2,755 | 3,017 | +9.5% [−1.6, +22.6], n.s. (repo-balanced +21.5% [+9.5, +36.8]) | −22.6% | +58.2% | +28.9% |
-| Code-reading tokens | 2,755 | 1,184 | −57.0% [−65.2, −47.8] | −72.0% | −38.1% | −44.9% |
+| Code read + injected | 4,297 | 4,743 | +10.4% [−0.6, +23.3], n.s. (repo-balanced +22.6% [+10.7, +37.7]) | −22.1% | +58.8% | +31.0% |
+| Code-reading tokens | 4,297 | 1,817 | −57.7% [−65.7, −48.8] | −72.4% | −39.2% | −45.6% |
 | Total input tokens | | | −31.7% [−37.3, −25.0] | −43.7% | −11.1%, n.s. | −26.3% |
 | Output tokens | | | −25.6% [−28.9, −22.2] | −33.5% | −12.9% | −26.1% |
 | Wall-clock time | 23.2 s | 18.7 s | **−19.2%** [−23.3, −14.7] | −28.7% | −4.5%, n.s. | −20.5% |
@@ -145,7 +251,7 @@ On findable gold only (`bench/stale_gold.py`, 55 tasks): first question 0.720 �
 
 **Finding the right code** (`bench/read_accuracy.py`): gold files that reached Claude 50% → 78%;
 a gold file in context before Claude's first turn in 52 of 60 tasks (stock: median turn 4, never
-in 19 tasks); Reads on gold 70% → 76%; tokens spent reading non-gold files 278 → 102.
+in 19 tasks); Reads on gold 70% → 76%; tokens spent reading non-gold files 413 → 152.
 
 **Where the dollars go** (the `result` usage of every prompt; shares at Sonnet 5.5 list prices
 per million tokens: $4 per cache write (Claude Code uses the one-hour cache), $0.20 per cache

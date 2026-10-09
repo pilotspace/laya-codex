@@ -221,6 +221,18 @@ impl LayaModel {
         state_ids: &[Vec<u32>],
         deadline: Instant,
     ) -> Result<Vec<Option<f32>>> {
+        self.noul_ids_within_timed(question, state_ids, deadline, &mut Vec::new())
+    }
+
+    /// [`noul_ids_within`](Self::noul_ids_within), appending each micro-batch's wall-clock
+    /// milliseconds to `batch_ms` in the order the batches ran.
+    pub fn noul_ids_within_timed(
+        &self,
+        question: &str,
+        state_ids: &[Vec<u32>],
+        deadline: Instant,
+        batch_ms: &mut Vec<f64>,
+    ) -> Result<Vec<Option<f32>>> {
         let q = Question::noul(question);
         let seqs = state_ids
             .iter()
@@ -244,7 +256,9 @@ impl LayaModel {
                 }
                 break;
             }
+            let t = Instant::now();
             self.run_batch(&refs, &batch, &mut out)?;
+            batch_ms.push(laya_core::millis(t.elapsed()));
         }
         tracing::debug!(
             scored = out.iter().filter(|d| d.is_some()).count(),
