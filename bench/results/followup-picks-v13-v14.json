@@ -1,0 +1,933 @@
+{
+ "runs": [
+  "v13",
+  "v14"
+ ],
+ "heldout": "v14",
+ "tokens_per_char": 0.455,
+ "prices_per_m": {
+  "input_tokens": 2.0,
+  "cache_creation_input_tokens": 4.0,
+  "cache_read_input_tokens": 0.2,
+  "output_tokens": 10.0
+ },
+ "plan_saving_per_call": 0.005,
+ "groups": {
+  "v13 laya": {
+   "sessions": 60,
+   "followups_with_lookups": 58,
+   "lookup_calls": 68,
+   "tool_uses": 96,
+   "candidates_mean": 19.6
+  },
+  "v14 laya": {
+   "sessions": 60,
+   "followups_with_lookups": 54,
+   "lookup_calls": 70,
+   "tool_uses": 101,
+   "candidates_mean": 19.4
+  },
+  "v14 gate": {
+   "sessions": 60,
+   "followups_with_lookups": 54,
+   "lookup_calls": 69,
+   "tool_uses": 103,
+   "candidates_mean": 18.3
+  },
+  "v13 baseline": {
+   "sessions": 60,
+   "followups_with_lookups": 60,
+   "lookup_calls": 114,
+   "tool_uses": 195,
+   "candidates_mean": 16.6
+  },
+  "v14 baseline": {
+   "sessions": 60,
+   "followups_with_lookups": 60,
+   "lookup_calls": 105,
+   "tool_uses": 171,
+   "candidates_mean": 15.1
+  }
+ },
+ "oracle": {
+  "v13 laya": {
+   "compact": {
+    "call": {
+     "1k": 30,
+     "2k": 39,
+     "4k": 45,
+     "8k": 46,
+     "inf": 46
+    },
+    "use": {
+     "1k": 48,
+     "2k": 61,
+     "4k": 69,
+     "8k": 70,
+     "inf": 70
+    }
+   },
+   "text": {
+    "call": {
+     "1k": 9,
+     "2k": 20,
+     "4k": 37,
+     "8k": 44,
+     "inf": 46
+    },
+    "use": {
+     "1k": 22,
+     "2k": 39,
+     "4k": 60,
+     "8k": 68,
+     "inf": 70
+    }
+   }
+  },
+  "v14 laya": {
+   "compact": {
+    "call": {
+     "1k": 20,
+     "2k": 25,
+     "4k": 28,
+     "8k": 32,
+     "inf": 36
+    },
+    "use": {
+     "1k": 38,
+     "2k": 46,
+     "4k": 52,
+     "8k": 58,
+     "inf": 62
+    }
+   },
+   "text": {
+    "call": {
+     "1k": 7,
+     "2k": 16,
+     "4k": 22,
+     "8k": 27,
+     "inf": 36
+    },
+    "use": {
+     "1k": 19,
+     "2k": 33,
+     "4k": 44,
+     "8k": 52,
+     "inf": 62
+    }
+   }
+  },
+  "v14 gate": {
+   "compact": {
+    "call": {
+     "1k": 23,
+     "2k": 31,
+     "4k": 34,
+     "8k": 37,
+     "inf": 41
+    },
+    "use": {
+     "1k": 44,
+     "2k": 56,
+     "4k": 60,
+     "8k": 64,
+     "inf": 70
+    }
+   },
+   "text": {
+    "call": {
+     "1k": 7,
+     "2k": 18,
+     "4k": 27,
+     "8k": 33,
+     "inf": 41
+    },
+    "use": {
+     "1k": 22,
+     "2k": 39,
+     "4k": 51,
+     "8k": 59,
+     "inf": 70
+    }
+   }
+  },
+  "v13 baseline": {
+   "compact": {
+    "call": {
+     "1k": 18,
+     "2k": 25,
+     "4k": 36,
+     "8k": 38,
+     "inf": 38
+    },
+    "use": {
+     "1k": 51,
+     "2k": 68,
+     "4k": 84,
+     "8k": 86,
+     "inf": 86
+    }
+   },
+   "text": {
+    "call": {
+     "1k": 3,
+     "2k": 13,
+     "4k": 28,
+     "8k": 33,
+     "inf": 38
+    },
+    "use": {
+     "1k": 19,
+     "2k": 48,
+     "4k": 69,
+     "8k": 80,
+     "inf": 86
+    }
+   }
+  },
+  "v14 baseline": {
+   "compact": {
+    "call": {
+     "1k": 21,
+     "2k": 28,
+     "4k": 31,
+     "8k": 33,
+     "inf": 35
+    },
+    "use": {
+     "1k": 47,
+     "2k": 63,
+     "4k": 71,
+     "8k": 77,
+     "inf": 80
+    }
+   },
+   "text": {
+    "call": {
+     "1k": 8,
+     "2k": 16,
+     "4k": 23,
+     "8k": 28,
+     "inf": 35
+    },
+    "use": {
+     "1k": 28,
+     "2k": 44,
+     "4k": 61,
+     "8k": 68,
+     "inf": 80
+    }
+   }
+  }
+ },
+ "oracle_variants": {
+  "pooled": {
+   "calls": 138,
+   "lists only (no snippets)": {
+    "1k": 49,
+    "2k": 60,
+    "4k": 61,
+    "8k": 61,
+    "inf": 65
+   },
+   "lists + at most 1 snippet (the plan's shape)": {
+    "1k": 50,
+    "2k": 61,
+    "4k": 66,
+    "8k": 68,
+    "inf": 72
+   },
+   "lists + snippets [primary]": {
+    "1k": 50,
+    "2k": 64,
+    "4k": 73,
+    "8k": 78,
+    "inf": 82
+   },
+   "B: + prompt-1 ranked symbols": {
+    "1k": 53,
+    "2k": 68,
+    "4k": 77,
+    "8k": 82,
+    "inf": 86
+   },
+   "C: + the follow-up injection's symbols": {
+    "1k": 53,
+    "2k": 68,
+    "4k": 77,
+    "8k": 82,
+    "inf": 86
+   },
+   "any name Claude asked for (no candidate limit)": {
+    "1k": 80,
+    "2k": 101,
+    "4k": 117,
+    "8k": 123,
+    "inf": 130
+   }
+  },
+  "held-out": {
+   "calls": 70,
+   "lists only (no snippets)": {
+    "1k": 19,
+    "2k": 24,
+    "4k": 25,
+    "8k": 25,
+    "inf": 29
+   },
+   "lists + at most 1 snippet (the plan's shape)": {
+    "1k": 20,
+    "2k": 25,
+    "4k": 27,
+    "8k": 29,
+    "inf": 33
+   },
+   "lists + snippets [primary]": {
+    "1k": 20,
+    "2k": 25,
+    "4k": 28,
+    "8k": 32,
+    "inf": 36
+   },
+   "B: + prompt-1 ranked symbols": {
+    "1k": 23,
+    "2k": 29,
+    "4k": 32,
+    "8k": 36,
+    "inf": 40
+   },
+   "C: + the follow-up injection's symbols": {
+    "1k": 23,
+    "2k": 29,
+    "4k": 32,
+    "8k": 36,
+    "inf": 40
+   },
+   "any name Claude asked for (no candidate limit)": {
+    "1k": 37,
+    "2k": 47,
+    "4k": 55,
+    "8k": 60,
+    "inf": 66
+   }
+  }
+ },
+ "oracle_ci": {
+  "pooled": {
+   "2k": [
+    0.4638,
+    0.3796,
+    0.5455
+   ],
+   "4k": [
+    0.529,
+    0.4375,
+    0.6172
+   ],
+   "8k": [
+    0.5652,
+    0.4792,
+    0.6522
+   ],
+   "inf": [
+    0.5942,
+    0.5071,
+    0.6846
+   ]
+  },
+  "held-out": {
+   "2k": [
+    0.3571,
+    0.25,
+    0.4706
+   ],
+   "4k": [
+    0.4,
+    0.2794,
+    0.5238
+   ],
+   "8k": [
+    0.4571,
+    0.3333,
+    0.5821
+   ],
+   "inf": [
+    0.5143,
+    0.3875,
+    0.6389
+   ]
+  },
+  "held-out laya+gate": {
+   "2k": [
+    0.4029,
+    0.3241,
+    0.4823
+   ],
+   "4k": [
+    0.446,
+    0.3611,
+    0.5328
+   ],
+   "8k": [
+    0.4964,
+    0.4126,
+    0.5827
+   ],
+   "inf": [
+    0.554,
+    0.469,
+    0.6418
+   ]
+  }
+ },
+ "every_lookup_covered": {
+  "v13 laya": {
+   "followups_with_lookups": 58,
+   "4k": 37,
+   "8k": 38
+  },
+  "v14 laya": {
+   "followups_with_lookups": 54,
+   "4k": 19,
+   "8k": 22
+  },
+  "v14 gate": {
+   "followups_with_lookups": 54,
+   "4k": 25,
+   "8k": 26
+  }
+ },
+ "name_picker": {
+  "pooled": {
+   "calls": 138,
+   "k1@2k": 25,
+   "k1@4k": 28,
+   "k1@8k": 28,
+   "k2@2k": 34,
+   "k2@4k": 40,
+   "k2@8k": 41,
+   "k3@2k": 45,
+   "k3@4k": 51,
+   "k3@8k": 52
+  },
+  "held-out": {
+   "calls": 70,
+   "k1@2k": 9,
+   "k1@4k": 12,
+   "k1@8k": 12,
+   "k2@2k": 12,
+   "k2@4k": 16,
+   "k2@8k": 16,
+   "k3@2k": 17,
+   "k3@4k": 21,
+   "k3@8k": 21
+  }
+ },
+ "heuristics": {
+  "pooled": {
+   "calls": 138,
+   "all": {
+    "1k": {
+     "removable": 25,
+     "chars_mean": 926
+    },
+    "2k": {
+     "removable": 37,
+     "chars_mean": 1835
+    },
+    "4k": {
+     "removable": 44,
+     "chars_mean": 3720
+    },
+    "8k": {
+     "removable": 53,
+     "chars_mean": 7178
+    }
+   },
+   "first3": {
+    "1k": {
+     "removable": 19,
+     "chars_mean": 465
+    },
+    "2k": {
+     "removable": 25,
+     "chars_mean": 799
+    },
+    "4k": {
+     "removable": 26,
+     "chars_mean": 1750
+    },
+    "8k": {
+     "removable": 29,
+     "chars_mean": 2668
+    }
+   },
+   "first5": {
+    "1k": {
+     "removable": 20,
+     "chars_mean": 630
+    },
+    "2k": {
+     "removable": 27,
+     "chars_mean": 1169
+    },
+    "4k": {
+     "removable": 27,
+     "chars_mean": 2460
+    },
+    "8k": {
+     "removable": 31,
+     "chars_mean": 3986
+    }
+   },
+   "focus": {
+    "1k": {
+     "removable": 29,
+     "chars_mean": 741
+    },
+    "2k": {
+     "removable": 38,
+     "chars_mean": 1375
+    },
+    "4k": {
+     "removable": 44,
+     "chars_mean": 2738
+    },
+    "8k": {
+     "removable": 52,
+     "chars_mean": 5177
+    }
+   },
+   "focus+tests": {
+    "1k": {
+     "removable": 30,
+     "chars_mean": 882
+    },
+    "2k": {
+     "removable": 38,
+     "chars_mean": 1734
+    },
+    "4k": {
+     "removable": 44,
+     "chars_mean": 3518
+    },
+    "8k": {
+     "removable": 52,
+     "chars_mean": 6883
+    }
+   },
+   "smallest": {
+    "1k": {
+     "removable": 14,
+     "chars_mean": 794
+    },
+    "2k": {
+     "removable": 33,
+     "chars_mean": 1626
+    },
+    "4k": {
+     "removable": 45,
+     "chars_mean": 3169
+    },
+    "8k": {
+     "removable": 56,
+     "chars_mean": 6216
+    }
+   }
+  },
+  "held-out": {
+   "calls": 70,
+   "all": {
+    "1k": {
+     "removable": 8,
+     "chars_mean": 908
+    },
+    "2k": {
+     "removable": 14,
+     "chars_mean": 1821
+    },
+    "4k": {
+     "removable": 17,
+     "chars_mean": 3797
+    },
+    "8k": {
+     "removable": 22,
+     "chars_mean": 7248
+    }
+   },
+   "first3": {
+    "1k": {
+     "removable": 5,
+     "chars_mean": 395
+    },
+    "2k": {
+     "removable": 9,
+     "chars_mean": 709
+    },
+    "4k": {
+     "removable": 11,
+     "chars_mean": 1776
+    },
+    "8k": {
+     "removable": 12,
+     "chars_mean": 2674
+    }
+   },
+   "first5": {
+    "1k": {
+     "removable": 5,
+     "chars_mean": 600
+    },
+    "2k": {
+     "removable": 10,
+     "chars_mean": 1079
+    },
+    "4k": {
+     "removable": 12,
+     "chars_mean": 2583
+    },
+    "8k": {
+     "removable": 13,
+     "chars_mean": 4144
+    }
+   },
+   "focus": {
+    "1k": {
+     "removable": 10,
+     "chars_mean": 713
+    },
+    "2k": {
+     "removable": 14,
+     "chars_mean": 1261
+    },
+    "4k": {
+     "removable": 16,
+     "chars_mean": 2736
+    },
+    "8k": {
+     "removable": 20,
+     "chars_mean": 5071
+    }
+   },
+   "focus+tests": {
+    "1k": {
+     "removable": 11,
+     "chars_mean": 863
+    },
+    "2k": {
+     "removable": 14,
+     "chars_mean": 1710
+    },
+    "4k": {
+     "removable": 16,
+     "chars_mean": 3563
+    },
+    "8k": {
+     "removable": 20,
+     "chars_mean": 6856
+    }
+   },
+   "smallest": {
+    "1k": {
+     "removable": 6,
+     "chars_mean": 790
+    },
+    "2k": {
+     "removable": 10,
+     "chars_mean": 1632
+    },
+    "4k": {
+     "removable": 15,
+     "chars_mean": 3126
+    },
+    "8k": {
+     "removable": 24,
+     "chars_mean": 6099
+    }
+   }
+  }
+ },
+ "saving_per_removed_call": {
+  "v13 laya": {
+   "calls": 68,
+   "mean": 0.00938,
+   "median": 0.00849,
+   "mean_without_its_output": 0.00776
+  },
+  "v14 laya": {
+   "calls": 70,
+   "mean": 0.00927,
+   "median": 0.00816,
+   "mean_without_its_output": 0.0075
+  },
+  "v14 gate": {
+   "calls": 69,
+   "mean": 0.00895,
+   "median": 0.00823,
+   "mean_without_its_output": 0.00716
+  },
+  "v13 baseline": {
+   "calls": 114,
+   "mean": 0.01089,
+   "median": 0.01011,
+   "mean_without_its_output": 0.00831
+  },
+  "v14 baseline": {
+   "calls": 105,
+   "mean": 0.00925,
+   "median": 0.0089,
+   "mean_without_its_output": 0.00672
+  },
+  "pooled": {
+   "calls": 138,
+   "mean": 0.00932,
+   "median": 0.00825,
+   "mean_without_its_output": 0.00763
+  }
+ },
+ "break_even_chars_per_removed_call": {
+  "measured saving": 4877,
+  "plan $0.005": 2616
+ },
+ "cost_per_followup": {
+  "oracle 1k": {
+   "chars_mean": 171,
+   "calls_removed_per_followup": 0.417,
+   "share_of_calls": 0.362,
+   "injection_usd": 0.00032,
+   "net_usd_measured_saving": -0.00357,
+   "net_usd_plan_saving": -0.00177
+  },
+  "oracle, lists + at most 1 snippet, 1k": {
+   "chars_mean": 171,
+   "calls_removed_per_followup": 0.417,
+   "share_of_calls": 0.362,
+   "injection_usd": 0.00032,
+   "net_usd_measured_saving": -0.00357,
+   "net_usd_plan_saving": -0.00177
+  },
+  "oracle 2k": {
+   "chars_mean": 331,
+   "calls_removed_per_followup": 0.533,
+   "share_of_calls": 0.464,
+   "injection_usd": 0.00061,
+   "net_usd_measured_saving": -0.00436,
+   "net_usd_plan_saving": -0.00206
+  },
+  "oracle, lists + at most 1 snippet, 2k": {
+   "chars_mean": 299,
+   "calls_removed_per_followup": 0.508,
+   "share_of_calls": 0.442,
+   "injection_usd": 0.00055,
+   "net_usd_measured_saving": -0.00419,
+   "net_usd_plan_saving": -0.00199
+  },
+  "oracle 4k": {
+   "chars_mean": 522,
+   "calls_removed_per_followup": 0.608,
+   "share_of_calls": 0.529,
+   "injection_usd": 0.00096,
+   "net_usd_measured_saving": -0.00471,
+   "net_usd_plan_saving": -0.00209
+  },
+  "oracle, lists + at most 1 snippet, 4k": {
+   "chars_mean": 401,
+   "calls_removed_per_followup": 0.55,
+   "share_of_calls": 0.478,
+   "injection_usd": 0.00073,
+   "net_usd_measured_saving": -0.00439,
+   "net_usd_plan_saving": -0.00202
+  },
+  "oracle 8k": {
+   "chars_mean": 758,
+   "calls_removed_per_followup": 0.65,
+   "share_of_calls": 0.565,
+   "injection_usd": 0.00139,
+   "net_usd_measured_saving": -0.00467,
+   "net_usd_plan_saving": -0.00186
+  },
+  "oracle, lists + at most 1 snippet, 8k": {
+   "chars_mean": 504,
+   "calls_removed_per_followup": 0.567,
+   "share_of_calls": 0.493,
+   "injection_usd": 0.00092,
+   "net_usd_measured_saving": -0.00436,
+   "net_usd_plan_saving": -0.00191
+  },
+  "oracle inf": {
+   "chars_mean": 1230,
+   "calls_removed_per_followup": 0.683,
+   "share_of_calls": 0.594,
+   "injection_usd": 0.00225,
+   "net_usd_measured_saving": -0.00412,
+   "net_usd_plan_saving": -0.00117
+  },
+  "oracle, lists + at most 1 snippet, inf": {
+   "chars_mean": 976,
+   "calls_removed_per_followup": 0.6,
+   "share_of_calls": 0.522,
+   "injection_usd": 0.00178,
+   "net_usd_measured_saving": -0.00381,
+   "net_usd_plan_saving": -0.00122
+  },
+  "all 2k": {
+   "chars_mean": 1835,
+   "calls_removed_per_followup": 0.308,
+   "share_of_calls": 0.268,
+   "injection_usd": 0.00348,
+   "net_usd_measured_saving": 0.0006,
+   "net_usd_plan_saving": 0.00194
+  },
+  "all 4k": {
+   "chars_mean": 3720,
+   "calls_removed_per_followup": 0.367,
+   "share_of_calls": 0.319,
+   "injection_usd": 0.00704,
+   "net_usd_measured_saving": 0.00362,
+   "net_usd_plan_saving": 0.0052
+  },
+  "all 8k": {
+   "chars_mean": 7178,
+   "calls_removed_per_followup": 0.442,
+   "share_of_calls": 0.384,
+   "injection_usd": 0.01352,
+   "net_usd_measured_saving": 0.0094,
+   "net_usd_plan_saving": 0.01131
+  },
+  "first3 2k": {
+   "chars_mean": 799,
+   "calls_removed_per_followup": 0.208,
+   "share_of_calls": 0.181,
+   "injection_usd": 0.00152,
+   "net_usd_measured_saving": -0.00042,
+   "net_usd_plan_saving": 0.00048
+  },
+  "first3 4k": {
+   "chars_mean": 1750,
+   "calls_removed_per_followup": 0.217,
+   "share_of_calls": 0.188,
+   "injection_usd": 0.00334,
+   "net_usd_measured_saving": 0.00132,
+   "net_usd_plan_saving": 0.00226
+  },
+  "first3 8k": {
+   "chars_mean": 2668,
+   "calls_removed_per_followup": 0.242,
+   "share_of_calls": 0.21,
+   "injection_usd": 0.00509,
+   "net_usd_measured_saving": 0.00284,
+   "net_usd_plan_saving": 0.00388
+  },
+  "first5 2k": {
+   "chars_mean": 1169,
+   "calls_removed_per_followup": 0.225,
+   "share_of_calls": 0.196,
+   "injection_usd": 0.00222,
+   "net_usd_measured_saving": 0.00012,
+   "net_usd_plan_saving": 0.0011
+  },
+  "first5 4k": {
+   "chars_mean": 2460,
+   "calls_removed_per_followup": 0.225,
+   "share_of_calls": 0.196,
+   "injection_usd": 0.00469,
+   "net_usd_measured_saving": 0.00259,
+   "net_usd_plan_saving": 0.00356
+  },
+  "first5 8k": {
+   "chars_mean": 3986,
+   "calls_removed_per_followup": 0.258,
+   "share_of_calls": 0.225,
+   "injection_usd": 0.00759,
+   "net_usd_measured_saving": 0.00518,
+   "net_usd_plan_saving": 0.0063
+  },
+  "focus 2k": {
+   "chars_mean": 1375,
+   "calls_removed_per_followup": 0.317,
+   "share_of_calls": 0.275,
+   "injection_usd": 0.0026,
+   "net_usd_measured_saving": -0.00035,
+   "net_usd_plan_saving": 0.00102
+  },
+  "focus 4k": {
+   "chars_mean": 2738,
+   "calls_removed_per_followup": 0.367,
+   "share_of_calls": 0.319,
+   "injection_usd": 0.00518,
+   "net_usd_measured_saving": 0.00176,
+   "net_usd_plan_saving": 0.00335
+  },
+  "focus 8k": {
+   "chars_mean": 5177,
+   "calls_removed_per_followup": 0.433,
+   "share_of_calls": 0.377,
+   "injection_usd": 0.00976,
+   "net_usd_measured_saving": 0.00572,
+   "net_usd_plan_saving": 0.00759
+  },
+  "focus+tests 2k": {
+   "chars_mean": 1734,
+   "calls_removed_per_followup": 0.317,
+   "share_of_calls": 0.275,
+   "injection_usd": 0.00328,
+   "net_usd_measured_saving": 0.00033,
+   "net_usd_plan_saving": 0.0017
+  },
+  "focus+tests 4k": {
+   "chars_mean": 3518,
+   "calls_removed_per_followup": 0.367,
+   "share_of_calls": 0.319,
+   "injection_usd": 0.00665,
+   "net_usd_measured_saving": 0.00323,
+   "net_usd_plan_saving": 0.00482
+  },
+  "focus+tests 8k": {
+   "chars_mean": 6883,
+   "calls_removed_per_followup": 0.433,
+   "share_of_calls": 0.377,
+   "injection_usd": 0.01296,
+   "net_usd_measured_saving": 0.00892,
+   "net_usd_plan_saving": 0.0108
+  },
+  "smallest 2k": {
+   "chars_mean": 1626,
+   "calls_removed_per_followup": 0.275,
+   "share_of_calls": 0.239,
+   "injection_usd": 0.00309,
+   "net_usd_measured_saving": 0.00052,
+   "net_usd_plan_saving": 0.00171
+  },
+  "smallest 4k": {
+   "chars_mean": 3169,
+   "calls_removed_per_followup": 0.375,
+   "share_of_calls": 0.326,
+   "injection_usd": 0.00598,
+   "net_usd_measured_saving": 0.00249,
+   "net_usd_plan_saving": 0.00411
+  },
+  "smallest 8k": {
+   "chars_mean": 6216,
+   "calls_removed_per_followup": 0.467,
+   "share_of_calls": 0.406,
+   "injection_usd": 0.01169,
+   "net_usd_measured_saving": 0.00734,
+   "net_usd_plan_saving": 0.00936
+  }
+ },
+ "miss_taxonomy": {
+  "uses": 197,
+  "budget": 8000,
+  "counts": {
+   "covered": 128,
+   "name not in the answer or any injection (Claude thought of it on the follow-up)": 46,
+   "name not in the answer: a generic word (> 100 uses)": 7,
+   "structural grep (list tests/defs in a file)": 4,
+   "too many uses (list > 8000 chars alone)": 4,
+   "name not in the answer, but in prompt-1 or follow-up injection symbols": 4,
+   "stale/absent: name not in checkout": 3,
+   "no identifier (search in words)": 1
+  }
+ }
+}
