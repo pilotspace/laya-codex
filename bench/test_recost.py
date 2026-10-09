@@ -59,6 +59,41 @@ class Rewrite(unittest.TestCase):
         self.assertEqual(row["first_call_cache_read"], 4000)
 
 
+class Tokens(unittest.TestCase):
+    """`tokens` re-estimates reading and injected tokens from raw/ and hooklogs/ at runs.TOKENS_PER_CHAR."""
+
+    def test_tokens_are_re_estimated_keeping_the_old_values_and_idempotent(self):
+        read = [{"type": "assistant", "message": {"id": "m1", "content": [
+                    {"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}},
+                {"type": "user", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "a" * 1000}]}}]
+        hook = [{"event": "UserPromptSubmit", "action": "inject", "injected_chars": 2000},
+                {"event": "UserPromptSubmit", "action": "inject", "injected_chars": 1000}]
+        with tempfile.TemporaryDirectory() as d:
+            for sub in ("raw", "hooklogs"):
+                os.makedirs(os.path.join(d, sub))
+            with open(os.path.join(d, "runs.jsonl"), "w") as f:
+                f.write(json.dumps({"task_id": "t1", "arm": "laya", "rep": 0, "reading_tokens": 285,
+                                    "injected_tokens": 857, "prompt_injected_tokens": [571, 285]}) + "\n")
+                f.write(json.dumps({"task_id": "t1", "arm": "baseline", "rep": 0, "reading_tokens": 285,
+                                    "injected_tokens": 0, "prompt_injected_tokens": []}) + "\n")
+            for arm in ("laya", "baseline"):
+                with open(os.path.join(d, "raw", "t1_%s.jsonl" % arm), "w") as r:
+                    r.write("\n".join(json.dumps(e) for e in read))
+            with open(os.path.join(d, "hooklogs", "t1_laya.jsonl"), "w") as h:
+                h.write("\n".join(json.dumps(e) for e in hook))
+            recost.retoken(d)
+            recost.retoken(d)
+            laya, base = [json.loads(x) for x in open(os.path.join(d, "runs.jsonl"))]
+        self.assertEqual(laya["reading_tokens"], 424)
+        self.assertEqual(laya["injected_tokens"], 912 + 456)
+        self.assertEqual(laya["prompt_injected_tokens"], [912, 456])
+        self.assertEqual((laya["reading_tokens_at_3_5"], laya["injected_tokens_at_3_5"],
+                          laya["prompt_injected_tokens_at_3_5"]), (285, 857, [571, 285]))
+        self.assertEqual((base["reading_tokens"], base["injected_tokens"], base["prompt_injected_tokens"]),
+                         (424, 0, []))
+
+
 class Cold(unittest.TestCase):
     def test_a_first_call_read_above_the_arms_usual_is_repriced_as_a_write(self):
         # Rows in run order. Arm b ran second on t1 and read a's cached first request (9000 tokens

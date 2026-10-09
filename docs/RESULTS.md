@@ -1,4 +1,4 @@
-# laya-codex — results (updated 2026-09-30)
+# laya-codex — results (updated 2026-10-07)
 
 All numbers are reproducible from this repo; raw per-run rows are in `bench/results/`.
 Hardware: Apple M4 Pro, 24 GB. Agent: Claude Code (version per run), model `sonnet` alias at
@@ -18,6 +18,32 @@ harness added them, so every two-prompt session was charged prompt 1 twice (v14 
   Their dollar figures would then be about 1.6× too high, and their cost changes over-weight
   prompt 1: v13 moved from −13.7% to −14.8%, and v12 from +0.6% to +7.7%.
 - **Tokens, turns, time and recall** never came from that field and are unaffected.
+
+**Token counts, corrected 2026-10-07.** The harness turned characters into tokens at 3.5
+characters per token, for code Claude reads through tools and for code laya-codex injects alike.
+What Anthropic bills says otherwise. Regressing the cache write of the API call after each tool
+result on that result's characters (1,241 calls, v12–v14, R² 0.98), and the follow-up's first
+cache write on the injected characters (241 sessions), gives Sonnet 5.5's tokens per character
+(95% CI):
+
+| text | tokens per character | characters per token |
+|---|---|---|
+| `Read` output | 0.424 [0.416, 0.434] | 2.36 |
+| `Grep` output | 0.460 [0.451, 0.470] | 2.17 |
+| `Glob` output (little of it) | 0.554 [0.494, 0.624] | 1.81 |
+| laya-codex `search` output | 0.445 [0.436, 0.455] | 2.25 |
+| injected code | 0.456 [0.444, 0.468] | 2.19 |
+| Claude's first answer (prose; the cost floor's answer tokens) | 0.455 [0.433, 0.478] | 2.20 |
+
+- **Each run alone** gives the same code rates within 0.02 (the answer rate within 0.04).
+- **The old rate counted both sides 1.5–1.6× low.** The rates differ by tool, and the arms use
+  different tools (stock mostly Grep, laya-codex more `search` and injected code), so
+  `bench/runs.py` now keeps one rate per kind.
+- **Re-derived:** v12, v13 and v14, from the raw transcripts and hook logs (`bench/recost.py
+  tokens`; each row keeps its old values as `*_at_3_5`). Their token counts below rose 1.5–1.6×.
+  Pooled changes moved by about 1 point, per-repository ones by up to 2.1.
+- **Not re-derived:** runs before v12 and the 2026-09-29 pilots. Their token figures are at 3.5
+  characters per token, and v1–v11 ran on earlier models, which the rates were not measured on.
 
 ## Benchmark v14 (2026-09-30): held-out tasks; the low-confidence gate does nothing
 
@@ -58,8 +84,8 @@ Data: `bench/results/claude-v14/` (`cost-cold.txt` holds the costs to quote).
 | metric | stock | `main` | change | moon | httpx | hono |
 |---|---|---|---|---|---|---|
 | Cost (cross-arm reads re-priced) | $0.062 | $0.060 | **−3.4%** [−9.7, +3.6], n.s. | −12.5% | +6.4%, n.s. | +8.9%, n.s. |
-| Code read + injected | 1,911 | 2,863 | +49.9% [+29.8, +74.3] | +12.5%, n.s. | +68.3% | +124.9% |
-| Code-reading tokens | 1,911 | 1,051 | −45.0% [−57.0, −30.7] | −56.1% | −49.3% | −9.4%, n.s. |
+| Code read + injected | 2,998 | 4,522 | +50.9% [+30.9, +75.0] | +13.1%, n.s. | +69.9% | +126.7% |
+| Code-reading tokens | 2,998 | 1,629 | −45.7% [−57.5, −31.8] | −56.6% | −49.8% | −10.6%, n.s. |
 | Output tokens | 1,966 | 1,597 | −18.8% [−23.5, −13.6] | −24.9% | −14.1% | −14.8% |
 | Wall-clock time | 20.5 s | 18.0 s | **−12.1%** [−17.9, −5.3] | −11.2%, n.s. | −10.7% | −14.8% |
 | Turns | 7.1 | 4.4 | −37.6% [−43.5, −31.2] | −46.6% | −30.3% | −33.6% |
@@ -73,7 +99,7 @@ differ, so it never shared a cache with either laya-codex arm.
 **What held-out tasks change:**
 - **Cost:** the v13 saving (−14.8%) does not carry over. Only moon saves (−12.5%); httpx and hono
   cost more, though not significantly.
-- **Code read + injected rises by half.** Stock read only 1,911 tokens here against 2,755 on
+- **Code read + injected rises by half.** Stock read only 2,998 tokens here against 4,297 on
   v13's tasks, while the injection stays about the same size.
 - **Against the targets on held-out tasks:**
   - **Met:** no both-question loss.
@@ -84,7 +110,7 @@ differ, so it never shared a cache with either laya-codex arm.
 
 **The gate vs `main`:** no effect on any measure, and not merged (PR #39 closed, branch kept).
 - **Cost (re-priced):** −1.8% [−5.6, +2.3].
-- **Code read + injected:** −5.8% [−12.1, +0.6].
+- **Code read + injected:** −6.0% [−12.1, +0.2].
 - **Other measures:** wall-clock +2.6% [−5.8, +10.6], turns +4.5% [−4.3, +14.8], first-question
   recall +0.017 [−0.022, +0.064], both questions +0.018 [−0.017, +0.061].
 - **The 9 tasks it skipped:** `main`'s injection still paid there (−6.5% against stock), while
@@ -119,8 +145,8 @@ Data: `bench/results/claude-v13/`. Headline: `bench/results/headline-v13.json`.
 | metric | stock | laya-codex | change | moon | httpx | hono |
 |---|---|---|---|---|---|---|
 | Cost | $0.081 | $0.069 | **−14.8%** [−18.8, −10.4] (repo-balanced −11.4% [−15.5, −6.7]) | −23.6% | +1.3%, n.s. | −11.8% |
-| Code read + injected | 2,755 | 3,017 | +9.5% [−1.6, +22.6], n.s. (repo-balanced +21.5% [+9.5, +36.8]) | −22.6% | +58.2% | +28.9% |
-| Code-reading tokens | 2,755 | 1,184 | −57.0% [−65.2, −47.8] | −72.0% | −38.1% | −44.9% |
+| Code read + injected | 4,297 | 4,743 | +10.4% [−0.6, +23.3], n.s. (repo-balanced +22.6% [+10.7, +37.7]) | −22.1% | +58.8% | +31.0% |
+| Code-reading tokens | 4,297 | 1,817 | −57.7% [−65.7, −48.8] | −72.4% | −39.2% | −45.6% |
 | Total input tokens | | | −31.7% [−37.3, −25.0] | −43.7% | −11.1%, n.s. | −26.3% |
 | Output tokens | | | −25.6% [−28.9, −22.2] | −33.5% | −12.9% | −26.1% |
 | Wall-clock time | 23.2 s | 18.7 s | **−19.2%** [−23.3, −14.7] | −28.7% | −4.5%, n.s. | −20.5% |
@@ -145,7 +171,7 @@ On findable gold only (`bench/stale_gold.py`, 55 tasks): first question 0.720 �
 
 **Finding the right code** (`bench/read_accuracy.py`): gold files that reached Claude 50% → 78%;
 a gold file in context before Claude's first turn in 52 of 60 tasks (stock: median turn 4, never
-in 19 tasks); Reads on gold 70% → 76%; tokens spent reading non-gold files 278 → 102.
+in 19 tasks); Reads on gold 70% → 76%; tokens spent reading non-gold files 413 → 152.
 
 **Where the dollars go** (the `result` usage of every prompt; shares at Sonnet 5.5 list prices
 per million tokens: $4 per cache write (Claude Code uses the one-hour cache), $0.20 per cache

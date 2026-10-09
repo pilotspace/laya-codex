@@ -16,6 +16,8 @@ pub struct Client {
     socket: PathBuf,
     timeout: Duration,
     autostart: bool,
+    /// Stamped on every query this client sends (see `Request::with_memo_salt`).
+    memo_salt: Option<String>,
 }
 
 impl Client {
@@ -24,7 +26,14 @@ impl Client {
             socket: socket.to_path_buf(),
             timeout,
             autostart,
+            memo_salt: None,
         }
+    }
+
+    /// Send every query under `salt` (the caller's `LAYA_CODEX_MEMO_SALT`; `None` = no salt).
+    pub fn with_memo_salt(mut self, salt: Option<String>) -> Self {
+        self.memo_salt = salt;
+        self
     }
 
     fn connect(&self) -> anyhow::Result<UnixStream> {
@@ -50,6 +59,7 @@ impl DaemonApi for Client {
         let mut stream = self.connect()?;
         stream.set_read_timeout(Some(self.timeout))?;
         stream.set_write_timeout(Some(Duration::from_millis(200)))?;
+        let req = req.with_memo_salt(self.memo_salt.as_deref());
         let mut line = serde_json::to_string(&req)?;
         line.push('\n');
         stream.write_all(line.as_bytes())?;

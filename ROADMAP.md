@@ -15,8 +15,8 @@ are fixed in [docs/VISION.md](docs/VISION.md):
 | goal | target | v0.1.0 (v7: moon, 20 tasks) | v0.1.2 (v8: 3 repos, 60 tasks, pooled) | v10 (Sonnet 5, 51 tasks) | v13 (Sonnet 5.5, 60 tasks, one live session per task) | v14 (60 held-out tasks) | measured by |
 |---|---|---|---|---|---|---|---|
 | Cost per session (−50% from 2026-09-29, reset 2026-09-30: below the session's cost floor) | −15% | −27.2% [−39.2, −11.1] | −9.9% [−18.7, −0.4] | −8.8% [−16.3, −1.9] | −14.8% [−18.8, −10.4], not met | −3.4% [−9.7, +3.6], not met (cross-arm cache reads re-priced, `bench/recost.py`) | `bench/stats_pooled.py` (paired bootstrap) |
-| Code tokens reaching Claude (read + injected) | not significantly worse (the goal until 2026-09-29) | — | — | +6.2% [−11.3, +26.3] | +9.5% [−1.6, +22.6]; +21.5% [+9.5, +36.8] repo-balanced, not met | +49.9% [+29.8, +74.3], not met | same |
-| Code-reading tokens alone | (context only) | **−50.1%** [−61.6, −33.0] | −38.2% [−50.8, −21.8] | −32.0% [−47.0, −15.0] | −57.0% [−65.2, −47.8] | −45.0% [−57.0, −30.7] | same |
+| Code tokens reaching Claude (read + injected) | not significantly worse (the goal until 2026-09-29) | — | — | +6.2% [−11.3, +26.3] | +10.4% [−0.6, +23.3]; +22.6% [+10.7, +37.7] repo-balanced, not met | +50.9% [+30.9, +75.0], not met | same |
+| Code-reading tokens alone | (context only) | **−50.1%** [−61.6, −33.0] | −38.2% [−50.8, −21.8] | −32.0% [−47.0, −15.0] | −57.7% [−65.7, −48.8] | −45.7% [−57.5, −31.8] | same |
 | Task wall-clock (−30% until 2026-09-30: answers are a ~12.4 s floor) | −20% | −17.4% [−31.5, −1.0] | +3.5% [−6.2, +14.8], no effect (moon did not replicate v7) | −12.0% [−19.1, −4.4] | −19.2% [−23.3, −14.7], not met | −12.1% [−17.9, −5.3], not met | same |
 | Answer quality | first question +0.10; both questions no loss | recall 0.933 vs 0.975, n.s. | recall 0.899 vs 0.815, +0.083 [+0.028, +0.144], met | first question 0.904 vs 0.758, both 0.940 vs 0.953 (n.s.), met | first question 0.881 vs 0.726, both 0.931 vs 0.954 (n.s.), met | first question 0.828 vs 0.729 (+0.099, just short), both 0.904 vs 0.901 | `bench/read_accuracy.py` |
 | Evidence | 3+ repos, 60+ tasks, edit tasks | 1 repo, 20 tasks | 3 repos (Rust, Python, TS), 60 tasks; no edit tasks yet | | | 60 tasks laya-codex was not tuned on | benchmark suite |
@@ -24,6 +24,7 @@ are fixed in [docs/VISION.md](docs/VISION.md):
 | Robustness | hooks never break Claude Code | 151k hook calls, 0 failures (soak) | — | `bench/soak.py` |
 
 Costs before v12 very likely count a two-prompt session's first prompt twice (the harness summed Claude Code's running totals; v12–v14 are re-derived, see [docs/RESULTS.md](docs/RESULTS.md)).
+Token counts from v12 on are re-derived (2026-10-07) at rates measured from billed cache writes; earlier columns count code at 3.5 characters per token, 1.5–1.6× low on Sonnet 5.5.
 
 ## Distribution channels
 

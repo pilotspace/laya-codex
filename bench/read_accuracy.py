@@ -19,6 +19,8 @@ import re
 import sys
 from collections import defaultdict
 
+from runs import tok_estimate
+
 
 def rel(path, gold_set):
     for g in gold_set:
@@ -66,7 +68,7 @@ def collect(out, tasks_path, rows):
                     if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in names:
                         if not rel(names[c["tool_use_id"]], g):
                             body = c.get("content")
-                            wasted += int(len(body if isinstance(body, str) else json.dumps(body)) / 3.5)
+                            wasted += tok_estimate(len(body if isinstance(body, str) else json.dumps(body)), "Read")
         rows[arm].append({
             "read_precision": sum(reads) / len(reads) if reads else None,
             "read_recall": len(seen) / len(g),

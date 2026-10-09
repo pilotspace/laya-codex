@@ -29,6 +29,9 @@ pub struct Config {
     pub use_model: bool,
     pub budget_ms: u64,
     pub hook_log: Option<PathBuf>,
+    /// `LAYA_CODEX_MEMO_SALT`: sent with every query this process makes, so the daemon reads and
+    /// writes cached probabilities under that salt only (see `Request::Query::memo_salt`).
+    pub memo_salt: Option<String>,
 }
 
 impl Config {
@@ -58,6 +61,7 @@ impl Config {
                 .unwrap_or(true),
             budget_ms: env_parse("LAYA_CODEX_BUDGET_MS").unwrap_or(1200),
             hook_log: std::env::var_os("LAYA_CODEX_HOOK_LOG").map(PathBuf::from),
+            memo_salt: memo_salt(std::env::var("LAYA_CODEX_MEMO_SALT").ok().as_deref()),
             home,
             model_dir,
             moon_bin,
@@ -90,6 +94,11 @@ impl Config {
     pub fn moon_acl(&self) -> PathBuf {
         self.home.join("moon.acl")
     }
+}
+
+/// The memo salt from `LAYA_CODEX_MEMO_SALT`; unset or empty is none.
+pub fn memo_salt(raw: Option<&str>) -> Option<String> {
+    raw.filter(|s| !s.is_empty()).map(str::to_string)
 }
 
 fn env_parse<T: std::str::FromStr>(k: &str) -> Option<T> {
@@ -286,6 +295,16 @@ pub fn rel_path(root: &Path, p: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unset_or_empty_memo_salt_is_none() {
+        assert_eq!(memo_salt(None), None);
+        assert_eq!(memo_salt(Some("")), None);
+        assert_eq!(
+            memo_salt(Some("laya/t1/r0/abc")).as_deref(),
+            Some("laya/t1/r0/abc")
+        );
+    }
 
     #[test]
     fn moon_start_timeout_defaults_to_30s_and_honours_the_env_value() {

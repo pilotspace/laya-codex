@@ -273,7 +273,7 @@ plus an outline. In benchmark v3 that fired on no Read at all, because Claude re
 ## 6. What this saves, and what it costs
 
 Without laya-codex, Claude Code finds code by searching: Grep, Glob, then whole-file Reads, many of
-them of the wrong file. laya-codex front-loads a small, ranked answer (about 1.5–2.5k tokens), so
+them of the wrong file. laya-codex front-loads a small, ranked answer (about 2.1k tokens on the first prompt in v13), so
 fewer of those steps happen. From [RESULTS.md](RESULTS.md) (benchmark v13: laya-codex with
 laya-code-r1 vs stock Claude Code, 60 paired tasks on moon, httpx and hono, two prompts in one
 session, Claude Sonnet 5.5 at medium effort):
@@ -281,8 +281,8 @@ session, Claude Sonnet 5.5 at medium effort):
 | per session | stock Claude Code | with laya-codex |
 |---|---|---|
 | cost | $0.081 | $0.069 (−14.8%, CI −18.8%…−10.4%) |
-| code read + injected | 2,755 tokens | 3,017 (+9.5%, not significant) |
-| code-reading tokens (Read/Grep/Glob/`search` output) | 2,755 | 1,184 (−57.0%, CI −65.2%…−47.8%) |
+| code read + injected | 4,297 tokens | 4,743 (+10.4%, not significant) |
+| code-reading tokens (Read/Grep/Glob/`search` output) | 4,297 | 1,817 (−57.7%, CI −65.7%…−48.8%) |
 | wall-clock | 23.2 s | 18.7 s (−19.2%, CI −23.3%…−14.7%) |
 | turns | 7.9 | 4.3 (−45.5%) |
 | tool calls | 5.9 | 2.3 |
@@ -290,10 +290,12 @@ session, Claude Sonnet 5.5 at medium effort):
 | answer recall, first prompt / both prompts | 0.726 / 0.954 | 0.881 / 0.931 |
 
 The injected text itself costs tokens. It roughly replaces the reading it saves (reading plus
-injected tokens: +9.5% pooled, not significant; higher on httpx and hono, lower on moon). Cost
+injected tokens: +10.4% pooled, not significant; higher on httpx and hono, lower on moon). Cost
 still falls, because the saving is in API calls (3.7 per session instead of 5.9): each call
 avoided saves a re-read of the cached conversation and an answer. That is why the injection is capped at 9,500 characters and adaptive mode never re-sends
-code. Inlining more saved little and cost more.
+code. Inlining more saved little and cost more. (Token counts re-derived on 2026-10-07 at rates
+measured from billed cache writes, about 2.2–2.4 characters per token of code instead of the 3.5
+used before; see [RESULTS.md](RESULTS.md).)
 
 ## 7. Tuning
 

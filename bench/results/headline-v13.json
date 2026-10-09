@@ -18,15 +18,15 @@
   },
   "reading_plus_injected": {
    "label": "Reading + injected",
-   "pct": 9.5,
-   "lo": -1.6,
-   "hi": 22.6
+   "pct": 10.4,
+   "lo": -0.6,
+   "hi": 23.3
   },
   "reading_tokens": {
    "label": "Code-reading tokens",
-   "pct": -57.0,
-   "lo": -65.2,
-   "hi": -47.8
+   "pct": -57.7,
+   "lo": -65.7,
+   "hi": -48.8
   },
   "total_input": {
    "label": "Total input tokens",
@@ -71,14 +71,14 @@
     "hi": -16.9
    },
    "reading_plus_injected": {
-    "pct": -22.6,
-    "lo": -36.2,
-    "hi": -5.4
+    "pct": -22.1,
+    "lo": -35.4,
+    "hi": -5.2
    },
    "reading_tokens": {
-    "pct": -72.0,
-    "lo": -82.1,
-    "hi": -59.2
+    "pct": -72.4,
+    "lo": -82.2,
+    "hi": -60.0
    },
    "total_input": {
     "pct": -43.7,
@@ -108,14 +108,14 @@
     "hi": 11.7
    },
    "reading_plus_injected": {
-    "pct": 58.2,
-    "lo": 32.4,
-    "hi": 93.7
+    "pct": 58.8,
+    "lo": 32.9,
+    "hi": 94.3
    },
    "reading_tokens": {
-    "pct": -38.1,
-    "lo": -53.7,
-    "hi": -19.1
+    "pct": -39.2,
+    "lo": -54.5,
+    "hi": -20.4
    },
    "total_input": {
     "pct": -11.1,
@@ -145,14 +145,14 @@
     "hi": -4.8
    },
    "reading_plus_injected": {
-    "pct": 28.9,
-    "lo": 9.3,
-    "hi": 53.8
+    "pct": 31.0,
+    "lo": 11.7,
+    "hi": 55.0
    },
    "reading_tokens": {
-    "pct": -44.9,
-    "lo": -61.6,
-    "hi": -25.4
+    "pct": -45.6,
+    "lo": -61.9,
+    "hi": -27.0
    },
    "total_input": {
     "pct": -26.3,
@@ -248,8 +248,8 @@
   },
   "wasted_read_tokens": {
    "label": "Wasted read tokens",
-   "baseline": 278,
-   "laya": 102,
+   "baseline": 413,
+   "laya": 152,
    "better": "lower",
    "fmt": "{:,.0f}"
   }

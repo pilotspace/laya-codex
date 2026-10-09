@@ -195,7 +195,8 @@ fn main() {
                 &cfg.socket_path(),
                 Duration::from_millis(cfg.budget_ms + 3000),
                 true,
-            );
+            )
+            .with_memo_salt(cfg.memo_salt.clone());
             let tracer = trace::Tracer::from_env(&cfg.home);
             mcp::serve(&c, root, INJECT_TOKENS, cfg.budget_ms, tracer.as_ref())
         }
@@ -269,7 +270,8 @@ fn cmd_query(
     as_json: bool,
 ) -> anyhow::Result<()> {
     let root = config::existing_repo_root(repo)?;
-    let c = Client::new(&cfg.socket_path(), Duration::from_secs(60), true);
+    let c = Client::new(&cfg.socket_path(), Duration::from_secs(60), true)
+        .with_memo_salt(cfg.memo_salt.clone());
     wait_ready(
         &c,
         cfg.use_model && cfg.model_dir.is_some(),
@@ -282,6 +284,7 @@ fn cmd_query(
         budget_ms: Some(cfg.budget_ms),
         top_n: top,
         render: None,
+        memo_salt: None,
     };
     match c.call(req)? {
         Response::Query { result, .. } if as_json => {
@@ -482,7 +485,8 @@ fn hook_inner(cfg: &Config) {
         &cfg.socket_path(),
         Duration::from_millis(cfg.budget_ms + 1500),
         true,
-    );
+    )
+    .with_memo_salt(cfg.memo_salt.clone());
     let ctx = HookCtx {
         api: &client,
         root,
@@ -530,13 +534,6 @@ fn hook_inner(cfg: &Config) {
             "action": outcome.action, "injected_chars": outcome.injected_chars, "elapsed_ms": t0.elapsed().as_millis() as u64,
             "rank_mode": outcome.rank.map(|r| r.mode), "scored": outcome.rank.map(|r| r.scored), "offered": outcome.rank.map(|r| r.offered),
             "candidates": outcome.rank.map(|r| r.candidates)});
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log)
-        {
-            use std::io::Write;
-            let _ = writeln!(f, "{line}");
-        }
+        let _ = trace::append_json_line(log, &line);
     }
 }

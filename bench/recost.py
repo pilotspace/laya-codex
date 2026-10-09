@@ -2,12 +2,18 @@
 
     python3 bench/recost.py rewrite <run dir> [<run dir> ...]
     python3 bench/recost.py cold <treatment arm> <baseline arm> <run dir> [<run dir> ...]
+    python3 bench/recost.py tokens <run dir> [<run dir> ...]
 
 `rewrite`: every result event's total_cost_usd is the session's running total, in one live
 session and across `claude -p --resume` alike, so a two-prompt session costs its last total. The
 harness summed them and counted prompt 1 twice until 2026-09-30. `rewrite` sets `cost_usd` to the
 last total, keeps the old sum as `cost_usd_summed`, and adds `prompt_cost_usd` and
 `first_call_cache_read` (the cache read of the session's first API call). Needs `raw/`; idempotent.
+
+`tokens`: until 2026-10-07 the harness counted code at 3.5 characters per token, about 1.6x
+fewer tokens than the API bills. `tokens` re-estimates `reading_tokens` from raw/ and
+`injected_tokens` and `prompt_injected_tokens` from hooklogs/ at runs.TOKENS_PER_CHAR, keeping
+the old values as `<field>_at_3_5`. Idempotent.
 
 `cold`: until the same date the harness gave every arm the same system prompt, so an arm whose
 first request matched one another arm had just sent read that arm's prompt cache (v14: 51 of 51
@@ -23,8 +29,8 @@ import random
 import statistics as st
 import sys
 
-from run_bench import run_name
-from runs import PRICES_PER_M
+from run_bench import parse_stream, run_name
+from runs import PRICES_PER_M, read_hook_log
 import stats_pooled
 
 
@@ -54,6 +60,22 @@ def rewrite(run_dir):
     for row in rows:
         row.setdefault("cost_usd_summed", row["cost_usd"])
         row.update(session_cost(_events(_raw(run_dir, row))))
+    with open(path, "w") as f:
+        f.write("".join(json.dumps(r) + "\n" for r in rows))
+    return rows
+
+
+def retoken(run_dir):
+    path = os.path.join(run_dir, "runs.jsonl")
+    rows = _events(path)
+    for row in rows:
+        for k in ("reading_tokens", "injected_tokens", "prompt_injected_tokens"):
+            row.setdefault(k + "_at_3_5", row.get(k))
+        with open(_raw(run_dir, row)) as f:
+            row["reading_tokens"] = parse_stream(f.readlines())["reading_tokens"]
+        h = read_hook_log(os.path.join(run_dir, "hooklogs", run_name(row["task_id"], row["arm"], row.get("rep") or 0)
+                                       + ".jsonl"))
+        row["injected_tokens"], row["prompt_injected_tokens"] = h["injected_tokens"], h["prompt_injected_tokens"]
     with open(path, "w") as f:
         f.write("".join(json.dumps(r) + "\n" for r in rows))
     return rows
@@ -100,6 +122,9 @@ def main(argv):
     if argv[:1] == ["rewrite"] and argv[1:]:
         for d in argv[1:]:
             print("%s: %d rows re-costed" % (d, len(rewrite(d))))
+    elif argv[:1] == ["tokens"] and argv[1:]:
+        for d in argv[1:]:
+            print("%s: %d rows re-tokenized" % (d, len(retoken(d))))
     elif argv[:1] == ["cold"] and len(argv) > 3:
         sys.stdout.write(cold(argv[1], argv[2], argv[3:]))
     else:
