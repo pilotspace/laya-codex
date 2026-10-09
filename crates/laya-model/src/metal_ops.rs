@@ -10,7 +10,9 @@
 //!
 //! The kernels are compiled once per device with Metal's default options, which are the fast
 //! math settings candle compiles its own kernels with; the tests check bit equality against
-//! candle's ops.
+//! candle's ops. If the library or one of its kernels cannot be built on this OS (the `bfloat`
+//! kernels need MSL 3.1, macOS 14), the failure is remembered and [`rope_thd`] and [`add_bias`]
+//! use candle's op instead: slower, never wrong, and never retried per call.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -80,46 +82,99 @@ kernel void laya_add_bias_##SUFFIX( \
 
 LAYA_KERNELS(f32, float)
 LAYA_KERNELS(f16, half)
+#if defined(__HAVE_BFLOAT__)
 LAYA_KERNELS(bf16, bfloat)
+#endif
 "#;
 
 fn wrap(e: candle_metal_kernels::MetalKernelError) -> candle_core::Error {
     candle_core::Error::wrap(e)
 }
 
-/// Compute pipeline `name` from [`SOURCE`] on `device`, compiled once per device.
-fn pipeline(device: &MetalDevice, name: &'static str) -> Result<ComputePipeline> {
-    type Cache = (
-        HashMap<DeviceId, Library>,
-        HashMap<(DeviceId, &'static str), ComputePipeline>,
-    );
-    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
-    let mut cache = CACHE
+/// Compiled libraries and pipelines per device and source; a failure is stored as `None` so it
+/// is attempted once, not on every call.
+#[derive(Default)]
+struct Registry {
+    libraries: HashMap<(DeviceId, usize), Option<Library>>,
+    pipelines: HashMap<(DeviceId, usize, &'static str), Option<ComputePipeline>>,
+    /// Library compiles per (device, source), for the tests.
+    #[cfg(test)]
+    compiles: HashMap<(DeviceId, usize), usize>,
+}
+
+fn registry() -> std::sync::MutexGuard<'static, Registry> {
+    static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
+    // A panic while holding the lock leaves the maps consistent (inserts are single calls).
+    REGISTRY
         .get_or_init(Default::default)
         .lock()
-        .map_err(|_| candle_core::Error::Msg("laya metal pipeline cache poisoned".into()))?;
-    let (libraries, pipelines) = &mut *cache;
-    if let Some(p) = pipelines.get(&(device.id(), name)) {
-        return Ok(p.clone());
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Compute pipeline `name` from `source` on `device`, built once per (device, source, name).
+/// `None` when the library or the function cannot be built here (logged once).
+fn pipeline(
+    device: &MetalDevice,
+    source: &'static str,
+    name: &'static str,
+) -> Option<ComputePipeline> {
+    let lib_key = (device.id(), source.as_ptr() as usize);
+    let key = (lib_key.0, lib_key.1, name);
+    let mut guard = registry();
+    let reg = &mut *guard;
+    if let Some(p) = reg.pipelines.get(&key) {
+        return p.clone();
     }
-    let library = match libraries.get(&device.id()) {
-        Some(l) => l.clone(),
-        None => {
-            let l = device
-                .device()
-                .new_library_with_source(SOURCE, None)
-                .map_err(wrap)?;
-            libraries.insert(device.id(), l.clone());
-            l
+    let library = reg.libraries.entry(lib_key).or_insert_with(|| {
+        #[cfg(test)]
+        {
+            *reg.compiles.entry(lib_key).or_default() += 1;
         }
-    };
-    let function = library.get_function(name, None).map_err(wrap)?;
-    let p = device
-        .device()
-        .new_compute_pipeline_state_with_function(&function)
-        .map_err(wrap)?;
-    pipelines.insert((device.id(), name), p.clone());
-    Ok(p)
+        match device.device().new_library_with_source(source, None) {
+            Ok(l) => Some(l),
+            Err(e) => {
+                tracing::warn!(error = %e, "laya metal kernels did not compile; using candle's ops");
+                None
+            }
+        }
+    });
+    let built = library.as_ref().and_then(|lib| {
+        let f = lib.get_function(name, None).ok()?;
+        match device.device().new_compute_pipeline_state_with_function(&f) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                tracing::warn!(kernel = name, error = %e, "laya metal kernel unavailable; using candle's op");
+                None
+            }
+        }
+    });
+    reg.pipelines.insert(key, built.clone());
+    built
+}
+
+/// How many times `source` was compiled on `device` (tests: failures must be cached).
+#[cfg(test)]
+fn compile_attempts(device: &MetalDevice, source: &'static str) -> usize {
+    let lib_key = (device.id(), source.as_ptr() as usize);
+    registry().compiles.get(&lib_key).copied().unwrap_or(0)
+}
+
+/// The Metal device of `t`, if it lives on one.
+fn metal_device(t: &Tensor) -> Option<MetalDevice> {
+    match t.device() {
+        candle_core::Device::Metal(m) => Some(m.clone()),
+        _ => None,
+    }
+}
+
+/// The crate's pipeline for `names[dtype]` on `t`'s device, if it is available.
+fn pipeline_for(
+    t: &Tensor,
+    source: &'static str,
+    names: [&'static str; 3],
+) -> Option<ComputePipeline> {
+    let name = kernel_for(names, t.dtype()).ok()?;
+    pipeline(&metal_device(t)?, source, name)
 }
 
 /// Kernel names per dtype: `[f32, f16, bf16]`.
@@ -152,7 +207,9 @@ fn no_cpu<T>() -> Result<T> {
     candle_core::bail!("laya metal op called on a cpu tensor")
 }
 
-struct RopeThd;
+struct RopeThd {
+    pipeline: ComputePipeline,
+}
 
 impl CustomOp3 for RopeThd {
     fn name(&self) -> &'static str {
@@ -195,7 +252,6 @@ impl CustomOp3 for RopeThd {
         let el = b * t * h * d;
         check_u32(el, "laya rope elements")?;
         let device = src.device();
-        let p = pipeline(device, kernel_for(ROPE_KERNELS, dtype)?)?;
         let output = device
             .new_buffer_builder()
             .with_size_for(el, dtype)
@@ -204,7 +260,7 @@ impl CustomOp3 for RopeThd {
         let size = dtype.size_in_bytes();
         let guard = device.command_encoder()?;
         let enc: &ComputeCommandEncoder = guard.as_ref();
-        enc.set_compute_pipeline_state(&p);
+        enc.set_compute_pipeline_state(&self.pipeline);
         enc.set_bytes(0, &(t as u32));
         enc.set_bytes(1, &(h as u32));
         enc.set_bytes(2, &(d as u32));
@@ -234,7 +290,9 @@ impl CustomOp3 for RopeThd {
     }
 }
 
-struct AddBias;
+struct AddBias {
+    pipeline: ComputePipeline,
+}
 
 impl CustomOp2 for AddBias {
     fn name(&self) -> &'static str {
@@ -274,7 +332,6 @@ impl CustomOp2 for AddBias {
         let rows = el / cols;
         check_u32(el, "laya add_bias elements")?;
         let device = x.device();
-        let p = pipeline(device, kernel_for(BIAS_KERNELS, dtype)?)?;
         let output = device
             .new_buffer_builder()
             .with_size_for(el, dtype)
@@ -283,7 +340,7 @@ impl CustomOp2 for AddBias {
         let size = dtype.size_in_bytes();
         let guard = device.command_encoder()?;
         let enc: &ComputeCommandEncoder = guard.as_ref();
-        enc.set_compute_pipeline_state(&p);
+        enc.set_compute_pipeline_state(&self.pipeline);
         enc.set_bytes(0, &(cols as u32));
         enc.set_bytes(1, &(rows as u32));
         enc.set_input_buffer(2, Some(x.buffer()), l_x.start_offset() * size);
@@ -422,21 +479,36 @@ impl CustomOp3 for SdpaRows {
 }
 
 /// Rotate-half rotary embedding of a contiguous `(b, t, h, d)` tensor with `(t, d / 2)` cos/sin
-/// tables (as `candle_nn::rotary_emb::rope_thd`, bit for bit).
+/// tables (as `candle_nn::rotary_emb::rope_thd`, bit for bit; candle's op itself where the
+/// kernel is unavailable).
 pub fn rope_thd(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
+    rope_thd_with(SOURCE, x, cos, sin)
+}
+
+fn rope_thd_with(source: &'static str, x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     if !x.is_contiguous() || !cos.is_contiguous() || !sin.is_contiguous() {
         candle_core::bail!("laya rope: inputs must be contiguous");
     }
-    x.apply_op3_no_bwd(cos, sin, &RopeThd)
+    match pipeline_for(x, source, ROPE_KERNELS) {
+        Some(pipeline) => x.apply_op3_no_bwd(cos, sin, &RopeThd { pipeline }),
+        None => candle_nn::rotary_emb::rope_thd(x, cos, sin),
+    }
 }
 
-/// `x + bias` over the last dim (as `x.broadcast_add(bias)`, bit for bit). A non-contiguous `x`
-/// takes candle's broadcast path.
+/// `x + bias` over the last dim (as `x.broadcast_add(bias)`, bit for bit). A non-contiguous `x`,
+/// or a device where the kernel is unavailable, takes candle's broadcast path.
 pub fn add_bias(x: &Tensor, bias: &Tensor) -> Result<Tensor> {
+    add_bias_with(SOURCE, x, bias)
+}
+
+fn add_bias_with(source: &'static str, x: &Tensor, bias: &Tensor) -> Result<Tensor> {
     if !x.is_contiguous() || !bias.is_contiguous() {
         return x.broadcast_add(bias);
     }
-    x.apply_op2_no_bwd(bias, &AddBias)
+    match pipeline_for(x, source, BIAS_KERNELS) {
+        Some(pipeline) => x.apply_op2_no_bwd(bias, &AddBias { pipeline }),
+        None => x.broadcast_add(bias),
+    }
 }
 
 /// `softmax(q k^T * scale + mask) v` with candle's fused kernel, written as `(b, lq, h, hd)`.
@@ -473,6 +545,10 @@ mod tests {
             let cos = randn(&[t, d / 2], &dev, dtype);
             let sin = randn(&[t, d / 2], &dev, dtype);
             let want = candle_nn::rotary_emb::rope_thd(&x, &cos, &sin).unwrap();
+            assert!(
+                pipeline_for(&x, SOURCE, ROPE_KERNELS).is_some(),
+                "crate kernel, not fallback"
+            );
             let got = rope_thd(&x, &cos, &sin).unwrap();
             assert_eq!(got.dims(), want.dims());
             assert_eq!(max_abs_diff(&got, &want), 0.0, "{dtype:?}");
@@ -487,11 +563,65 @@ mod tests {
                 let x = randn(&shape, &dev, dtype);
                 let bias = randn(&[96], &dev, dtype);
                 let want = x.broadcast_add(&bias).unwrap();
+                assert!(pipeline_for(&x, SOURCE, BIAS_KERNELS).is_some());
                 let got = add_bias(&x, &bias).unwrap();
                 assert_eq!(got.dims(), want.dims());
                 assert_eq!(max_abs_diff(&got, &want), 0.0, "{dtype:?} {shape:?}");
             }
         }
+    }
+
+    /// Metal source that does not compile, standing in for an OS whose Metal compiler rejects the
+    /// crate's kernels (e.g. `bfloat` before MSL 3.1).
+    const BROKEN_SOURCE: &str = "this is not metal";
+
+    #[test]
+    fn a_library_that_fails_to_compile_falls_back_to_candle_and_is_compiled_once() {
+        let Some(dev) = metal() else { return };
+        let (b, t, h, d) = (2usize, 9usize, 4usize, 64usize);
+        let x = randn(&[b, t, h, d], &dev, DType::F16);
+        let cos = randn(&[t, d / 2], &dev, DType::F16);
+        let sin = randn(&[t, d / 2], &dev, DType::F16);
+        let bias = randn(&[d], &dev, DType::F16);
+        for _ in 0..3 {
+            let want = candle_nn::rotary_emb::rope_thd(&x, &cos, &sin).unwrap();
+            let got = rope_thd_with(BROKEN_SOURCE, &x, &cos, &sin).unwrap();
+            assert_eq!(max_abs_diff(&got, &want), 0.0);
+            let want = x.broadcast_add(&bias).unwrap();
+            let got = add_bias_with(BROKEN_SOURCE, &x, &bias).unwrap();
+            assert_eq!(max_abs_diff(&got, &want), 0.0);
+        }
+        let candle_core::Device::Metal(m) = &dev else {
+            unreachable!()
+        };
+        assert_eq!(
+            compile_attempts(m, BROKEN_SOURCE),
+            1,
+            "the failure is cached"
+        );
+        // A kernel missing from a library that compiled (bf16 before MSL 3.1) is unavailable too.
+        assert!(pipeline(m, SOURCE, "laya_kernel_that_does_not_exist").is_none());
+        assert!(pipeline(m, SOURCE, "laya_rope_thd_f16").is_some());
+    }
+
+    #[test]
+    fn bf16_kernels_match_candle_where_the_device_supports_bf16() {
+        let Some(dev) = metal() else { return };
+        let (b, t, h, d) = (2usize, 9usize, 4usize, 64usize);
+        let x = randn(&[b, t, h, d], &dev, DType::BF16);
+        let cos = randn(&[t, d / 2], &dev, DType::BF16);
+        let sin = randn(&[t, d / 2], &dev, DType::BF16);
+        let Ok(want) = candle_nn::rotary_emb::rope_thd(&x, &cos, &sin) else {
+            eprintln!("SKIP: candle has no bf16 rope on this device");
+            return;
+        };
+        // candle's own bf16 kernels need the same MSL support, so ours must have been built too.
+        assert!(pipeline_for(&x, SOURCE, ROPE_KERNELS).is_some());
+        assert!(pipeline_for(&x, SOURCE, BIAS_KERNELS).is_some());
+        assert_eq!(max_abs_diff(&rope_thd(&x, &cos, &sin).unwrap(), &want), 0.0);
+        let bias = randn(&[d], &dev, DType::BF16);
+        let want = x.broadcast_add(&bias).unwrap();
+        assert_eq!(max_abs_diff(&add_bias(&x, &bias).unwrap(), &want), 0.0);
     }
 
     #[test]
