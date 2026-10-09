@@ -198,6 +198,11 @@ const BIAS_KERNELS: [&str; 3] = [
     "laya_add_bias_bf16",
 ];
 
+/// Whether every element of `t` has a `u32` index, as the crate's kernels compute them.
+fn fits_u32(t: &Tensor) -> bool {
+    u32::try_from(t.elem_count()).is_ok()
+}
+
 /// Fits a 32-bit index, as the kernels use.
 fn check_u32(n: usize, what: &str) -> Result<u32> {
     u32::try_from(n).map_err(|_| candle_core::Error::Msg(format!("{what}: {n} exceeds u32")))
@@ -488,6 +493,10 @@ impl CustomOp3 for SdpaRows {
 /// Rotate-half rotary embedding of a contiguous `(b, t, h, d)` tensor with `(t, d / 2)` cos/sin
 /// tables (as `candle_nn::rotary_emb::rope_thd`, bit for bit; candle's op itself where the
 /// kernel is unavailable).
+///
+/// The kernel indexes with `u32`: a tensor of more than `u32::MAX` elements takes candle's op
+/// (the student at `max_len` 704 and 64 rows has about 3.5e7). An empty tensor is returned as
+/// is, with no dispatch.
 pub fn rope_thd(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     rope_thd_with(SOURCE, x, cos, sin)
 }
@@ -495,6 +504,12 @@ pub fn rope_thd(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
 fn rope_thd_with(source: &'static str, x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     if !x.is_contiguous() || !cos.is_contiguous() || !sin.is_contiguous() {
         candle_core::bail!("laya rope: inputs must be contiguous");
+    }
+    if x.elem_count() == 0 {
+        return Ok(x.clone());
+    }
+    if !fits_u32(x) {
+        return candle_nn::rotary_emb::rope_thd(x, cos, sin);
     }
     match pipeline_for(x, source, ROPE_KERNELS) {
         Some(pipeline) => x.apply_op3_no_bwd(cos, sin, &RopeThd { pipeline }),
@@ -504,12 +519,18 @@ fn rope_thd_with(source: &'static str, x: &Tensor, cos: &Tensor, sin: &Tensor) -
 
 /// `x + bias` over the last dim (as `x.broadcast_add(bias)`, bit for bit). A non-contiguous `x`,
 /// or a device where the kernel is unavailable, takes candle's broadcast path.
+///
+/// The kernel indexes with `u32`: an `x` of more than `u32::MAX` elements takes candle's path.
+/// An empty `x` is returned as is, with no dispatch.
 pub fn add_bias(x: &Tensor, bias: &Tensor) -> Result<Tensor> {
     add_bias_with(SOURCE, x, bias)
 }
 
 fn add_bias_with(source: &'static str, x: &Tensor, bias: &Tensor) -> Result<Tensor> {
-    if !x.is_contiguous() || !bias.is_contiguous() {
+    if x.elem_count() == 0 {
+        return Ok(x.clone());
+    }
+    if !x.is_contiguous() || !bias.is_contiguous() || !fits_u32(x) {
         return x.broadcast_add(bias);
     }
     match pipeline_for(x, source, BIAS_KERNELS) {
@@ -526,7 +547,11 @@ fn add_bias_with(source: &'static str, x: &Tensor, bias: &Tensor) -> Result<Tens
 ///   copied to a contiguous tensor first, as is a mask that does not start at offset 0 (the
 ///   kernel binds the mask without its offset). The values, and so the result, are the same.
 /// - Needs `lq >= 2` (the single-query kernel ignores the mask) and a supported head dim.
+/// - An empty `q` gives an empty `(b, lq, h, hd)` result with no dispatch.
 pub fn sdpa_rows(q: &Tensor, k: &Tensor, v: &Tensor, mask: &Tensor, scale: f32) -> Result<Tensor> {
+    if q.elem_count() == 0 {
+        return q.transpose(1, 2);
+    }
     let unit = |t: &Tensor| -> Result<Tensor> {
         if t.stride().last() == Some(&1) {
             Ok(t.clone())
@@ -719,6 +744,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn empty_inputs_give_empty_outputs() {
+        let Some(dev) = metal() else { return };
+        // Metal cannot allocate an empty buffer, but a zero-length view of a real one exists.
+        let empty = |shape: &[usize]| {
+            let mut full = shape.to_vec();
+            full[0] = 1;
+            randn(&full, &dev, DType::F16).narrow(0, 0, 0).unwrap()
+        };
+        let x = empty(&[0, 5, 4, 64]);
+        let cos = randn(&[5, 32], &dev, DType::F16);
+        assert_eq!(rope_thd(&x, &cos, &cos).unwrap().dims(), &[0, 5, 4, 64]);
+        let bias = randn(&[64], &dev, DType::F16);
+        assert_eq!(add_bias(&x, &bias).unwrap().dims(), &[0, 5, 4, 64]);
+        let q = empty(&[0, 4, 5, 64]);
+        let mask = empty(&[0, 4, 5, 5]);
+        assert_eq!(
+            sdpa_rows(&q, &q, &q, &mask, 0.125).unwrap().dims(),
+            &[0, 5, 4, 64]
+        );
     }
 
     #[test]
