@@ -95,11 +95,15 @@ pub fn mask_value(dtype: DType) -> f64 {
     }
 }
 
-/// Precomputed additive masks for one padded micro-batch, both `(b, 1, s, s)` and contiguous
-/// (the fused Metal attention kernel accepts them broadcast over heads without a copy).
+/// Precomputed additive masks for one padded micro-batch. `global` and `local` are `(b, 1, s, s)`
+/// and contiguous (the fused Metal attention kernel accepts them broadcast over heads without a
+/// copy).
 #[derive(Debug, Clone)]
 pub struct AttnMasks {
-    /// 0 for real keys, `mask_value` for padding.
+    /// Key padding only, `(b, 1, 1, s)`: 0 for real keys, `mask_value` for padding. The same for
+    /// every query row, so it broadcasts to any number of them.
+    pub key_row: Tensor,
+    /// `key_row` for every query row.
     pub global: Tensor,
     /// Padding mask plus the sliding-window band.
     pub local: Tensor,
@@ -111,12 +115,14 @@ impl AttnMasks {
         let (b, s) = attention_mask.dims2()?;
         let neg = mask_value(dtype);
         let inv = (1.0 - attention_mask.to_dtype(dtype)?)?;
-        let global = (inv * neg)?
-            .reshape((b, 1, 1, s))?
-            .broadcast_as((b, 1, s, s))?
-            .contiguous()?;
+        let key_row = (inv * neg)?.reshape((b, 1, 1, s))?;
+        let global = key_row.broadcast_as((b, 1, s, s))?.contiguous()?;
         let local = global.broadcast_add(window)?;
-        Ok(Self { global, local })
+        Ok(Self {
+            key_row,
+            global,
+            local,
+        })
     }
 }
 
@@ -252,7 +258,8 @@ pub fn self_attention(
 ///
 /// - `q`: `(b, lq, heads * head_dim)` contiguous
 /// - `k`, `v`: `(b, s, heads * head_dim)` contiguous
-/// - `mask`: additive `(b, 1, lq, s)` in the model dtype (may be a strided view)
+/// - `mask`: additive `(b, 1, lq, s)` or `(b, 1, 1, s)` (one row for every query) in the model
+///   dtype; it may be a strided view
 ///
 /// Returns `(b, lq, heads * head_dim)`. Each query row's result is the same as that row of
 /// [`self_attention`] over the whole sequence: attention is independent per query row.
@@ -465,13 +472,19 @@ pub(crate) mod tests {
                     .unwrap()
                     .index_select(&idx, 1)
                     .unwrap();
-                let mask = masks.global.narrow(2, 0, n).unwrap();
-                let got = attention(&q, &k, &v, heads, hd, &mask, 0.125).unwrap();
                 let want = full.index_select(&idx, 1).unwrap();
-                assert_eq!(got.dims(), want.dims());
                 let tol = if dtype == DType::F32 { 1e-5 } else { 2e-3 };
-                let diff = max_abs_diff(&got, &want);
-                assert!(diff <= tol, "{dev:?} rows {rows:?}: max |d| {diff}");
+                // The query rows of the square mask, and the key-padding row broadcast to them.
+                for mask in [masks.global.narrow(2, 0, n).unwrap(), masks.key_row.clone()] {
+                    let got = attention(&q, &k, &v, heads, hd, &mask, 0.125).unwrap();
+                    assert_eq!(got.dims(), want.dims());
+                    let diff = max_abs_diff(&got, &want);
+                    assert!(
+                        diff <= tol,
+                        "{dev:?} rows {rows:?} mask {:?}: max |d| {diff}",
+                        mask.dims()
+                    );
+                }
             }
         }
     }

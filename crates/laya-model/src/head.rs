@@ -107,8 +107,8 @@ impl DecisionHead {
     ///
     /// - `h`: encoder output `(b, s, d)`
     /// - `qtype`: `(b)` u32 question-type index per row
-    /// - `key_mask`: additive `(b, 1, s, s)` padding mask, the same for every query row (see
-    ///   [`crate::nn::AttnMasks`])
+    /// - `key_row`: additive `(b, 1, 1, s)` key padding mask ([`crate::nn::AttnMasks::key_row`]),
+    ///   applied to every query row
     /// - `flat_markers`: `(b * kmax)` u32 indices into the flattened `(b * s)` token axis,
     ///   `kmax` per row
     ///
@@ -117,10 +117,17 @@ impl DecisionHead {
         &self,
         h: &Tensor,
         qtype: &Tensor,
-        key_mask: &Tensor,
+        key_row: &Tensor,
         flat_markers: &Tensor,
     ) -> Result<Tensor> {
         let (b, s, d) = h.dims3()?;
+        if key_row.dims() != [b, 1, 1, s] {
+            candle_core::bail!(
+                "head: key row {:?} for {b} rows of {s} tokens",
+                key_row.dims()
+            );
+        }
+        let key_mask = key_row.broadcast_as((b, 1, s, s))?;
         let n_markers = flat_markers.dim(0)?;
         let kmax = n_markers / b.max(1);
         if kmax * b != n_markers || kmax > s {
@@ -138,14 +145,13 @@ impl DecisionHead {
                 InProj::Packed(proj) => {
                     let (qk, v) = proj.forward(&normed)?;
                     let att =
-                        self_attention(&qk, &v, self.heads, self.head_dim, None, key_mask, scale)?;
+                        self_attention(&qk, &v, self.heads, self.head_dim, None, &key_mask, scale)?;
                     x = layer.mlp((x + apply(&layer.out_proj, &att)?)?)?;
                 }
                 InProj::Split { q, k, v } => {
                     let (k, v) = (k.forward(&normed)?, v.forward(&normed)?);
                     let q = q.forward(&at_markers(&normed)?)?.reshape((b, kmax, d))?;
-                    let mask = key_mask.narrow(2, 0, kmax)?;
-                    let att = attention(&q, &k, &v, self.heads, self.head_dim, &mask, scale)?;
+                    let att = attention(&q, &k, &v, self.heads, self.head_dim, key_row, scale)?;
                     let xm = at_markers(&x)?.reshape((b, kmax, d))?;
                     let xm = layer.mlp((xm + apply(&layer.out_proj, &att)?)?)?;
                     m = Some(xm.reshape((b * kmax, d))?);
@@ -348,7 +354,7 @@ mod tests {
                 }
                 let flat = Tensor::from_vec(flat, b * kmax, &dev).unwrap();
                 let logits = head
-                    .forward(&h, &qtype, &masks.global, &flat)
+                    .forward(&h, &qtype, &masks.key_row, &flat)
                     .unwrap()
                     .to_vec1::<f32>()
                     .unwrap();
