@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use laya_core::{Chunk, Scorer};
+use laya_core::{Chunk, ScoreStats, Scorer};
 
 use crate::model::LayaModel;
 
@@ -78,6 +78,16 @@ impl Scorer for LayaScorer {
         chunks: &[&Chunk],
         deadline: Instant,
     ) -> laya_core::Result<Vec<Option<f32>>> {
+        self.score_within_stats(task, chunks, deadline, &mut ScoreStats::default())
+    }
+
+    fn score_within_stats(
+        &self,
+        task: &str,
+        chunks: &[&Chunk],
+        deadline: Instant,
+        stats: &mut ScoreStats,
+    ) -> laya_core::Result<Vec<Option<f32>>> {
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
@@ -87,8 +97,11 @@ impl Scorer for LayaScorer {
             .iter()
             .map(|c| seqs.encode_state(&Self::render_state(c), Some(self.max_state_tokens)))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(self
-            .model
-            .noul_ids_within(&question, &state_ids, deadline)?)
+        Ok(self.model.noul_ids_within_timed(
+            &question,
+            &state_ids,
+            deadline,
+            &mut stats.batch_ms,
+        )?)
     }
 }

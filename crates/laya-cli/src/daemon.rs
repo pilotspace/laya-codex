@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
 use laya_core::QueryResult;
-use laya_core::{Chunk, Scorer, Store};
+use laya_core::{Chunk, ScoreStats, Scorer, Store};
 use laya_rank::{FollowUpIntent, Retriever, RetrieverConfig, SizeOpts, SpanKey};
 
 use crate::config::{Config, rel_path, repo_root};
@@ -20,7 +20,9 @@ use crate::protocol::{MAX_BUDGET_MS, MAX_RENDER_TOKENS, MAX_TOP_N, RenderReq, Re
 use crate::session::Sessions;
 
 /// Caches Laya probabilities in the store, keyed by (task, chunk content), so repeated or
-/// follow-up prompts in a session skip inference for chunks already judged.
+/// follow-up prompts in a session skip inference for chunks already judged. A salted view
+/// ([`MemoScorer::salted`]) reads and writes its own namespace of that cache.
+#[derive(Clone)]
 pub struct MemoScorer {
     inner: Arc<dyn Scorer>,
     store: Arc<dyn Store>,
@@ -28,9 +30,11 @@ pub struct MemoScorer {
     /// Set while a model run is in flight. A query that finds the model busy degrades to
     /// lexical ranking instead of queueing behind abandoned (timed-out) runs.
     busy: Arc<std::sync::atomic::AtomicBool>,
-    /// `false` (LAYA_CODEX_MEMO=0): never serve cached probabilities, so every prompt pays the model
-    /// run as a new prompt does in real use (benchmarks compare arms under equal, cold scoring).
+    /// `false` (LAYA_CODEX_MEMO=0): never serve cached probabilities, so every prompt pays the
+    /// model run (benchmarks keep sessions apart with a memo salt instead, see `salted`).
     read_cache: bool,
+    /// Namespace of the cache this view reads and writes (`None` = the shared one).
+    salt: Option<String>,
 }
 
 struct BusyGuard<'a>(&'a std::sync::atomic::AtomicBool);
@@ -48,6 +52,17 @@ impl MemoScorer {
             model_tag: model_tag.to_string(),
             busy: Default::default(),
             read_cache: true,
+            salt: None,
+        }
+    }
+
+    /// A view of this cache under `salt`: it sees only probabilities cached under the same
+    /// salt, and shares the model and its busy flag with every other view. `None` or an empty
+    /// salt is the shared, unsalted cache.
+    pub fn salted(&self, salt: Option<&str>) -> MemoScorer {
+        MemoScorer {
+            salt: salt.filter(|s| !s.is_empty()).map(str::to_string),
+            ..self.clone()
         }
     }
 
@@ -57,23 +72,34 @@ impl MemoScorer {
         self
     }
 
+    /// The cache key of `chunk` for `task`. Unsalted keys are what they were before salts
+    /// existed; a salted key is hashed under a key derived from the salt (so no two salts share
+    /// an entry) and carries its own prefix (so it never equals an unsalted key).
     fn key(&self, task: &str, chunk: &Chunk) -> String {
-        let mut h = blake3::Hasher::new();
+        let (mut h, prefix) = match &self.salt {
+            None => (blake3::Hasher::new(), "laya:"),
+            Some(salt) => (
+                blake3::Hasher::new_keyed(blake3::hash(salt.as_bytes()).as_bytes()),
+                "laya:salt:",
+            ),
+        };
         h.update(self.model_tag.as_bytes());
         h.update(&[0]);
         h.update(task.as_bytes());
         h.update(&[0]);
         h.update(chunk.id().as_bytes());
-        format!("laya:{}", &h.finalize().to_hex()[..32])
+        format!("{prefix}{}", &h.finalize().to_hex()[..32])
     }
 
     /// Cached probabilities, then the model for the rest (all of them, or with `deadline` as
-    /// many as fit, in input order). Only probabilities the model produced are cached.
+    /// many as fit, in input order). Only probabilities the model produced are cached. Cache hits
+    /// and the model's batches are added to `stats`.
     fn run(
         &self,
         task: &str,
         chunks: &[&Chunk],
         deadline: Option<std::time::Instant>,
+        stats: &mut ScoreStats,
     ) -> laya_core::Result<Vec<Option<f32>>> {
         let keys: Vec<String> = chunks.iter().map(|c| self.key(task, c)).collect();
         let mut out: Vec<Option<f32>> = vec![None; chunks.len()];
@@ -89,6 +115,7 @@ impl MemoScorer {
                 None => miss.push(i),
             }
         }
+        stats.cached += chunks.len() - miss.len();
         if !miss.is_empty() {
             use std::sync::atomic::Ordering;
             if self
@@ -102,7 +129,7 @@ impl MemoScorer {
             let todo: Vec<&Chunk> = miss.iter().map(|&i| chunks[i]).collect();
             let t0 = std::time::Instant::now();
             let ps: Vec<Option<f32>> = match deadline {
-                Some(d) => self.inner.score_within(task, &todo, d)?,
+                Some(d) => self.inner.score_within_stats(task, &todo, d, stats)?,
                 None => self
                     .inner
                     .score(task, &todo)?
@@ -131,7 +158,7 @@ impl MemoScorer {
 impl Scorer for MemoScorer {
     fn score(&self, task: &str, chunks: &[&Chunk]) -> laya_core::Result<Vec<f32>> {
         Ok(self
-            .run(task, chunks, None)?
+            .run(task, chunks, None, &mut ScoreStats::default())?
             .into_iter()
             .map(|p| p.unwrap_or(f32::NAN))
             .collect())
@@ -143,13 +170,25 @@ impl Scorer for MemoScorer {
         chunks: &[&Chunk],
         deadline: std::time::Instant,
     ) -> laya_core::Result<Vec<Option<f32>>> {
-        self.run(task, chunks, Some(deadline))
+        self.run(task, chunks, Some(deadline), &mut ScoreStats::default())
+    }
+
+    fn score_within_stats(
+        &self,
+        task: &str,
+        chunks: &[&Chunk],
+        deadline: std::time::Instant,
+        stats: &mut ScoreStats,
+    ) -> laya_core::Result<Vec<Option<f32>>> {
+        self.run(task, chunks, Some(deadline), stats)
     }
 }
 
 pub struct Daemon {
     pub store: Arc<dyn Store>,
-    pub scorer: RwLock<Option<Arc<dyn Scorer>>>,
+    /// The model behind its probability cache; `None` until the model has loaded (or when it
+    /// is off), which ranks lexically.
+    pub scorer: RwLock<Option<Arc<MemoScorer>>>,
     pub sessions: Mutex<Sessions>,
     pub indexing: Mutex<HashSet<String>>,
     pub base_cfg: RetrieverConfig,
@@ -189,6 +228,13 @@ impl Daemon {
             base_cfg,
             capture,
         })
+    }
+
+    /// Rank with `inner` behind a fresh probability cache (in the daemon's store) tagged `tag`.
+    #[cfg(test)]
+    pub fn set_scorer(&self, inner: Arc<dyn Scorer>, tag: &str) {
+        let memo = MemoScorer::new(inner, Arc::clone(&self.store), tag);
+        *self.scorer.write().unwrap() = Some(Arc::new(memo));
     }
 
     /// Render `result` for injection. Adaptive: size by rank, skip what the session already has,
@@ -309,7 +355,9 @@ impl Daemon {
                 budget_ms,
                 top_n,
                 render,
+                memo_salt,
             } => {
+                let t_query = std::time::Instant::now();
                 let (root, id) = self.repo(&repo);
                 let mut cfg = self.base_cfg.clone();
                 if let Some(b) = budget_ms {
@@ -347,7 +395,13 @@ impl Daemon {
                         cfg.test_refs = cfg.test_refs.max(FOLLOW_UP_TEST_REFS);
                     }
                 }
-                let scorer = self.scorer.read().ok().and_then(|s| s.clone());
+                // The model behind the cache namespace of this query's salt (if any).
+                let scorer = self
+                    .scorer
+                    .read()
+                    .ok()
+                    .and_then(|s| s.clone())
+                    .map(|m| Arc::new(m.salted(memo_salt.as_deref())) as Arc<dyn Scorer>);
                 let retriever = Retriever::new(self.store.as_ref(), scorer, cfg);
                 let query = match &session {
                     Some(s) => self.sessions().effective_query(s, &prompt),
@@ -358,6 +412,7 @@ impl Daemon {
                         if let Some(s) = &session {
                             self.sessions().record_query(s, &result);
                         }
+                        let t_render = std::time::Instant::now();
                         let rendered = render.as_ref().map(|r| {
                             let r = RenderReq {
                                 budget_tokens: r.budget_tokens.min(MAX_RENDER_TOKENS),
@@ -372,6 +427,8 @@ impl Daemon {
                                 follow_up,
                             )
                         });
+                        let render_ms = laya_core::millis(t_render.elapsed());
+                        let total_ms = laya_core::millis(t_query.elapsed());
                         if let Some(t) = &self.capture {
                             let source = match (&session, &render) {
                                 (None, _) => "direct",
@@ -390,6 +447,8 @@ impl Daemon {
                                 capture: &capture,
                                 inlined: rendered.as_ref().map_or(&no_keys, |(_, k)| k),
                                 rendered_chars: rendered.as_ref().map(|(t, _)| t.chars().count()),
+                                render_ms,
+                                total_ms,
                             }));
                         }
                         let rendered = rendered.map(|(text, _)| text);
@@ -1123,6 +1182,99 @@ mod tests {
         );
     }
 
+    fn memo(inner: Arc<dyn Scorer>) -> Arc<MemoScorer> {
+        Arc::new(MemoScorer::new(
+            inner,
+            Arc::new(MemoStore::default()),
+            "laya-code-r1-s128",
+        ))
+    }
+
+    #[test]
+    fn unsalted_memo_keys_are_unchanged() {
+        // Captured from the key function before salts existed: without a salt, a daemon keeps
+        // reading the probabilities it cached before the upgrade.
+        let m = memo(Arc::new(CountingScorer(AtomicUsize::new(0))));
+        let task = "where is the wal segment replayed";
+        assert_eq!(
+            m.key(task, &chunk(10)),
+            "laya:dbc6317ad057f2190f88c9f04863c111"
+        );
+        assert_eq!(
+            m.salted(None).key(task, &chunk(10)),
+            m.key(task, &chunk(10))
+        );
+        assert_eq!(
+            m.salted(Some("")).key(task, &chunk(10)),
+            m.key(task, &chunk(10)),
+            "an empty salt is no salt"
+        );
+    }
+
+    #[test]
+    fn salted_memo_keys_differ_per_salt_and_from_unsalted_keys() {
+        let m = memo(Arc::new(CountingScorer(AtomicUsize::new(0))));
+        let c = chunk(10);
+        let keys: HashSet<String> = [None, Some("a"), Some("b"), Some("a/t1/r0 ü\0\n\"")]
+            .into_iter()
+            .map(|s| m.salted(s).key("task", &c))
+            .collect();
+        assert_eq!(keys.len(), 4, "{keys:?}");
+        let salted = m.salted(Some("SALT-laya-t1-r0"));
+        assert_eq!(salted.key("task", &c), salted.key("task", &c), "stable");
+        assert!(
+            !salted.key("task", &c).contains("SALT"),
+            "the salt is hashed, never stored in the key"
+        );
+    }
+
+    #[test]
+    fn a_salt_reads_its_own_cache_and_never_another_salts() {
+        let inner = Arc::new(CountingScorer(AtomicUsize::new(0)));
+        let m = memo(inner.clone());
+        let a = chunk(10);
+        let scored = || inner.0.load(Ordering::SeqCst);
+        m.salted(Some("arm/t1/r0")).score("task", &[&a]).unwrap();
+        m.salted(Some("arm/t1/r0")).score("task", &[&a]).unwrap();
+        assert_eq!(scored(), 1, "the follow-up hits its own session's cache");
+        m.salted(Some("arm/t1/r1")).score("task", &[&a]).unwrap();
+        assert_eq!(scored(), 2, "another repeat scores cold");
+        m.score("task", &[&a]).unwrap();
+        assert_eq!(scored(), 3, "unsalted requests never see salted entries");
+        m.salted(Some("arm/t1/r2")).score("task", &[&a]).unwrap();
+        assert_eq!(scored(), 4, "salted requests never see unsalted entries");
+    }
+
+    #[test]
+    fn a_query_with_a_memo_salt_hits_only_that_salts_cache() {
+        let (d, repo) = daemon_with_code();
+        let inner = Arc::new(CountingScorer(AtomicUsize::new(0)));
+        d.set_scorer(inner.clone(), "laya-code-r1-s128");
+        let query = |salt: Option<&str>| {
+            let resp = d.handle(Request::Query {
+                repo: repo.clone(),
+                session: None,
+                prompt: "replay wal segment".into(),
+                budget_ms: Some(10_000),
+                top_n: None,
+                render: None,
+                memo_salt: salt.map(str::to_string),
+            });
+            assert!(matches!(resp, Response::Query { .. }), "{resp:?}");
+            inner.0.load(Ordering::SeqCst)
+        };
+        let first = query(Some("laya/t1/r0/s1"));
+        assert!(first > 0, "the model scored the candidates");
+        assert_eq!(query(Some("laya/t1/r0/s1")), first, "served from the cache");
+        assert_eq!(
+            query(Some("laya/t1/r1/s2")),
+            2 * first,
+            "another salt scores cold"
+        );
+        assert_eq!(query(None), 3 * first, "no salt scores cold too");
+        assert_eq!(query(None), 3 * first, "and then hits the unsalted cache");
+    }
+
     /// A repo on disk with four one-function files, indexed with their real hashes (the
     /// adaptive render only inlines code whose file still matches the index).
     fn daemon_with_code() -> (Arc<Daemon>, String) {
@@ -1211,6 +1363,7 @@ mod tests {
                 related: true,
                 adaptive: true,
             }),
+            memo_salt: None,
         }) {
             Response::Query {
                 rendered: Some(r), ..
@@ -1297,6 +1450,7 @@ mod tests {
             budget_ms: Some(0),
             top_n: None,
             render: None,
+            memo_salt: None,
         }) else {
             panic!("no result")
         };
@@ -1318,6 +1472,7 @@ mod tests {
             budget_ms: Some(0),
             top_n: None,
             render: None,
+            memo_salt: None,
         }) {
             Response::Query { result, .. } => result,
             other => panic!("{other:?}"),
@@ -1409,7 +1564,7 @@ mod tests {
             ..RetrieverConfig::default()
         };
         let d = Daemon::new(store, cfg);
-        *d.scorer.write().unwrap() = Some(Arc::new(LowScorer));
+        d.set_scorer(Arc::new(LowScorer), "laya-code");
         d
     }
 
@@ -1432,7 +1587,7 @@ mod tests {
                 Some(file.display().to_string()),
             )),
         );
-        *d.scorer.write().unwrap() = Some(Arc::new(LowScorer));
+        d.set_scorer(Arc::new(LowScorer), "laya-code");
         let (_, rendered) = ask_ranked(&d, &repo, "s1", "where is the wal segment replayed");
         let records: Vec<serde_json::Value> = std::fs::read_to_string(&file)
             .unwrap()
@@ -1452,6 +1607,94 @@ mod tests {
         let _ = std::fs::remove_file(&file);
     }
 
+    #[test]
+    fn a_record_times_each_stage_and_a_follow_up_shows_its_cache_hits() {
+        let (d0, repo) = daemon_with_files(WAL_FILES);
+        let file =
+            std::env::temp_dir().join(format!("laya-capture-stages-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        let cfg = RetrieverConfig {
+            laya_weight: Some(0.5),
+            p_threshold: 0.0,
+            ..RetrieverConfig::default()
+        };
+        let d = Daemon::with_capture(
+            d0.store.clone(),
+            cfg,
+            Some(crate::capture::Capture::new(
+                std::env::temp_dir(),
+                Some(file.display().to_string()),
+            )),
+        );
+        d.set_scorer(Arc::new(LowScorer), "laya-code");
+        ask_ranked(&d, &repo, "s1", "where is the wal segment replayed");
+        ask_ranked(&d, &repo, "s1", "where is the wal segment replayed");
+        let records: Vec<serde_json::Value> = std::fs::read_to_string(&file)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(records.len(), 2);
+        for e in &records {
+            let s = &e["stage_ms"];
+            for k in ["lexical", "model", "related", "render", "total"] {
+                assert!(s[k].as_f64().is_some_and(|v| v >= 0.0), "{k}: {e}");
+            }
+            assert!(s["batches"].is_array(), "{e}");
+            let parts: f64 = ["lexical", "model", "related", "render"]
+                .iter()
+                .map(|k| s[*k].as_f64().unwrap())
+                .sum();
+            assert!(parts <= s["total"].as_f64().unwrap() + 0.05, "{e}");
+        }
+        let (first, again) = (&records[0], &records[1]);
+        assert!(first["scored"].as_u64().unwrap() > 0, "{first}");
+        assert_eq!(first["cached"], 0, "{first}");
+        assert_eq!(
+            again["cached"], again["scored"],
+            "every probability of the repeat came from the cache: {again}"
+        );
+        assert!(again["stage_ms"]["batches"].as_array().unwrap().is_empty());
+    }
+
+    /// Reports one model batch per call.
+    struct BatchScorer;
+    impl Scorer for BatchScorer {
+        fn score(&self, _task: &str, chunks: &[&Chunk]) -> laya_core::Result<Vec<f32>> {
+            Ok(vec![0.3; chunks.len()])
+        }
+        fn score_within_stats(
+            &self,
+            _task: &str,
+            chunks: &[&Chunk],
+            _deadline: std::time::Instant,
+            stats: &mut laya_core::ScoreStats,
+        ) -> laya_core::Result<Vec<Option<f32>>> {
+            stats.batch_ms.push(7.0);
+            Ok(vec![Some(0.3); chunks.len()])
+        }
+    }
+
+    #[test]
+    fn memo_scorer_reports_cache_hits_and_passes_the_models_batches_through() {
+        let m = memo(Arc::new(BatchScorer));
+        let (a, b) = (chunk(10), chunk(20));
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut first = laya_core::ScoreStats::default();
+        m.score_within_stats("task", &[&a], deadline, &mut first)
+            .unwrap();
+        assert_eq!((first.batch_ms.as_slice(), first.cached), (&[7.0][..], 0));
+        let mut again = laya_core::ScoreStats::default();
+        m.score_within_stats("task", &[&a, &b], deadline, &mut again)
+            .unwrap();
+        assert_eq!((again.batch_ms.as_slice(), again.cached), (&[7.0][..], 1));
+        let mut cached = laya_core::ScoreStats::default();
+        m.score_within_stats("task", &[&a, &b], deadline, &mut cached)
+            .unwrap();
+        assert_eq!((cached.batch_ms.len(), cached.cached), (0, 2));
+    }
+
     fn ask_ranked(
         d: &Arc<Daemon>,
         repo: &str,
@@ -1469,6 +1712,7 @@ mod tests {
                 related: true,
                 adaptive: true,
             }),
+            memo_salt: None,
         }) {
             Response::Query {
                 result,
@@ -1617,6 +1861,7 @@ mod tests {
                 related: true,
                 adaptive,
             }),
+            memo_salt: None,
         })
     }
 
@@ -1665,6 +1910,7 @@ mod tests {
                 related: true,
                 adaptive: true,
             }),
+            memo_salt: None,
         }) {
             Response::Query {
                 rendered: Some(r), ..
@@ -1785,6 +2031,7 @@ mod tests {
             budget_ms: Some(0),
             top_n: None,
             render: None,
+            memo_salt: None,
         });
         assert!(matches!(plain, Response::Query { rendered: None, .. }));
     }
@@ -1918,6 +2165,7 @@ mod tests {
             budget_ms: Some(0),
             top_n: None,
             render: None,
+            memo_salt: None,
         };
         format!("{}\n", serde_json::to_string(&q).unwrap())
     }
@@ -2175,6 +2423,7 @@ mod tests {
             budget_ms: Some(0),
             top_n: Some(top_n),
             render: None,
+            memo_salt: None,
         }) {
             Response::Query { result, .. } => result.spans.len(),
             other => panic!("{other:?}"),

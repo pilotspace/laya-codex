@@ -1,5 +1,5 @@
-laya      reported $0.0689; first call writes 7197, reads 5040; session writes 10980, reads 41357, output 1670; answers ~958 tokens
-baseline  reported $0.0809; first call writes 5125, reads 4518; session writes 11349, reads 65273, output 2244; answers ~951 tokens
-floor, zero lookups and no injection: $0.0350 (-57% vs stock)
-floor, zero lookups with today's injection: $0.0453 (-44%)
+laya      reported $0.0689; first call writes 7197, reads 5040; session writes 10980, reads 41357, output 1670; answers ~1525 tokens
+baseline  reported $0.0809; first call writes 5125, reads 4518; session writes 11349, reads 65273, output 2244; answers ~1515 tokens
+floor, zero lookups and no injection: $0.0416 (-49% vs stock)
+floor, zero lookups with today's injection: $0.0532 (-34%)
 the -50% goal: $0.0404

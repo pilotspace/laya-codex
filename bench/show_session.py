@@ -6,6 +6,8 @@ laya's injected context per prompt, hook decisions, Claude's tool calls and the 
 import json
 import sys
 
+from runs import tok_estimate
+
 path = sys.argv[1]
 full = "--full" in sys.argv
 
@@ -34,7 +36,7 @@ for line in open(path):
         ctx = hook_context(e.get("output"))
         if ev == "UserPromptSubmit":
             prompt_no += 1
-            print(f"\n{'=' * 100}\n[laya-codex → UserPromptSubmit #{prompt_no}] injected {len(ctx)} chars (~{int(len(ctx) / 3.5)} tokens)\n{'-' * 100}")
+            print(f"\n{'=' * 100}\n[laya-codex → UserPromptSubmit #{prompt_no}] injected {len(ctx)} chars (~{tok_estimate(len(ctx), 'injected')} tokens)\n{'-' * 100}")
             lines = ctx.splitlines()
             if not full:  # the ranked map in full, code blocks trimmed to 6 lines each
                 out, in_code, kept = [], False, 0

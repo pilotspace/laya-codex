@@ -62,8 +62,8 @@ reading 6,684 → ≤6,045 tokens (−640 more) and wall 24.8 s → ≤23.4 s (�
 - A **turn** is one API call (a distinct `message.id`). Turn time is the gap between the end of one
   turn's tool results and the end of the next turn's, from event timestamps. Whatever
   `result.duration_ms` does not explain is assigned to turn 1.
-- Token estimate is characters / 3.5, the same as `run_bench.py`. Per-class totals add up to
-  `reading_tokens`.
+- Token estimate is characters / 3.5, the rate `run_bench.py` used until 2026-10-07 (it now uses
+  rates measured on Sonnet 5.5, see `bench/runs.py`). Per-class totals add up to `reading_tokens`.
 
 **Read classes.** Classification is per returned line. Read results carry `startLine`/`numLines`, so
 offset/limit semantics are exact. Absolute paths are made repo-relative. Priority order:

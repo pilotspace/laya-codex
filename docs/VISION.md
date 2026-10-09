@@ -30,14 +30,16 @@ prompt / search ──► lexical candidates (BM25 ⊕ defining ⊕ path, top 24
 
 Measured against stock Claude Code on held-out tasks (`bench/tasks-heldout`: 3 repositories,
 60 tasks laya-codex was not tuned on; paired, 95% bootstrap intervals). Figures are from
-benchmark v14.
+benchmark v14. Token figures were re-derived on 2026-10-07 at token rates measured from the
+billed cache writes; the 3.5 characters per token used before counted code 1.5–1.6× low
+([docs/RESULTS.md](RESULTS.md)).
 
 | target | definition | stock | laya-codex now | goal |
 |---|---|---|---|---|
 | **Cost −15%** | dollars per session: every token Claude is billed for, including the code laya-codex injects | $0.062 | $0.060 (−3.4% [−9.7, +3.6], n.s.), not met | ≤ $0.053 |
 | **Time −20%** | session wall-clock | 20.5 s | 18.0 s (−12.1% [−17.9, −5.3]), not met | ≤ 16.4 s |
 | **Quality** | answer recall of the gold files: first question up, both questions no loss | 0.729 / 0.901 | 0.828 / 0.904 (first +0.099 [+0.039, +0.160]; both +0.003, n.s.), first not met, both met | first ≥ +0.10; both not worse |
-| **Tokens** | code read plus injected | 1,911 | 2,863 (+49.9% [+29.8, +74.3]), not met | not significantly worse |
+| **Tokens** | code read plus injected | 2,998 | 4,522 (+50.9% [+30.9, +75.0]), not met | not significantly worse |
 
 A goal is met when the point estimate reaches it and the 95% interval excludes zero.
 
@@ -45,19 +47,22 @@ A goal is met when the point estimate reaches it and the 95% interval excludes z
 so those tasks now check that a change does not break what already works.
 - **Where v13 stands on them:** cost −14.8% [−18.8, −10.4] ($0.081 → $0.069), time −19.2%
   [−23.3, −14.7], first-question recall +0.154, both questions −0.024 (n.s.), code read + injected
-  +9.5% (n.s.).
+  +10.4% (n.s.).
 - **Why held-out tasks decide (2026-09-30):** v14 showed the cost saving does not carry over from
   the tuned tasks to new ones.
 
 **Why the targets were reset (2026-09-30).** The earlier goals, cost −50% and time −30%, are out
 of reach of anything laya-codex controls:
 - **Cost has a floor** (`bench/cost_floor.py`, v13 raw transcripts). Claude Code's own context is
-  written on every session's first call (5,125 tokens), Claude writes its answers (about 950
+  written on every session's first call (5,125 tokens), Claude writes its answers (about 1,500
   tokens), and each prompt re-reads the conversation. With zero lookups and no injection a session
-  would cost $0.035 (−57%); with zero lookups and today's injection, $0.045 (−44%), above the
-  $0.040 that −50% requires. A smaller injection makes Claude read more (v11). (Re-derived
-  2026-09-30 at Sonnet 5.5 prices with each session's cost counted once; the first figures,
-  $0.052 and $0.068, used Sonnet 5 prices against double-counted costs and gave −59% and −47%.)
+  would cost $0.042 (−49%), already above the $0.040 that −50% requires; with zero lookups and
+  today's injection, $0.053 (−34%). A smaller injection makes Claude read more (v11).
+  (Re-derived 2026-10-07 with the answers and the follow-up's injection counted at the measured
+  token rates; at 3.5 characters per token they were $0.035 (−57%) and $0.045 (−44%). Those
+  were themselves re-derived on 2026-09-30 at Sonnet 5.5 prices with each session's cost counted
+  once; the first figures, $0.052 and $0.068, used Sonnet 5 prices against double-counted costs
+  and gave −59% and −47%.)
 - **Time has a floor** (`bench/time_breakdown.py`). The final answers take about 12.4 s in both
   arms; with no lookups and no hook a session would still take about 13.5 s. The only lever left
   of any size, lookups on the follow-up, failed its offline replay (41% of follow-ups covered
@@ -74,7 +79,8 @@ run's stock baseline.
 **Why cost replaced code tokens (2026-09-29).** A re-baseline on Claude Code 2.1.284 with Claude
 Sonnet 5.5 (`claude-sonnet-5-5`: the `sonnet` alias had moved since v10), 8 paired tasks on httpx
 and hono, found that stock Claude now reads about 2,035 code tokens per session, against 4,635 in
-v10. Half of that is below what laya-codex injects on its own (about 1,570). That injection is what
+v10. Half of that is below what laya-codex injects on its own (about 1,570). (These pilot
+figures are at 3.5 characters per token and were not re-derived.) That injection is what
 buys the rest of the result, stock → laya-codex:
 
 | answer recall (findable gold), turn 1 / both turns | tool calls | time | code read + injected | cost |
@@ -104,8 +110,8 @@ transcripts):
 - **Pull is met.** Grep fell from 4.2 to 0.8 per session and total tool calls to 2.3, the lever's
   success line (Grep ≤ 1, ≈ 2 calls).
 - **Tokens read plus injected (reported beside cost): the injection cancels the reading savings.**
-  - Claude reads 57% less, but the injected code (about 1.8k tokens per session) brings the total
-    back above stock (+9.5% pooled, n.s.; +21.5% with repos weighted equally, up on httpx and hono).
+  - Claude reads 58% less, but the injected code (about 2.9k tokens per session) brings the total
+    back above stock (+10.4% pooled, n.s.; +22.6% with repos weighted equally, up on httpx and hono).
   - The retrained reranker (laya-code-r1) ranks the right code higher, 70 vs 62 of 115 offline.
   - Showing less of each block does not help. v11 cut the injection 27% with 18-line windows, and
     Claude read 23% more to see the rest: read + injected rose 10.6%.
@@ -159,3 +165,4 @@ Frozen (not developed unless this page changes):
 | 2026-09-30 | Benchmark harness fixed: a task's prompts run in one live session (resuming per prompt charged laya-codex for rewriting the prompt cache in about half its sessions, v12), and benchmark repos stay out of the home directory (every session in every arm loaded the operator's `~/.claude/CLAUDE.md`). v13 on Sonnet 5.5: cost −13.7%, time −19.2%, first-question recall +0.154, both-question recall −0.024 (n.s.). Skipping low-confidence code (~0.3%) and injecting the follow-up's lookups (<1%) are not built. Whether −50% cost stays the goal is open |
 | 2026-09-30 | Targets reset to cost −15%, time −20%, first-question recall +0.10 with no both-question loss, and code read plus injected not significantly worse; met means the estimate reaches the goal and the 95% interval excludes zero. The −50% cost goal is below the session's cost floor ($0.068 with zero lookups and today's injection, `bench/cost_floor.py`), and −30% time needs Claude to stop looking things up: answers take about 12.4 s in both arms, and the follow-up completeness replay covered 41% of follow-ups against a 69% bar, so it is not built (`bench/followup_completeness.py`). Next: don't inject where stock is already cheap (httpx) and confirm on real sessions |
 | 2026-09-30 | Benchmark v14 on 60 held-out tasks. The low-confidence gate showed no effect and is not merged (PR #39 closed, branch kept). Three harness bugs are fixed: costs counted prompt 1 twice (v12–v14 re-derived: v13 cost −13.7% → −14.8%; the cost floor with today's injection is $0.045, −44%, so −50% stays out of reach); arms with the same system prompt shared Anthropic's prompt cache (each arm now gets its own tag); and one seed fixed the arm order (now balanced). On held-out tasks `main` vs stock: cost −3.4% (n.s.), time −12.1%, first-question recall +0.099, code read + injected +49.9%. The targets are unchanged; progress is judged on held-out tasks from now on (`bench/tasks-heldout`), and the tuned `tasks-v8` become a regression check |
+| 2026-10-07 | Token counts re-derived for v12–v14. The harness counted code at 3.5 characters per token; regressing billed cache writes on characters gives 0.42–0.46 tokens per character on Sonnet 5.5 (`bench/runs.py` keeps one rate per kind: Read, Grep, Glob, `search`, injected), so code read and injected were 1.5–1.6× low on both sides. v14 code read + injected +49.9% → +50.9% (stock 1,911 → 2,998, `main` 2,863 → 4,522 tokens); v13 +9.5% → +10.4% (n.s.). The cost floor with today's injection rises from $0.045 (−44%) to $0.053 (−34%), and without injection ($0.042, −49%) it is now above the −50% line too. Costs, time, turns and recall are unaffected; the targets are unchanged |

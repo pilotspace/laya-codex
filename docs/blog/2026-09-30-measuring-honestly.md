@@ -8,6 +8,12 @@
 >   session and $0.069 with laya-codex. v12's is +7.7%, not +0.6%.
 > - **On 60 tasks laya-codex was not tuned on** (benchmark v14): cost −3.4%, not significant.
 >
+> **Correction (2026-10-07).** The harness counted code at 3.5 characters per token; the billed
+> cache writes show Sonnet 5.5 spends about 0.42–0.46 tokens per character of code, so code read
+> and injected were both 1.5–1.6× low. Re-derived for v13: code read + injected 4,297 → 4,743
+> tokens per session, +10.4% (not significant; +22.6% with repos weighted equally), and
+> code-reading tokens −57.7%.
+>
 > The text below is as first published. Current numbers are in
 > [docs/RESULTS.md](../RESULTS.md).
 

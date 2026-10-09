@@ -24,8 +24,22 @@ def priced(usage):
     return sum((usage.get(k) or 0) * p for k, p in PRICES_PER_M.items()) / 1e6
 
 
-def tok_estimate(chars):
-    return int(chars / 3.5)
+# Tokens per character of each kind of text the benchmark counts, calibrated on what the API bills
+# (benchmarks v12-v14, claude-sonnet-5-5). Tool results: regress the cache write (plus uncached
+# input) of the API call after a tool result on that result's characters, per tool, with the call
+# count, tool-input characters, thinking and text as covariates (n = 1241 calls, R^2 0.98; 95% CIs
+# Read 0.416-0.434, Grep 0.451-0.470, Glob 0.494-0.624, search 0.436-0.455). Injected code and the
+# first answer: regress the follow-up's first cache write on the hook log's injected characters and
+# the answer's characters (n = 241, R^2 0.98; injected 0.444-0.468, answer 0.433-0.478). `search`
+# is laya-codex's MCP tool, counted on its JSON-encoded result as parse_stream sees it. Each run
+# alone gives the same code rates within 0.02 (the answer rate within 0.04). The 3.5 chars per
+# token used until 2026-10-07 counted code 1.5-1.6x low.
+TOKENS_PER_CHAR = {"Read": 0.424, "Grep": 0.460, "Glob": 0.554, "search": 0.445, "injected": 0.456, "answer": 0.455}
+
+
+def tok_estimate(chars, kind):
+    """Estimated tokens of `chars` characters of `kind` text (a TOKENS_PER_CHAR key)."""
+    return int(round(chars * TOKENS_PER_CHAR[kind]))
 
 
 def load_runs(path, arms=None):
@@ -98,7 +112,7 @@ def read_hook_log(path):
             e = json.loads(line)
         except ValueError:
             continue
-        tokens = tok_estimate(int(e.get("injected_chars") or 0))
+        tokens = tok_estimate(int(e.get("injected_chars") or 0), "injected")
         out["injected_tokens"] += tokens
         a = e.get("action", "?")
         out["hook_actions"][a] = out["hook_actions"].get(a, 0) + 1

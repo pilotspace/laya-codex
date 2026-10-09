@@ -29,6 +29,12 @@ pub enum Request {
         top_n: Option<usize>,
         #[serde(default)]
         render: Option<RenderReq>,
+        /// Namespaces the daemon's probability cache: a query reads only probabilities cached
+        /// under the same salt (`None` = the shared cache). Benchmarks set one per session
+        /// (`LAYA_CODEX_MEMO_SALT`), so a follow-up reuses its own session's scores but no run
+        /// reads another's. Left off the wire when unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        memo_salt: Option<String>,
     },
     /// Count a Read of `path` in `session`; returns the count after incrementing.
     /// `full` = the whole file was read (no offset/limit), so all of it is in the agent's context.
@@ -57,6 +63,17 @@ pub enum Request {
     /// Ask the daemon to exit (`laya-codex stop`). Answered with `Response::Ok` before it exits; the
     /// Moon it supervises keeps running. Older daemons answer "bad request".
     Shutdown,
+}
+
+impl Request {
+    /// This request with `salt` as a query's memo salt; other requests, and a `None` salt, leave
+    /// it as it is.
+    pub fn with_memo_salt(mut self, salt: Option<&str>) -> Self {
+        if let (Request::Query { memo_salt, .. }, Some(salt)) = (&mut self, salt) {
+            *memo_salt = Some(salt.to_string());
+        }
+        self
+    }
 }
 
 /// Daemon-side rendering request for `Query`.
@@ -151,6 +168,40 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn query(memo_salt: Option<&str>) -> Request {
+        Request::Query {
+            repo: "/r".into(),
+            session: Some("s".into()),
+            prompt: "p".into(),
+            budget_ms: None,
+            top_n: None,
+            render: None,
+            memo_salt: memo_salt.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_query_without_a_memo_salt_keeps_its_wire_form() {
+        let s = serde_json::to_string(&query(None)).unwrap();
+        assert_eq!(
+            s,
+            r#"{"op":"query","repo":"/r","session":"s","prompt":"p","budget_ms":null,"top_n":null,"render":null}"#
+        );
+        let salted = serde_json::to_string(&query(Some("a/b"))).unwrap();
+        assert!(salted.ends_with(r#","memo_salt":"a/b"}"#), "{salted}");
+        assert_eq!(
+            serde_json::from_str::<Request>(&salted).unwrap(),
+            query(Some("a/b"))
+        );
+    }
+
+    #[test]
+    fn only_queries_take_the_memo_salt() {
+        assert_eq!(query(None).with_memo_salt(Some("x")), query(Some("x")));
+        assert_eq!(query(Some("x")).with_memo_salt(None), query(Some("x")));
+        assert_eq!(Request::Ping.with_memo_salt(Some("x")), Request::Ping);
     }
 
     #[test]

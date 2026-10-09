@@ -119,6 +119,7 @@ fn user_prompt(prompt: &str, session: &str, ctx: &HookCtx) -> Outcome {
             related: ctx.related,
             adaptive: ctx.adaptive,
         }),
+        memo_salt: None,
     };
     let (result, rendered) = match ctx.api.call(req) {
         Ok(Response::Query {

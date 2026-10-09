@@ -14,11 +14,10 @@ import json
 import os
 import statistics as st
 
-from runs import PRICES_PER_M
+from runs import PRICES_PER_M, tok_estimate
 
 PRICES = {"cache_write": PRICES_PER_M["cache_creation_input_tokens"],
           "cache_read": PRICES_PER_M["cache_read_input_tokens"], "output": PRICES_PER_M["output_tokens"]}
-CHARS_PER_TOKEN = 3.5
 
 
 def session(lines):
@@ -59,8 +58,8 @@ def main():
     for repo in a.repos.split(","):
         for r in _jsonl(os.path.join(a.root, repo, "runs.jsonl")):
             s = session(_jsonl(os.path.join(a.root, repo, "raw", f"{r['task_id']}_{r['arm']}.jsonl")))
-            s["answer_tokens"] = sum(r["prompt_answer_chars"]) / CHARS_PER_TOKEN
-            s["answer1_tokens"] = r["prompt_answer_chars"][0] / CHARS_PER_TOKEN
+            s["answer_tokens"] = tok_estimate(sum(r["prompt_answer_chars"]), "answer")
+            s["answer1_tokens"] = tok_estimate(r["prompt_answer_chars"][0], "answer")
             s["followup_injected"] = (r.get("prompt_injected_tokens") or [0, 0])[1]
             by_arm.setdefault(r["arm"], []).append(s)
     m = {arm: {k: st.mean(s[k] for s in rows) for k in rows[0]} for arm, rows in by_arm.items()}
