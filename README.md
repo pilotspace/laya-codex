@@ -106,7 +106,7 @@ prompt. Check the setup with `laya-codex doctor --repo .`.
   curl -fsSL https://raw.githubusercontent.com/pilotspace/laya-codex/main/install.sh | sh -s -- --model-only
   ```
 - **Installer options:** `--model-only` (model only, after `brew install`) · `--version vX.Y.Z` ·
-  `--dir DIR` (default `~/.local/bin`) · `--no-model` (skip the ~850 MB model; keyword ranking) ·
+  `--dir DIR` (default `~/.local/bin`) · `--no-model` (skip the ~330 MB model; keyword ranking) ·
   `--model` (also on Linux, where it runs slowly on the CPU).
 - **From source:** see [Building from source](#building-from-source).
 
@@ -121,7 +121,7 @@ prompt. Check the setup with `laya-codex doctor --repo .`.
 
 - **Index:** [tree-sitter](https://tree-sitter.github.io/) chunks stored in Moon, a local search
   server laya-codex runs for you; edits are re-indexed as Claude makes them.
-- **Rank:** [laya-code](https://huggingface.co/tindang/laya-code/tree/r1) re-ranks keyword
+- **Rank:** [laya-code](https://huggingface.co/tindang/laya-code/tree/r2) re-ranks keyword
   candidates within a time budget. A busy machine re-ranks fewer; with no model, keywords rank alone.
 - **No repeats:** follow-ups skip code already sent or read whole. Claude's own Reads are never changed.
 - **`search` tool:** one MCP call returns a name's definition, callers and tests, with a note on
@@ -163,8 +163,14 @@ closing that gap tops the roadmap. Keywords only: `LAYA_CODEX_NO_MODEL=1` or `--
 <details>
 <summary>Model versions and the model-vs-keywords evidence</summary>
 
-- **Installed model:** revision `25f97e5` on the `r1` branch of
-  [tindang/laya-code](https://huggingface.co/tindang/laya-code/tree/r1), retrained on fixed commits
+- **Installed model:** laya-code-r2, the `r2` branch of
+  [tindang/laya-code](https://huggingface.co/tindang/laya-code/tree/r2): a ModernBERT-base
+  re-ranker trained on the same candidate lists as r1, served at 128 tokens per candidate with the
+  top 12 scored. In the offline replay (tasks-v8 and held-out tasks, 120 first prompts) it inlines
+  141 of 238 gold files against 132 for r1 and 118 for keywords, and the hook takes 165 ms (p50)
+  instead of 517 ms. It installs to `models/laya-code-r2`. An existing r1 install in
+  `models/laya-code` keeps working, and `laya-codex doctor` shows the upgrade command.
+- **Previous model:** revision `25f97e5` on the `r1` branch, retrained on fixed commits
   of 7 repositories using laya-codex's own candidate lists; benchmark and evaluation repositories
   excluded. The table above measures the first model (`f3d6bd2`,
   [card](https://huggingface.co/tindang/laya-code/tree/f3d6bd2344e4750dd917f95d40ceacfa81bb81db)),
@@ -311,7 +317,7 @@ Full method, raw data and the next run: [docs/RESULTS.md](docs/RESULTS.md).
 
 - **Money:** free. Per session, Claude cost −14.8% in benchmark v13 and −3.4% (not significant) on
   new tasks in v14.
-- **Disk:** about 45 MB of binaries plus the ~850 MB model.
+- **Disk:** about 45 MB of binaries plus the ~330 MB model.
 - **Memory:** about 1 GB of RAM while the daemon runs.
 
 </details>
@@ -450,13 +456,14 @@ Flags:
 | var | default | meaning |
 |---|---|---|
 | `LAYA_CODEX_HOME` | `~/.cache/laya-codex` | socket, logs, Moon data and password (`moon.acl`), models (mode 0700) |
-| `LAYA_CODEX_MODEL_DIR` | `laya-code`, else `laya-base` | model directory |
+| `LAYA_CODEX_MODEL_DIR` | `laya-code-r2`, else `laya-code`, else `laya-base` (under `$LAYA_CODEX_HOME/models`) | model directory |
 | `LAYA_CODEX_NO_MODEL` | unset | `1` = lexical-only ranking |
 | `LAYA_CODEX_BUDGET_MS` | `1200` | Laya time budget per prompt: the model scores as many candidates as fit (lexical only if none) |
 | `LAYA_CODEX_RENDER` | `compact` | `full` injects every span's code |
-| `LAYA_CODEX_WEIGHT` / `LAYA_CODEX_STATE_TOKENS` / `LAYA_CODEX_K` / `LAYA_CODEX_P_THRESHOLD` | `0.5` / `128` / `24` / `0` | ranking knobs (daemon start) |
+| `LAYA_CODEX_WEIGHT` / `LAYA_CODEX_K` / `LAYA_CODEX_P_THRESHOLD` | `0.5` / `24` / `0` | ranking knobs (daemon start) |
+| `LAYA_CODEX_STATE_TOKENS` | the model's (`128`) | tokens of each candidate the model reads; overrides the `serving` block of the model's `rl_agent_config.json` |
 | `LAYA_CODEX_ADAPTIVE` | on | `0` = fixed compact injection; default skips code already sent or read in the session, and answers follow-ups about tests or callers with lists instead of code |
-| `LAYA_CODEX_SCORE_TOP` | `16` | candidates the model scores (best first); `0` = all of them |
+| `LAYA_CODEX_SCORE_TOP` | the model's (`12` for laya-code-r2, `16` for older models) | candidates the model scores per prompt and per `search` (best first); `0` = all of them; overrides the model's `serving` block |
 | `LAYA_CODEX_MOON_START_SECS` | `30` | how long a freshly started Moon may take to answer |
 | `LAYA_CODEX_MOON_PORT` / `LAYA_CODEX_MOON_BIN` | `16379` / `moon` beside the real `laya-codex` binary, else in `../libexec` (Homebrew), else on `PATH` | Moon sidecar; a missing binary is reported with every path tried |
 | `LAYA_CODEX_BIN` | unset | the `laya-codex` binary the Claude Code plugin should use |
@@ -493,7 +500,7 @@ and `.mcp.json`: `{"mcpServers": {"laya-codex": {"command": "laya-codex", "args"
 Requirements:
 - **Rust:** 1.90+ (edition 2024).
 - **Moon:** a [Moon](https://github.com/pilotspace/moon) binary built with its `text-index` feature. laya-codex uses `LAYA_CODEX_MOON_BIN` if set, else looks beside the (symlink-resolved) `laya-codex` binary, then in `../libexec`, then on `PATH`.
-- **Model weights (optional):** `hf download tindang/laya-code --revision 25f97e5a2ec5f8cf7218a4f67504367d8832e1fe --local-dir ~/.cache/laya-codex/models/laya-code` (the revision `install.sh` pins; the repo's `main` branch holds the older model). Without them, laya-codex ranks by keywords alone.
+- **Model weights (optional):** `hf download tindang/laya-code --revision REPLACE_WITH_HF_R2_REVISION_SHA_AFTER_UPLOAD --local-dir ~/.cache/laya-codex/models/laya-code-r2` (the revision `install.sh` pins; the repo's `main` and `r1` branches hold older models). Without them, laya-codex ranks by keywords alone.
 
 ```sh
 cargo build --release -p laya-cli        # target/release/laya-codex (fat LTO, mimalloc, Metal on macOS)
