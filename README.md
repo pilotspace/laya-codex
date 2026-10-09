@@ -420,7 +420,13 @@ See [ROADMAP.md](ROADMAP.md) for the full plan to 1.0.
 <details>
 <summary>Released so far</summary>
 
-- **v0.4.0, current:**
+- **v0.5.0, current:**
+  - laya-code-r2, a ModernBERT-base re-ranker trained on laya-codex's candidates, is the default:
+    more right files inlined (141 vs 132 of 238 offline), and `search` uses it too;
+  - exact Metal speed-ups: the hook takes about 130 ms instead of 517 ms, with identical output;
+  - Metal works on macOS before 15;
+  - the benchmark serves follow-ups from their session's cache and counts tokens at billed rates.
+- **v0.4.0:**
   - `search` answers name lookups (definitions, callers, uses, tests), so Claude Greps 61% less;
   - the reranker is retrained on the candidates laya-codex ranks, and the installer pins it;
   - follow-up prompts get lists of tests and callers instead of more code;

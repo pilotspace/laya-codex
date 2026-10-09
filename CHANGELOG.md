@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-12
+
+A faster, more accurate re-ranker. laya-code-r2, a ModernBERT-base model trained by this project on
+laya-codex's candidate lists, replaces laya-code-r1. With exact Metal speed-ups the prompt hook
+takes about 130 ms instead of 517 ms, and the right files are inlined more often (141 of 238 gold
+files offline, against 132). Metal now also works on macOS before 15. No breaking changes: an r1
+install keeps working, and `install.sh --model-only` upgrades it.
+
+Benchmark v15 on 60 held-out tasks (Claude Sonnet 5.5):
+- **Against v0.4.0:**
+  - lookup time −16.7%;
+  - cost −1.2% and first-question recall +0.035, both not significant;
+  - nothing significantly worse.
+- **Against stock Claude Code:**
+  - cost −6.6% and time −15.2%;
+  - first-question recall 0.73 → 0.84;
+  - lookups 3.9 → 1.8 calls per session;
+  - code read plus injected +32%.
+
+See [docs/RESULTS.md](docs/RESULTS.md).
+
 ### Added
 - **A local record of each ranking.** Every ranking the daemon serves appends one line to
   `$LAYA_CODEX_HOME/capture/requests.jsonl`. A ranking is a hook prompt, a `search`, or a
