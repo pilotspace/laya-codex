@@ -35,6 +35,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -407,6 +408,25 @@ def claude_md_above(repo, stop=None):
         d = os.path.dirname(d)
 
 
+# Moon's disk monitor stops taking writes when its volume has less than 5% free; one point of
+# margin keeps a run from crossing it midway.
+MOON_MIN_FREE_PCT = 5
+DISK_MARGIN_PCT = 1
+
+
+def disk_short(path, min_pct=MOON_MIN_FREE_PCT + DISK_MARGIN_PCT, usage=shutil.disk_usage):
+    """The free share (percent) of `path`'s volume when it is under `min_pct`, else None. A path
+    that does not exist yet is checked on its nearest existing parent. Under Moon's floor every
+    score-cache write is refused, and laya-codex fails open, so each follow-up is re-scored: the
+    run would time a hook users don't pay for (v15: 2% free, no follow-up served from the cache)."""
+    d = os.path.abspath(path)
+    while not os.path.exists(d) and os.path.dirname(d) != d:
+        d = os.path.dirname(d)
+    u = usage(d)
+    pct = 100.0 * u.free / u.total
+    return pct if pct < min_pct else None
+
+
 def run_name(task_id, arm, rep):
     """File stem of a session's raw transcript and hook log; repeat 0 keeps the pre-repeat name."""
     return "%s_%s" % (task_id, arm) + ("_r%d" % rep if rep else "")
@@ -529,6 +549,14 @@ def run(args):
     if above:
         sys.exit("refusing %s: Claude Code would load %s into every session; move the repo to a directory "
                  "with no CLAUDE.md above it" % (args.repo, ", ".join(above)))
+    homes = [args.out] + [os.environ.get("LAYA_CODEX_HOME") or os.path.expanduser("~/.cache/laya-codex")
+                          for _, template, binary in specs if template is not None and not binary]
+    for home in homes:
+        pct = disk_short(home)
+        if pct is not None:
+            sys.exit("refusing to run: %s has %.1f%% of its disk free; Moon stops taking writes under %d%%, "
+                     "which turns laya-codex's score cache off. Free at least %d%%" % (
+                         home, pct, MOON_MIN_FREE_PCT, MOON_MIN_FREE_PCT + DISK_MARGIN_PCT))
     done, spent = done_set(res_path, args.rerun_unhealthy)
     cfg_dir = render_configs(args.out, specs)
     envs = arm_env(args.out, specs)
