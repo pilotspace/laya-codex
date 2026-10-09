@@ -557,7 +557,7 @@
  "published": {
   "repo": "tindang/laya-code",
   "branch": "r2",
-  "revision": "pending: the owner uploads; then install.sh MODEL_REVISION and crates/laya-cli/src/config.rs LAYA_CODE_REVISION take the commit",
+  "revision": "831fa8321213ab66a8085d39f0014c5f9f8b5f91",
   "manifest_sha256": "f5d20914a7b4ff44eedbb95418ac1fa07af128c576a59607e97dc7fdb570a623",
   "main_and_r1_untouched": true
  }

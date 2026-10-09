@@ -4,7 +4,7 @@ laya-code-r2 is a ModernBERT-base re-ranker in the laya-code layout: the pretrai
 `answerdotai/ModernBERT-base` encoder with a freshly initialised laya decision head, trained on the
 r1 candidate lists. It is laya-codex's default model from v0.5.0, served at 128 tokens per
 candidate with the top 12 scored. It is published on the `r2` branch of `tindang/laya-code`
-(commit pending the owner's upload); `main` and `r1` are untouched.
+(commit `831fa8321213ab66a8085d39f0014c5f9f8b5f91`); `main` and `r1` are untouched.
 
 It was produced on an M4 Pro 24 GB (macOS, torch 2.11 with MPS, transformers 5.4, huggingface_hub CLI 1.8.0),
 2026-10-07 to 2026-10-09. Hashes, seeds, the validation history and the replay results are in
