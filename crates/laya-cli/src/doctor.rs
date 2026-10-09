@@ -14,11 +14,13 @@ use serde_json::Value;
 
 use crate::client::Client;
 use crate::config::{
-    Config, INSTALL_SH, LAYA_CODE_REVISION, MOON_FIX, is_executable, model_candidates,
+    Config, INSTALL_SH, LAYA_CODE_MODEL, LAYA_CODE_REVISION, MOON_FIX, is_executable,
+    model_candidates,
 };
 use crate::hook::DaemonApi;
 use crate::init::{HOOK_EVENTS, command_program, is_laya_hook};
 use crate::protocol::{Request, Response};
+use crate::serving::{EnvServing, env_conflicts, read_model_serving, resolve};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -174,8 +176,19 @@ fn probe(bin: &Path, timeout: Duration) -> Result<(), String> {
     }
 }
 
-/// Model directory: `dir` is the resolved one (`None` = none found among `searched`).
-pub fn check_model(use_model: bool, dir: Option<&Path>, searched: &[PathBuf]) -> Check {
+/// Model directory: `dir` is the resolved one (`None` = none found among `searched`). Reports the
+/// model, its revision (the `REVISION` file install.sh writes), the window and candidate counts it
+/// is served with (its `serving` block, else the defaults, with `env` over both) and the engine
+/// (`metal` = the Metal GPU, else CPU). Warns about a model without a serving block (an older one:
+/// it works, and the fix is the upgrade), overrides that differ from the model's block, a block
+/// that cannot be read, and CPU.
+pub fn check_model(
+    use_model: bool,
+    dir: Option<&Path>,
+    searched: &[PathBuf],
+    env: EnvServing,
+    metal: bool,
+) -> Check {
     if !use_model {
         return Check::new(
             "model",
@@ -194,7 +207,7 @@ pub fn check_model(use_model: bool, dir: Option<&Path>, searched: &[PathBuf]) ->
         let dest = searched
             .first()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "$LAYA_CODEX_HOME/models/laya-code".into());
+            .unwrap_or_else(|| format!("$LAYA_CODEX_HOME/models/{LAYA_CODE_MODEL}"));
         return Check::new(
             "model",
             Level::Warn,
@@ -202,7 +215,7 @@ pub fn check_model(use_model: bool, dir: Option<&Path>, searched: &[PathBuf]) ->
                 "no model found (looked for model.safetensors in {list}); ranking is lexical-only"
             ),
             Some(format!(
-                "download and verify the laya-code re-ranker (~850 MB): `curl -fsSL {INSTALL_SH} | sh -s -- --model-only`, \
+                "download and verify the laya-code re-ranker (~330 MB): `curl -fsSL {INSTALL_SH} | sh -s -- --model-only`, \
                  or `hf download tindang/laya-code --revision {LAYA_CODE_REVISION} --local-dir {dest}` (or set LAYA_CODEX_MODEL_DIR; LAYA_CODEX_NO_MODEL=1 silences this)"
             )),
         );
@@ -221,24 +234,81 @@ pub fn check_model(use_model: bool, dir: Option<&Path>, searched: &[PathBuf]) ->
             ),
         );
     }
-    if cfg!(target_os = "macos") {
-        Check::new(
-            "model",
-            Level::Pass,
-            format!("{} (Metal)", dir.display()),
-            None,
-        )
-    } else {
-        Check::new(
-            "model",
-            Level::Warn,
-            format!(
-                "{} found, but it runs on CPU here: too slow for interactive re-ranking",
-                dir.display()
-            ),
-            Some("set LAYA_CODEX_NO_MODEL=1 for lexical-only ranking".into()),
-        )
+    let (block, block_err) = match read_model_serving(dir) {
+        Ok(b) => (b, None),
+        Err(e) => (None, Some(e)),
+    };
+    let s = resolve(block, env, laya_rank::RetrieverConfig::default().score_top);
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dir.display().to_string());
+    let revision = std::fs::read_to_string(dir.join("REVISION"))
+        .ok()
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .map_or_else(
+            || "revision not recorded".to_string(),
+            |r| format!("revision {r}"),
+        );
+    let source = match (&block, &block_err) {
+        (Some(_), _) => "from the model",
+        (None, Some(_)) => "defaults",
+        (None, None) => "defaults: the model has no serving block",
+    };
+    let mut detail = format!(
+        "{name} ({revision}) at {}: window {} tokens, {} candidates per prompt, {} per search ({source}), {}",
+        dir.display(),
+        s.state_tokens,
+        s.score_top,
+        s.search_score_top,
+        if metal { "Metal" } else { "CPU" },
+    );
+    let mut level = Level::Pass;
+    let mut fixes: Vec<String> = Vec::new();
+    if let Some(e) = &block_err {
+        level = Level::Warn;
+        detail.push_str(&format!("; its serving block cannot be read ({e})"));
+        fixes.push(format!(
+            "re-download the model: `curl -fsSL {INSTALL_SH} | sh -s -- --model-only`"
+        ));
     }
+    let conflicts = env_conflicts(block, env);
+    if !conflicts.is_empty() {
+        level = Level::Warn;
+        detail.push_str(&format!("; {}", conflicts.join("; ")));
+        let mut vars: Vec<&str> = conflicts
+            .iter()
+            .filter_map(|c| c.split('=').next())
+            .collect();
+        vars.dedup();
+        fixes.push(format!(
+            "unset {} to serve the model as it was calibrated",
+            vars.join(" ")
+        ));
+    }
+    if block.is_none() && block_err.is_none() {
+        level = Level::Warn;
+        fixes.push(format!(
+            "this model predates {LAYA_CODE_MODEL}, which inlines more of the right files and scores about 3x faster: \
+             `curl -fsSL {INSTALL_SH} | sh -s -- --model-only` downloads it to $LAYA_CODEX_HOME/models/{LAYA_CODE_MODEL} and restarts the daemon"
+        ));
+    }
+    if !metal {
+        level = Level::Warn;
+        detail.push_str("; on CPU it is too slow for interactive re-ranking");
+        fixes.push("set LAYA_CODEX_NO_MODEL=1 for lexical-only ranking".into());
+    }
+    for other in searched {
+        if other.as_path() != dir && other.join("model.safetensors").is_file() {
+            detail.push_str(&format!(
+                "; {} is not used (delete it to free its disk space)",
+                other.display()
+            ));
+        }
+    }
+    let fix = (!fixes.is_empty()).then(|| fixes.join("; "));
+    Check::new("model", level, detail, fix)
 }
 
 /// `LAYA_CODEX_HOME` exists (or can be created) and is writable.
@@ -263,16 +333,25 @@ pub fn check_home(home: &Path) -> Check {
     }
 }
 
-/// Daemon ping result.
-pub fn check_daemon(ping: Result<Response, String>, socket: &Path) -> Check {
+/// Daemon ping result. `installed` is the model directory this configuration loads: a daemon
+/// serving another one (started before a model upgrade) is flagged.
+pub fn check_daemon(
+    ping: Result<Response, String>,
+    socket: &Path,
+    installed: Option<&Path>,
+) -> Check {
     let ours = env!("CARGO_PKG_VERSION");
     match ping {
         Ok(Response::Pong { version, .. }) if version != ours => Check::new("daemon", Level::Warn,
             format!("running daemon is v{version}, this binary is v{ours}"),
             Some("restart it so it runs this build: `laya-codex stop` (it restarts on demand)".into())),
-        Ok(Response::Pong { model_ready, .. }) => {
-            let model = if model_ready { "model ready" } else { "model loading or lexical-only" };
-            Check::new("daemon", Level::Pass, format!("up at {} ({model})", socket.display()), None)
+        Ok(Response::Pong { model: Some(m), .. }) if installed.is_some_and(|i| Path::new(&m) != i) => Check::new("daemon", Level::Warn,
+            format!("up at {}, serving {m}, but {} is the model installed now", socket.display(), installed.map(Path::display).map(|d| d.to_string()).unwrap_or_default()),
+            Some("restart it so it loads the installed model: `laya-codex stop` (it restarts on demand)".into())),
+        Ok(Response::Pong { model_ready, model, .. }) => {
+            let state = if model_ready { "model ready" } else { "model loading or lexical-only" };
+            let served = model.map(|m| format!(": {m}")).unwrap_or_default();
+            Check::new("daemon", Level::Pass, format!("up at {} ({state}{served})", socket.display()), None)
         }
         Ok(other) => Check::new("daemon", Level::Warn, format!("unexpected ping reply {other:?}"), Some("restart it: `laya-codex stop`".into())),
         Err(e) => Check::new("daemon", Level::Warn, format!("not running at {} ({e}); it starts on demand at the first hook", socket.display()),
@@ -593,8 +672,15 @@ pub fn run(cfg: &Config, root: &Path, start: bool) -> Vec<Check> {
         model_candidates(&cfg.home),
     );
     checks.push(bounded("model", Duration::from_secs(3), move || {
-        check_model(use_model, dir.as_deref(), &searched)
+        check_model(
+            use_model,
+            dir.as_deref(),
+            &searched,
+            EnvServing::from_env(),
+            laya_model::metal_available(),
+        )
     }));
+    let installed = cfg.model_dir.clone().filter(|_| cfg.use_model);
 
     let socket = cfg.socket_path();
     let wait = if start {
@@ -618,7 +704,7 @@ pub fn run(cfg: &Config, root: &Path, start: bool) -> Vec<Check> {
                     Err(_) => std::thread::sleep(Duration::from_millis(250)),
                 }
             };
-            check_daemon(ping, &socket)
+            check_daemon(ping, &socket, installed.as_deref())
         },
     ));
 
@@ -790,10 +876,13 @@ mod tests {
     #[test]
     fn model_checks_disabled_missing_incomplete_and_complete() {
         let d = scratch("model");
-        assert_eq!(check_model(false, None, &[]).level, Level::Pass);
+        assert_eq!(
+            check_model(false, None, &[], EnvServing::default(), true).level,
+            Level::Pass
+        );
 
         let searched = model_candidates(&d);
-        let c = check_model(true, None, &searched);
+        let c = check_model(true, None, &searched, EnvServing::default(), true);
         assert_eq!(c.level, Level::Warn);
         assert!(
             c.detail.contains("lexical-only") && c.detail.contains("laya-base"),
@@ -821,19 +910,148 @@ mod tests {
             std::fs::create_dir_all(m.join(f).parent().unwrap()).unwrap();
             std::fs::write(m.join(f), "").unwrap();
         }
-        let c = check_model(true, Some(&m), &[]);
+        let c = check_model(true, Some(&m), &[], EnvServing::default(), true);
         assert_eq!(c.level, Level::Warn);
         assert!(c.detail.contains("tokenizer"), "{}", c.detail);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
-        std::fs::create_dir_all(m.join("tokenizer")).unwrap();
-        std::fs::write(m.join("tokenizer/tokenizer.json"), "").unwrap();
-        let c = check_model(true, Some(&m), &[]);
-        let want = if cfg!(target_os = "macos") {
-            Level::Pass
-        } else {
-            Level::Warn
+    const R2_CONFIG: &str = r#"{"max_len": 704, "head_max_len": 192, "temperature": [1, 1, 0.84],
+        "serving": {"state_tokens": 128, "score_top": 12, "search_score_top": 12}}"#;
+    const R1_CONFIG: &str =
+        r#"{"max_len": 512, "head_max_len": 192, "temperature": [1.6, 1.3, 0.81]}"#;
+
+    /// A complete model directory `name` under `d` with `config` as its rl_agent_config.json.
+    fn model_dir(d: &Path, name: &str, config: &str, revision: Option<&str>) -> PathBuf {
+        let m = d.join("models").join(name);
+        for f in [
+            "model.safetensors",
+            "encoder/config.json",
+            "tokenizer/tokenizer.json",
+        ] {
+            std::fs::create_dir_all(m.join(f).parent().unwrap()).unwrap();
+            std::fs::write(m.join(f), "").unwrap();
+        }
+        std::fs::write(m.join("rl_agent_config.json"), config).unwrap();
+        if let Some(r) = revision {
+            std::fs::write(m.join("REVISION"), format!("{r}\n")).unwrap();
+        }
+        m
+    }
+
+    #[test]
+    fn the_model_check_names_the_model_its_revision_serving_settings_and_engine() {
+        let d = scratch("model-r2");
+        let m = model_dir(&d, "laya-code-r2", R2_CONFIG, Some("abc123"));
+        let c = check_model(true, Some(&m), &[], EnvServing::default(), true);
+        assert_eq!(c.level, Level::Pass, "{c:?}");
+        for want in [
+            "laya-code-r2",
+            "revision abc123",
+            "window 128 tokens",
+            "12 candidates per prompt",
+            "12 per search",
+            "Metal",
+        ] {
+            assert!(c.detail.contains(want), "{want}: {}", c.detail);
+        }
+        // On CPU the model mostly misses its budget: a warning, whatever the model.
+        let c = check_model(true, Some(&m), &[], EnvServing::default(), false);
+        assert_eq!(c.level, Level::Warn);
+        assert!(c.detail.contains("CPU"), "{}", c.detail);
+        assert!(c.fix.as_deref().unwrap().contains("LAYA_CODEX_NO_MODEL=1"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_older_model_still_works_and_doctor_suggests_the_upgrade() {
+        let d = scratch("model-r1");
+        let m = model_dir(&d, "laya-code", R1_CONFIG, None);
+        let c = check_model(true, Some(&m), &[], EnvServing::default(), true);
+        assert_eq!(c.level, Level::Warn, "{c:?}");
+        for want in [
+            "laya-code",
+            "revision not recorded",
+            "window 128 tokens",
+            "16 candidates per prompt",
+            "16 per search",
+            "no serving block",
+            "Metal",
+        ] {
+            assert!(c.detail.contains(want), "{want}: {}", c.detail);
+        }
+        let fix = c.fix.as_deref().unwrap();
+        assert!(
+            fix.contains("sh -s -- --model-only") && fix.contains("laya-code-r2"),
+            "{fix}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn environment_overrides_that_differ_from_the_model_are_flagged() {
+        let d = scratch("model-env");
+        let m = model_dir(&d, "laya-code-r2", R2_CONFIG, Some("abc123"));
+        let env = EnvServing {
+            state_tokens: Some(256),
+            score_top: None,
         };
-        assert_eq!(c.level, want, "{c:?}");
+        let c = check_model(true, Some(&m), &[], env, true);
+        assert_eq!(c.level, Level::Warn, "{c:?}");
+        assert!(
+            c.detail.contains("window 256 tokens")
+                && c.detail
+                    .contains("LAYA_CODEX_STATE_TOKENS=256 overrides the model's 128"),
+            "{}",
+            c.detail
+        );
+        assert!(
+            c.fix
+                .as_deref()
+                .unwrap()
+                .contains("unset LAYA_CODEX_STATE_TOKENS")
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_malformed_serving_block_is_flagged_and_served_with_the_defaults() {
+        let d = scratch("model-bad");
+        let m = model_dir(
+            &d,
+            "laya-code-r2",
+            r#"{"serving": {"score_top": "x"}}"#,
+            None,
+        );
+        let c = check_model(true, Some(&m), &[], EnvServing::default(), true);
+        assert_eq!(c.level, Level::Warn, "{c:?}");
+        assert!(
+            c.detail.contains("serving block") && c.detail.contains("16 candidates per prompt"),
+            "{}",
+            c.detail
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn with_both_models_installed_the_unused_one_is_named() {
+        let d = scratch("model-both");
+        let r2 = model_dir(&d, "laya-code-r2", R2_CONFIG, Some("abc123"));
+        model_dir(&d, "laya-code", R1_CONFIG, None);
+        let c = check_model(
+            true,
+            Some(&r2),
+            &model_candidates(&d),
+            EnvServing::default(),
+            true,
+        );
+        assert_eq!(c.level, Level::Pass, "{c:?}");
+        let old = d.join("models/laya-code");
+        assert!(
+            c.detail.contains(&format!("{} is not used", old.display())),
+            "{}",
+            c.detail
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -864,7 +1082,8 @@ mod tests {
                     version: me,
                     model: None
                 }),
-                sock
+                sock,
+                None
             )
             .level,
             Level::Pass
@@ -876,14 +1095,41 @@ mod tests {
                     version: "0.0.1".into(),
                     model: None
                 }),
-                sock
+                sock,
+                None
             )
             .level,
             Level::Warn
         );
-        let c = check_daemon(Err("connection refused".into()), sock);
+        let c = check_daemon(Err("connection refused".into()), sock, None);
         assert_eq!(c.level, Level::Warn);
         assert!(c.detail.contains("not running"), "{}", c.detail);
+    }
+
+    #[test]
+    fn a_daemon_serving_another_model_than_the_installed_one_is_flagged() {
+        let sock = Path::new("/tmp/x.sock");
+        let pong = |model: Option<&str>| {
+            Ok(Response::Pong {
+                model_ready: true,
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                model: model.map(str::to_string),
+            })
+        };
+        let r2 = Path::new("/h/models/laya-code-r2");
+        let c = check_daemon(pong(Some("/h/models/laya-code")), sock, Some(r2));
+        assert_eq!(c.level, Level::Warn, "{c:?}");
+        assert!(
+            c.detail.contains("/h/models/laya-code") && c.detail.contains("laya-code-r2"),
+            "{}",
+            c.detail
+        );
+        assert!(c.fix.as_deref().unwrap().contains("laya-codex stop"));
+        let c = check_daemon(pong(Some("/h/models/laya-code-r2")), sock, Some(r2));
+        assert_eq!(c.level, Level::Pass, "{c:?}");
+        assert!(c.detail.contains("laya-code-r2"), "{}", c.detail);
+        // An older daemon does not say which model it serves: nothing to compare.
+        assert_eq!(check_daemon(pong(None), sock, Some(r2)).level, Level::Pass);
     }
 
     #[test]
