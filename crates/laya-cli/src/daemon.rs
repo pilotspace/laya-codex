@@ -710,12 +710,16 @@ struct ConnSlot(Arc<AtomicUsize>);
 
 impl ConnSlot {
     fn try_take(active: &Arc<AtomicUsize>, max: usize) -> Option<Self> {
-        active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < max).then_some(n + 1)
-            })
-            .ok()
-            .map(|_| ConnSlot(Arc::clone(active)))
+        // A compare-exchange loop rather than `fetch_update`, which newer Rust deprecates under
+        // another name that the minimum supported Rust does not have.
+        let mut n = active.load(Ordering::Acquire);
+        while n < max {
+            match active.compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(ConnSlot(Arc::clone(active))),
+                Err(seen) => n = seen,
+            }
+        }
+        None
     }
 }
 
@@ -930,6 +934,44 @@ mod tests {
     use crate::indexer::mem::MemStore;
     use laya_core::Lang;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn connection_slots_stop_at_the_limit_and_free_on_drop() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let a = ConnSlot::try_take(&active, 2).expect("first slot");
+        let _b = ConnSlot::try_take(&active, 2).expect("second slot");
+        assert!(
+            ConnSlot::try_take(&active, 2).is_none(),
+            "a third is refused"
+        );
+        assert_eq!(active.load(Ordering::SeqCst), 2);
+        drop(a);
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        assert!(
+            ConnSlot::try_take(&active, 2).is_some(),
+            "a freed slot is reused"
+        );
+        assert!(
+            ConnSlot::try_take(&active, 0).is_none(),
+            "no slots at a zero limit"
+        );
+    }
+
+    #[test]
+    fn connection_slots_never_exceed_the_limit_under_contention() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let taken: Vec<_> = (0..16)
+            .map(|_| {
+                let active = Arc::clone(&active);
+                std::thread::spawn(move || ConnSlot::try_take(&active, 5))
+            })
+            .map(|h| h.join().unwrap())
+            .collect();
+        assert_eq!(taken.iter().filter(|s| s.is_some()).count(), 5);
+        assert_eq!(active.load(Ordering::SeqCst), 5);
+        drop(taken);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn error_replies_are_logged_but_a_repeat_is_quiet_for_a_minute() {
