@@ -14,10 +14,13 @@ accelerate = ["candle-core/accelerate", "candle-nn/accelerate"]
 
 [dependencies]
 laya-core.workspace = true
-candle-core = "0.11"
-candle-nn = "0.11"
-# Custom Metal kernels (feature `metal`): same versions candle itself uses.
-candle-metal-kernels = { version = "0.11", optional = true }
+# Pinned exactly: src/metal_ops.rs calls candle-metal-kernels' internal `call_sdpa_full`
+# (argument list and output-stride semantics) and mirrors candle's rope and add kernels bit for
+# bit. Upgrade all three together, then re-run the metal_ops tests and the parity tests.
+candle-core = "=0.11.0"
+candle-nn = "=0.11.0"
+# Custom Metal kernels (feature `metal`).
+candle-metal-kernels = { version = "=0.11.0", optional = true }
 objc2-metal = { version = "0.3", optional = true }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 serde.workspace = true
