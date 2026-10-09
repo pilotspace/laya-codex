@@ -1,7 +1,10 @@
-//! Metal replacements for a candle op on the scorer's hot path, bit-identical to it.
+//! Metal replacements for two candle ops on the scorer's hot path, bit-identical to them.
 //!
 //! - [`rope_thd`]: candle's kernel indexes with 64-bit division per element, which made the
 //!   rotary embedding about 9% of a forward pass. Same arithmetic, 32-bit grid indexing.
+//! - [`sdpa_rows`]: candle's fused attention writes `(b, h, l, hd)`, which then needs a
+//!   `b * h`-blit transpose. The same kernel takes output strides, so it writes the
+//!   `(b, l, h, hd)` layout the output projection reads, directly.
 //!
 //! The kernels are compiled once per device with Metal's default options, which are the fast
 //! math settings candle compiles its own kernels with; the tests check bit equality against
@@ -16,6 +19,7 @@ use candle_core::{
     CpuStorage, CustomOp3, DType, Layout, MetalDevice, MetalStorage, Result, Shape, Tensor,
 };
 use candle_metal_kernels::metal::{ComputeCommandEncoder, ComputePipeline, Library};
+use candle_metal_kernels::{SdpaDType, call_sdpa_full};
 use objc2_metal::MTLSize;
 
 const SOURCE: &str = r#"
@@ -204,6 +208,117 @@ impl CustomOp3 for RopeThd {
     }
 }
 
+/// candle's fused attention kernel with its output written as `(b, l, h, hd)`.
+struct SdpaRows {
+    mask: Tensor,
+    scale: f32,
+}
+
+impl CustomOp3 for SdpaRows {
+    fn name(&self) -> &'static str {
+        "laya-sdpa-rows"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _: &CpuStorage,
+        _: &Layout,
+        _: &CpuStorage,
+        _: &Layout,
+        _: &CpuStorage,
+        _: &Layout,
+    ) -> Result<(CpuStorage, Shape)> {
+        no_cpu()
+    }
+
+    fn metal_fwd(
+        &self,
+        q: &MetalStorage,
+        q_l: &Layout,
+        k: &MetalStorage,
+        k_l: &Layout,
+        v: &MetalStorage,
+        v_l: &Layout,
+    ) -> Result<(MetalStorage, Shape)> {
+        let (b, h, lq, hd) = q_l.shape().dims4()?;
+        let (kb, kh, kl, khd) = k_l.shape().dims4()?;
+        if (kb, kh, khd) != (b, h, hd) || v_l.dims() != [b, h, kl, hd] {
+            candle_core::bail!(
+                "laya sdpa_rows: q {:?} k {:?} v {:?}",
+                q_l.dims(),
+                k_l.dims(),
+                v_l.dims()
+            );
+        }
+        // The full kernel only: the single-query one ignores the mask.
+        if lq < 2 || lq > kl || ![32, 64, 72, 80, 96, 128, 256].contains(&hd) {
+            candle_core::bail!("laya sdpa_rows: unsupported lq {lq} / kl {kl} / head dim {hd}");
+        }
+        let dtype = q.dtype();
+        let itype = match dtype {
+            DType::F32 => SdpaDType::F32,
+            DType::F16 => SdpaDType::F16,
+            DType::BF16 => SdpaDType::BF16,
+            other => candle_core::bail!("laya sdpa_rows: unsupported dtype {other:?}"),
+        };
+        if k.dtype() != dtype || v.dtype() != dtype || self.mask.dtype() != dtype {
+            candle_core::bail!("laya sdpa_rows: dtype mismatch");
+        }
+        let (mask_s, mask_l) = self.mask.storage_and_layout();
+        let candle_core::Storage::Metal(mask_s) = &*mask_s else {
+            candle_core::bail!("laya sdpa_rows: mask is not on the metal device");
+        };
+        // The kernel binds the mask buffer without an offset.
+        if mask_l.dims() != [b, h, lq, kl] || mask_l.start_offset() != 0 {
+            candle_core::bail!(
+                "laya sdpa_rows: mask {:?} at offset {}",
+                mask_l.dims(),
+                mask_l.start_offset()
+            );
+        }
+        let el = b * lq * h * hd;
+        let device = q.device();
+        let output = device
+            .new_buffer_builder()
+            .with_size_for(el, dtype)
+            .with_label("laya_sdpa_rows")
+            .build()?;
+        let size = dtype.size_in_bytes();
+        let guard = device.command_encoder()?;
+        guard.set_label("laya_sdpa_rows");
+        call_sdpa_full(
+            device.device(),
+            &guard,
+            device.kernels(),
+            q_l.start_offset() * size,
+            q_l.dims(),
+            q_l.stride(),
+            q.buffer(),
+            k_l.start_offset() * size,
+            k_l.dims(),
+            k_l.stride(),
+            k.buffer(),
+            v_l.start_offset() * size,
+            v.buffer(),
+            v_l.stride(),
+            Some(itype),
+            Some(mask_s.buffer()),
+            Some(mask_l.stride()),
+            &output,
+            // (batch, head, row) strides of a (b, lq, h, hd) output.
+            &[lq * h * hd, hd, h * hd],
+            self.scale,
+            false,
+            itype,
+        )
+        .map_err(wrap)?;
+        Ok((
+            MetalStorage::new(output, device.clone(), el, dtype),
+            Shape::from_dims(&[b, lq, h, hd]),
+        ))
+    }
+}
+
 /// Rotate-half rotary embedding of a contiguous `(b, t, h, d)` tensor with `(t, d / 2)` cos/sin
 /// tables (as `candle_nn::rotary_emb::rope_thd`, bit for bit).
 pub fn rope_thd(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
@@ -211,6 +326,19 @@ pub fn rope_thd(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
         candle_core::bail!("laya rope: inputs must be contiguous");
     }
     x.apply_op3_no_bwd(cos, sin, &RopeThd)
+}
+
+/// `softmax(q k^T * scale + mask) v` with candle's fused kernel, written as `(b, lq, h, hd)`.
+///
+/// `q`: `(b, h, lq, hd)`, `k` and `v`: `(b, h, kl, hd)` (any strides), `mask`: additive
+/// `(b, h, lq, kl)` (any strides, e.g. broadcast over heads). Needs `lq >= 2`.
+pub fn sdpa_rows(q: &Tensor, k: &Tensor, v: &Tensor, mask: &Tensor, scale: f32) -> Result<Tensor> {
+    let mask = if mask.layout().start_offset() == 0 {
+        mask.clone()
+    } else {
+        mask.contiguous()?
+    };
+    q.apply_op3_no_bwd(k, v, &SdpaRows { mask, scale })
 }
 
 #[cfg(test)]
@@ -237,6 +365,37 @@ mod tests {
             let got = rope_thd(&x, &cos, &sin).unwrap();
             assert_eq!(got.dims(), want.dims());
             assert_eq!(max_abs_diff(&got, &want), 0.0, "{dtype:?}");
+        }
+    }
+
+    #[test]
+    fn sdpa_rows_is_bit_identical_to_sdpa_then_transpose() {
+        let Some(dev) = metal() else { return };
+        let (b, s, h, hd) = (3usize, 37usize, 4usize, 64usize);
+        // Strided views of a packed q|k projection, as the encoder hands them over.
+        let qk = randn(&[b, s, 2 * h, hd], &dev, DType::F16);
+        let v = randn(&[b, s, h, hd], &dev, DType::F16);
+        let mask = randn(&[b, 1, s, s], &dev, DType::F16);
+        for lq in [s, 2] {
+            let q = qk.narrow(2, 0, h).unwrap().narrow(1, 0, lq).unwrap();
+            let q = q.transpose(1, 2).unwrap();
+            let k = qk.narrow(2, h, h).unwrap().transpose(1, 2).unwrap();
+            let vv = v.transpose(1, 2).unwrap();
+            let m = mask
+                .narrow(2, 0, lq)
+                .unwrap()
+                .broadcast_as((b, h, lq, s))
+                .unwrap();
+            let want = candle_nn::ops::sdpa(&q, &k, &vv, Some(&m), false, 0.125, 1.0)
+                .unwrap()
+                .transpose(1, 2)
+                .unwrap()
+                .contiguous()
+                .unwrap();
+            let got = sdpa_rows(&q, &k, &vv, &m, 0.125).unwrap();
+            assert_eq!(got.dims(), &[b, lq, h, hd]);
+            assert!(got.is_contiguous());
+            assert_eq!(max_abs_diff(&got, &want), 0.0, "lq {lq}");
         }
     }
 }

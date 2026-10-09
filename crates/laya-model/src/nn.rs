@@ -158,9 +158,9 @@ impl QkvProj {
 /// Two layouts are used, chosen by device:
 /// - **Metal**: the fused `sdpa` kernel reads `q/k/v` and the mask through their strides, so
 ///   `q` and `k` are rotated once in `(b, s, 2h, hd)` layout (`rope_thd`, a free reshape of
-///   `qk`) and handed over as transposed *views*; only the head-to-row assembly at the end
-///   touches memory. A generic 4-D transpose copy on Metal costs more than the attention
-///   itself, which is why the layout avoids it entirely.
+///   `qk`) and handed over as transposed *views*, and the kernel writes its output straight
+///   into `(b, s, h, hd)` rows. A generic 4-D transpose copy on Metal costs more than the
+///   attention itself, which is why the layout avoids it entirely.
 /// - **CPU**: contiguous `(b, h, s, hd)` tensors (the gemm backend needs a single batch stride)
 ///   and the explicit matmul → mask → softmax → matmul chain.
 pub fn self_attention(
@@ -291,28 +291,26 @@ fn attend_metal(q: &Tensor, k: &Tensor, v: &Tensor, mask: &Tensor, scale: f64) -
         );
     }
     let mask = mask.broadcast_as((b, h, lq, s))?;
-    let out = candle_nn::ops::sdpa(q, k, v, Some(&mask), false, scale as f32, 1.0)?;
-    heads_to_rows(&out)
+    let hd = q.dim(3)?;
+    fused_attention_rows(q, k, v, &mask, scale as f32)?.reshape((b, lq, h * hd))
 }
 
-/// `(b, h, s, hd)` contiguous → `(b, s, h * hd)` contiguous.
-///
-/// Every `(batch, head)` tile is an `(s, hd)` block that is contiguous on both sides, so the
-/// transpose is assembled from `b * h` 2-D copies (`slice_set` → `copy2d` blits). On Metal this
-/// is ~3x faster than the generic strided-copy kernel that `transpose(1, 2).contiguous()`
-/// would dispatch, at the same result bit-for-bit.
-fn heads_to_rows(out: &Tensor) -> Result<Tensor> {
-    let (b, h, s, hd) = out.dims4()?;
-    let dst = Tensor::zeros((b, s, h, hd), out.dtype(), out.device())?;
-    for bi in 0..b {
-        let dst_b = dst.narrow(0, bi, 1)?;
-        let out_b = out.narrow(0, bi, 1)?;
-        for i in 0..h {
-            let src = out_b.narrow(1, i, 1)?.reshape((1, s, 1, hd))?;
-            dst_b.slice_set(&src, 2, i)?;
-        }
+/// candle's fused attention kernel writing its `(b, lq, h, hd)` output directly in the row
+/// layout the output projection reads (no `(b, h, lq, hd)` → rows transpose afterwards).
+fn fused_attention_rows(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    mask: &Tensor,
+    scale: f32,
+) -> Result<Tensor> {
+    #[cfg(feature = "metal")]
+    return crate::metal_ops::sdpa_rows(q, k, v, mask, scale);
+    #[cfg(not(feature = "metal"))]
+    {
+        let _ = (q, k, v, mask, scale);
+        candle_core::bail!("fused attention needs the metal feature")
     }
-    dst.reshape((b, s, h * hd))
 }
 
 /// Apply a module and keep the result contiguous.
