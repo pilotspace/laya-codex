@@ -27,8 +27,8 @@ mod nn;
 #[doc(hidden)]
 pub mod nn_probe {
     #[cfg(feature = "metal")]
-    pub use crate::metal_ops::rope_thd;
-    pub use crate::nn::window_band;
+    pub use crate::metal_ops::{rope_thd, sdpa_rows};
+    pub use crate::nn::{Dense, window_band};
 }
 mod scorer;
 pub mod sequence;

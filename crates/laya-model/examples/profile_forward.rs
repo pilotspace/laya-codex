@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::{Linear, Module};
+use laya_model::nn_probe::Dense;
 use laya_model::{DeviceKind, EncoderConfig, LayaModel, ModelFiles, Question};
 
 /// A held-out task with a typical question prefix (about 55 tokens with specials).
@@ -146,7 +147,6 @@ fn ops(dev: &Device, cfg: &EncoderConfig, b: usize, s: usize, batch_ms: f64) -> 
     );
     let layers = cfg.num_hidden_layers;
     let head_layers = 2usize;
-    let hh = (d / 64).max(1); // head attention heads
     let rnd = |shape: &[usize], std: f32| -> candle_core::Result<Tensor> {
         Tensor::randn(0f32, std, shape, dev)?.to_dtype(dtype)
     };
@@ -162,11 +162,18 @@ fn ops(dev: &Device, cfg: &EncoderConfig, b: usize, s: usize, batch_ms: f64) -> 
     let w_o = lin(d, d, false)?;
     let w_i = lin(inter, d, false)?;
     let w_mo = lin(d, inter, false)?;
-    let h_in = lin(2 * d, d, true)?;
-    let h_v = lin(d, d, true)?;
-    let h_o = lin(d, d, true)?;
-    let h_1 = lin(4 * d, d, true)?;
-    let h_2 = lin(d, 4 * d, true)?;
+    // The head's biased projections as the model runs them (`Dense`) and as candle's `Linear`.
+    let dense = |o: usize, i: usize| -> candle_core::Result<Dense> {
+        Ok(Dense::new(rnd(&[o, i], 0.02)?, Some(rnd(&[o], 0.02)?)))
+    };
+    let (h_in, h_v, h_o, h_1, h_2) = (
+        dense(2 * d, d)?,
+        dense(d, d)?,
+        dense(d, d)?,
+        dense(4 * d, d)?,
+        dense(d, 4 * d)?,
+    );
+    let h_in_candle = lin(2 * d, d, true)?;
     let ln_w = Tensor::ones(d, dtype, dev)?;
     let ln_b = Tensor::zeros(d, dtype, dev)?;
     let hid = rnd(&[b, s, inter], 1.0)?;
@@ -177,16 +184,19 @@ fn ops(dev: &Device, cfg: &EncoderConfig, b: usize, s: usize, batch_ms: f64) -> 
     let sin = rnd(&[s, hd / 2], 1.0)?;
     let mask = Tensor::zeros((b, 1, s, s), dtype, dev)?;
     let att_out = rnd(&[b, h, s, hd], 1.0)?;
+    let type_vec = rnd(&[b, 1, d], 1.0)?;
     let iters = 50;
 
+    // Calls per forward of the current model: `layers` encoder layers, then a head whose first
+    // layer runs over every token and whose last layer runs only its norm and key/value
+    // projections over every token (the rest at the few marker rows, left out here).
     let mut rows: Vec<(&str, f64, usize)> = Vec::new();
     let mut add = |name: &'static str, ms: f64, n: usize| rows.push((name, ms, n));
+    let ln = || candle_nn::ops::layer_norm(&x, &ln_w, &ln_b, 1e-5);
     add(
         "layer_norm (b,s,d)",
-        timeit(dev, iters, || {
-            candle_nn::ops::layer_norm(&x, &ln_w, &ln_b, 1e-5)
-        })?,
-        2 * layers + 1 + 2 * head_layers,
+        timeit(dev, iters, ln)?,
+        2 * layers + 4,
     );
     add(
         "enc qk linear d->2d",
@@ -199,47 +209,24 @@ fn ops(dev: &Device, cfg: &EncoderConfig, b: usize, s: usize, batch_ms: f64) -> 
         layers,
     );
     let qk4 = qk.reshape((b, s, 2 * h, hd))?;
-    add(
-        "rope_thd (b,s,2h,hd)",
-        timeit(dev, iters, || {
-            candle_nn::rotary_emb::rope_thd(&qk4, &cos, &sin)
-        })?,
-        layers,
-    );
+    let q = qk4.narrow(2, 0, h)?.transpose(1, 2)?;
+    let k = qk4.narrow(2, h, h)?.transpose(1, 2)?;
+    let vv = v.reshape((b, s, h, hd))?.transpose(1, 2)?;
+    let m = mask.broadcast_as((b, h, s, s))?;
     #[cfg(feature = "metal")]
     if dev.is_metal() {
+        use laya_model::nn_probe::{rope_thd, sdpa_rows};
         add(
-            "laya rope_thd (32-bit grid)",
-            timeit(dev, iters, || {
-                laya_model::nn_probe::rope_thd(&qk4, &cos, &sin)
-            })?,
-            0,
+            "rope_thd, laya kernel",
+            timeit(dev, iters, || rope_thd(&qk4, &cos, &sin))?,
+            layers,
+        );
+        add(
+            "sdpa_rows (fused attention into rows)",
+            timeit(dev, iters, || sdpa_rows(&q, &k, &vv, &m, 0.125))?,
+            layers + 1,
         );
     }
-    #[cfg(feature = "metal")]
-    if dev.is_metal() {
-        let q = qk4.narrow(2, 0, h)?.transpose(1, 2)?;
-        let k = qk4.narrow(2, h, h)?.transpose(1, 2)?;
-        let vv = v.reshape((b, s, h, hd))?.transpose(1, 2)?;
-        let m = mask.broadcast_as((b, h, s, s))?;
-        add(
-            "sdpa (strided views, bcast mask)",
-            timeit(dev, iters, || {
-                candle_nn::ops::sdpa(&q, &k, &vv, Some(&m), false, 0.125, 1.0)
-            })?,
-            layers + head_layers,
-        );
-    }
-    add(
-        "heads_to_rows (zeros + b*h copy2d)",
-        timeit(dev, iters, || heads_to_rows(&att_out))?,
-        layers + head_layers,
-    );
-    add(
-        "  of which zeros (b,s,h,hd)",
-        timeit(dev, iters, || Tensor::zeros((b, s, h, hd), dtype, dev))?,
-        0,
-    );
     add(
         "enc wo linear d->d",
         timeit(dev, iters, || w_o.forward(&x))?,
@@ -248,7 +235,7 @@ fn ops(dev: &Device, cfg: &EncoderConfig, b: usize, s: usize, batch_ms: f64) -> 
     add(
         "residual add (b,s,d)",
         timeit(dev, iters, || &x + &x)?,
-        2 * layers + 2 * head_layers,
+        2 * layers + 2,
     );
     add(
         "enc wi_input/wi_gate d->inter",
@@ -271,34 +258,71 @@ fn ops(dev: &Device, cfg: &EncoderConfig, b: usize, s: usize, batch_ms: f64) -> 
         layers,
     );
     add(
-        "head in_proj qk d->2d +bias",
-        timeit(dev, iters, || h_in.forward(&x))?,
-        head_layers,
+        "head type_emb add (b,s,d)+(b,1,d) [strided]",
+        timeit(dev, iters, || x.broadcast_add(&type_vec))?,
+        1,
     );
     add(
-        "head in_proj v d->d +bias",
+        "head in_proj qk d->2d +bias",
+        timeit(dev, iters, || h_in.forward(&x))?,
+        1,
+    );
+    add(
+        "head v / last k,v d->d +bias",
         timeit(dev, iters, || h_v.forward(&x))?,
-        head_layers,
+        3,
     );
     add(
         "head out_proj d->d +bias",
         timeit(dev, iters, || h_o.forward(&x))?,
-        head_layers,
+        1,
     );
     add(
         "head linear1 d->4d +bias",
         timeit(dev, iters, || h_1.forward(&x))?,
-        head_layers,
+        1,
     );
-    add(
-        "head relu (b,s,4d)",
-        timeit(dev, iters, || hid4.relu())?,
-        head_layers,
-    );
+    add("head relu (b,s,4d)", timeit(dev, iters, || hid4.relu())?, 1);
     add(
         "head linear2 4d->d +bias",
         timeit(dev, iters, || h_2.forward(&hid4))?,
-        head_layers,
+        1,
+    );
+    // What the replaced candle ops cost, for reference (not part of the sum).
+    add(
+        "(replaced) candle rope_thd",
+        timeit(dev, iters, || {
+            candle_nn::rotary_emb::rope_thd(&qk4, &cos, &sin)
+        })?,
+        0,
+    );
+    #[cfg(feature = "metal")]
+    if dev.is_metal() {
+        add(
+            "(replaced) candle sdpa + heads_to_rows",
+            timeit(dev, iters, || {
+                heads_to_rows(&candle_nn::ops::sdpa(
+                    &q,
+                    &k,
+                    &vv,
+                    Some(&m),
+                    false,
+                    0.125,
+                    1.0,
+                )?)
+            })?,
+            0,
+        );
+    }
+    add(
+        "(replaced) heads_to_rows alone",
+        timeit(dev, iters, || heads_to_rows(&att_out))?,
+        0,
+    );
+    add(
+        "(replaced) candle Linear qk d->2d +bias",
+        timeit(dev, iters, || h_in_candle.forward(&x))?,
+        0,
     );
     let tiny = Tensor::zeros(16, dtype, dev)?;
     add(
@@ -306,7 +330,6 @@ fn ops(dev: &Device, cfg: &EncoderConfig, b: usize, s: usize, batch_ms: f64) -> 
         timeit(dev, 400, || &tiny + &tiny)?,
         0,
     );
-    let _ = hh;
 
     println!(
         "\n### ops at b={b} s={s} ({} tokens), {layers} encoder layers + {head_layers} head layers",
