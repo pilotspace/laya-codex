@@ -66,13 +66,13 @@ def verify(model_dir, device="cpu"):
     return r["answers"]["rel"]["noul"]
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default=common.BASE_MODEL)
     ap.add_argument("--ckpt", default=os.path.join(common.WORK, "ckpt", "best.pt"))
     ap.add_argument("--out", default=os.path.expanduser("~/.cache/laya-codex/models/laya-code"))
     ap.add_argument("--verify", default=None, help="only verify an exported dir")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.verify:
         print("layout", check_same_layout(args.base, args.verify))
         print("noul(relevant example) =", verify(args.verify))

@@ -17,6 +17,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import common  # noqa: E402
+import listwise  # noqa: E402
 
 T_MIN, T_MAX = 0.05, 20.0
 
@@ -87,20 +88,33 @@ def report(logits, y, T):
             "n": int(len(y))}
 
 
+def finetune_note(cfg, n_lists, window, before, after):
+    """The `finetune` block of rl_agent_config.json: what the model was trained from and how T was fitted."""
+    if cfg.get("encoder", "").endswith("ModernBERT-base"):
+        base = "laya-code student: answerdotai/ModernBERT-base with a laya decision head, distilled from laya-code-r1"
+    else:
+        base = "laya-code (tindang/laya-code), itself fine-tuned from laya-base (convaiinnovations/laya)"
+    return {"base": base, "task": "code relevance (noul) as the production reranker",
+            "noul_temperature_fit": {"split": "val, first %d candidates of every list" % listwise.SCORE_TOP, "lists": n_lists,
+                                     "state_window": window, "before": before, "after": after}}
+
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=os.path.expanduser("~/.cache/laya-codex/models/laya-code"))
     ap.add_argument("--device", default=None)
     ap.add_argument("--data", default=None, help="dir of build_data.py lists (default WORK/data_v3)")
+    ap.add_argument("--window", type=int, default=common.STATE_TOKENS,
+                    help="state window to calibrate at: the LAYA_CODEX_STATE_TOKENS the model will serve with")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     import torch
-    import listwise
     from train import encode_lists, load_base_model, predict_lists  # same loader + same input path as training
     device = torch.device(args.device or ("mps" if torch.backends.mps.is_available() else "cpu"))
     lists = listwise.load_lists("val", data_dir=args.data, with_pos_only=False)
     model, tok, cfg, _ = load_base_model(args.model, device)
-    enc = encode_lists(tok, lists, limit=listwise.SCORE_TOP)
+    enc = encode_lists(tok, lists, limit=listwise.SCORE_TOP, window=args.window, max_len=cfg["max_len"])
     logits = np.concatenate(predict_lists(model, enc, device, tok.pad_token_id))
     y = np.concatenate([lab for _, lab in enc])
     np.save(os.path.join(common.WORK, "val_logits_%s.npy" % os.path.basename(args.model.rstrip("/"))), logits)
@@ -117,10 +131,7 @@ def main():
     cfg["temperature"][2] = T
     cfg.setdefault("temperature_by_options", {})["noul:2"] = T
     cfg["model_name"] = "laya-code"
-    cfg["finetune"] = {"base": "laya-code (tindang/laya-code), itself fine-tuned from laya-base (convaiinnovations/laya)",
-                       "task": "code relevance (noul) as the production reranker",
-                       "noul_temperature_fit": {"split": "val, first %d candidates of every list" % listwise.SCORE_TOP,
-                                                "lists": len(lists), "before": before, "after": after}}
+    cfg["finetune"] = finetune_note(cfg, len(lists), args.window, before, after)
     tmp = path + ".tmp"
     json.dump(cfg, open(tmp, "w"), indent=2)
     os.replace(tmp, path)

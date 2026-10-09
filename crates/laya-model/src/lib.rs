@@ -14,17 +14,31 @@
 //! assert!(p[0] >= 0.0 && p[0] <= 1.0);
 //! # Ok::<(), laya_model::ModelError>(())
 //! ```
+//!
+//! # Tests
+//!
+//! Tests that need Metal (the `metal` feature and a Metal device) skip themselves when it is
+//! missing. Set `LAYA_REQUIRE_METAL=1` to make them fail instead, on any machine that must run
+//! them:
+//!
+//! ```text
+//! LAYA_REQUIRE_METAL=1 cargo test -p laya-model --release --features metal
+//! ```
 
 pub mod config;
 mod encoder;
 pub mod error;
 mod head;
+#[cfg(feature = "metal")]
+mod metal_ops;
 mod model;
 mod nn;
-/// Internal ops exposed for the `profile_ops` example (not a stable API).
+/// Internal ops exposed for the profiling examples (not a stable API).
 #[doc(hidden)]
 pub mod nn_probe {
-    pub use crate::nn::window_band;
+    #[cfg(feature = "metal")]
+    pub use crate::metal_ops::{rope_thd, sdpa_rows};
+    pub use crate::nn::{Dense, window_band};
 }
 mod scorer;
 pub mod sequence;

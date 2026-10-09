@@ -233,8 +233,6 @@ dependencies = [
 [[package]]
 name = "candle-metal-kernels"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "242e83c6acf639bb273c929d73c67a882bb4dd08a140f121096e19ba2f213d3e"
 dependencies = [
  "block2",
  "half",
@@ -1189,8 +1187,10 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "candle-core",
+ "candle-metal-kernels",
  "candle-nn",
  "laya-core",
+ "objc2-metal",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

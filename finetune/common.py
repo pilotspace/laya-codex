@@ -6,6 +6,8 @@ Input format contract (must match the Rust scorer, crates/laya-model/src/{scorer
   ids      = state tokens ("[MASK]" blanked) cut to the first STATE_TOKENS (128, the daemon default), then
              [CLS] "noul question: ..." [SEP] [MASK] " false: ..." [MASK] " true: ..." [SEP] state [SEP]
              (encode_ids: a port of SequenceBuilder::build_from_state_ids; max_len 512, head_max_len 192)
+  window   = the student trains at state windows up to 384 tokens (LAYA_CODEX_STATE_TOKENS at serving time) with a
+             longer max_len (required_max_len), so the window, not max_len, is what cuts the state
 
 The older window helpers (windows, make_state, encode, bm25_score_doc) serve eval.py's spike protocol.
 """
@@ -193,12 +195,19 @@ def _head(tok, question):
     return _HEAD_CACHE[key]
 
 
-def encode_ids(tok, question, sids):
-    """`SequenceBuilder::build_from_state_ids` for a noul question: (ids, marker positions)."""
+def encode_ids(tok, question, sids, max_len=MAX_LEN):
+    """`SequenceBuilder::build_from_state_ids` for a noul question: (ids, marker positions). `max_len` is the
+    model's `rl_agent_config.json` max_len (512 for laya-code; the student's is longer so its window is not cut)."""
     head, markers = _head(tok, question)
-    room = max(0, MAX_LEN - len(head) - 1)
-    ids = (head + list(sids[:room]) + [tok.sep_token_id])[:MAX_LEN]
-    return ids, [m for m in markers if m < MAX_LEN]
+    room = max(0, max_len - len(head) - 1)
+    ids = (head + list(sids[:room]) + [tok.sep_token_id])[:max_len]
+    return ids, [m for m in markers if m < max_len]
+
+
+def required_max_len(window):
+    """Smallest max_len at which a `window`-token state is never cut, whatever the question: the head is at most
+    HEAD_MAX_LEN tokens of question + options plus [CLS] and two [SEP], and the state closes with a [SEP]."""
+    return HEAD_MAX_LEN + 3 + window + 1
 
 
 # ----------------------------------------------------------------------------- fixed commits -> labels

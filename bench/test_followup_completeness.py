@@ -50,6 +50,25 @@ class Parsing(unittest.TestCase):
         self.assertEqual([t["name"] for t in p2["tools"].values()], ["mcp__laya-codex__search", "Read", "Grep"])
         self.assertEqual(p2["calls"], [["t1"], ["t2", "t3"]])
 
+    def test_records_every_api_call_with_its_usage_and_the_prompt_usage(self):
+        u1 = {"input_tokens": 2, "cache_creation_input_tokens": 300, "cache_read_input_tokens": 9000,
+              "output_tokens": 5}
+        u2 = dict(u1, output_tokens=40)
+        fin = dict(u1, cache_creation_input_tokens=700, output_tokens=90)
+        lines = [INIT,
+                 dict(call("r1", ("t1", "Grep", {"pattern": "x"})), message={"content": [], "usage": u1}),
+                 dict(call("r1", ("t1", "Grep", {"pattern": "x"})), message={
+                     "content": [{"type": "tool_use", "id": "t1", "name": "Grep", "input": {}}], "usage": u2}),
+                 {"type": "assistant", "request_id": "r2", "message": {"content": [{"type": "text", "text": "ok"}],
+                                                                      "usage": fin}},
+                 {"type": "result", "result": "ok",
+                  "usage": {"output_tokens": 130, "iterations": [{"output_tokens": 95}]}}]
+        (p,) = fc.parse_session(lines)
+        self.assertEqual(p["api"], [{"rid": "r1", "usage": u1, "usage_last": u2, "tools": 1},
+                                    {"rid": "r2", "usage": fin, "usage_last": fin, "tools": 0}])
+        self.assertEqual(p["result_usage"]["output_tokens"], 130)
+        self.assertEqual(p["calls"], [["t1"]])
+
 
 class Rules(unittest.TestCase):
     def test_ranked_symbols_come_from_the_location_headers(self):

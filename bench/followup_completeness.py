@@ -29,7 +29,9 @@ RG_TYPES = {"moon": ["-t", "rust"], "httpx": ["-t", "py"], "hono": ["-t", "ts", 
 
 
 def parse_session(lines):
-    """Per prompt: the hook's injected text, Claude's tool calls (by id), the calls' tool ids, the answer."""
+    """Per prompt: the hook's injected text, Claude's tool calls (by id), the calls' tool ids, the answer,
+    every API call in order (`api`: request id, first and last usage, tool count) and the prompt's
+    `result_usage`."""
     out, cur, pending = [], None, ""
     for d in lines:
         t = d.get("type")
@@ -40,14 +42,21 @@ def parse_session(lines):
             except (ValueError, KeyError, TypeError):
                 pending = ""
         elif t == "system" and d.get("subtype") == "init":
-            cur = {"inj_text": pending, "tools": {}, "calls": [], "rids": {}, "answer": ""}
+            cur = {"inj_text": pending, "tools": {}, "calls": [], "rids": {}, "answer": "", "api": [], "apis": {},
+                   "result_usage": {}}
             pending = ""
         elif cur is None:
             continue
         elif t == "assistant":
             rid = d.get("request_id") or d["message"].get("id")
+            usage = d["message"].get("usage") or {}
+            if rid not in cur["apis"]:
+                cur["apis"][rid] = {"rid": rid, "usage": usage, "usage_last": usage, "tools": 0}
+                cur["api"].append(cur["apis"][rid])
+            cur["apis"][rid]["usage_last"] = usage
             for b in d["message"].get("content") or []:
                 if b.get("type") == "tool_use":
+                    cur["apis"][rid]["tools"] += 1
                     cur["tools"][b["id"]] = {"name": b["name"], "input": b.get("input") or {}}
                     if rid not in cur["rids"]:
                         cur["rids"][rid] = len(cur["calls"])
@@ -55,7 +64,8 @@ def parse_session(lines):
                     cur["calls"][cur["rids"][rid]].append(b["id"])
         elif t == "result":
             cur["answer"] = d.get("result") or ""
-            del cur["rids"]
+            cur["result_usage"] = d.get("usage") or {}
+            del cur["rids"], cur["apis"]
             out.append(cur)
             cur = None
     return out

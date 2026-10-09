@@ -46,3 +46,12 @@ def test_fit_temperature_multiclass_recovers_scale():
     y = np.array([rng.choice(4, p=pp) for pp in p])
     T = calibrate.fit_temperature_k(z * 3.0, y)
     assert abs(T - 3.0) / 3.0 < 0.05
+
+
+def test_finetune_note_names_the_student_and_its_window():
+    note = calibrate.finetune_note({"encoder": "answerdotai/ModernBERT-base"}, 470, 384, {"T": 1.0}, {"T": 0.9})
+    assert "ModernBERT-base" in note["base"] and "distil" in note["base"]
+    assert note["noul_temperature_fit"]["state_window"] == 384
+    assert note["noul_temperature_fit"]["lists"] == 470
+    r1 = calibrate.finetune_note({"encoder": "answerdotai/ModernBERT-large"}, 470, 128, {}, {})
+    assert r1["base"].startswith("laya-code (tindang/laya-code)")

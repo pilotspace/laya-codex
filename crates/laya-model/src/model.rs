@@ -410,7 +410,9 @@ impl LayaModel {
         prof.tick("inputs+masks")?;
         let h = self.encoder.forward(&ids_t, &masks)?;
         prof.tick("encoder")?;
-        let logits = self.head.forward(&h, &qtype_t, &masks.global, &markers_t)?;
+        let logits = self
+            .head
+            .forward(&h, &qtype_t, &masks.key_row, &markers_t)?;
         prof.tick("head")?;
         let mut logits = logits.to_vec1::<f32>()?;
         prof.tick("to_host")?;
