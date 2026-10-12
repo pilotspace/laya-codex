@@ -78,6 +78,9 @@ All notable changes to this project are documented here. The format follows
 - **The benchmark keeps the operator's CLAUDE.md out.** Claude Code reads `<dir>/.claude/CLAUDE.md`
   in every directory above the repo, so repos under the home directory loaded the operator's
   global file in every session of every arm. `run_bench` now refuses such a repo.
+- **The benchmark refuses a disk too full for Moon.** Moon stops taking writes when its disk has
+  less than 5% free, and laya-codex fails open on a refused score-cache write, so every follow-up
+  was re-scored: benchmark v15 ran at 2% free. `run_bench` now refuses to start below 6%.
 
 ## [0.4.0] — 2026-09-28
 

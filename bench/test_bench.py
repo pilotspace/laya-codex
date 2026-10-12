@@ -971,6 +971,39 @@ class OneProcessSession(unittest.TestCase):
         self.assertEqual([q["answer"] for q in prompts], ["answer 0", "answer 1"])
 
 
+class DiskRoomForMoon(unittest.TestCase):
+    """Moon stops taking writes when its disk is under 5% free. laya-codex fails open on a refused
+    score-cache write, so on a full disk every follow-up is re-scored and the run measures hook
+    time users don't pay (v15: 2% free, 0 of 60 follow-ups served from the cache)."""
+
+    @staticmethod
+    def usage(total, free):
+        import collections
+        u = collections.namedtuple("usage", "total used free")
+        return lambda path: u(total, total - free, free)
+
+    def test_a_disk_under_moons_floor_is_reported_with_its_free_share(self):
+        import run_bench
+        pct = run_bench.disk_short("/x", usage=self.usage(1000, 28))
+        self.assertAlmostEqual(pct, 2.8)
+
+    def test_the_margin_above_moons_floor_is_kept(self):
+        import run_bench
+        self.assertIsNotNone(run_bench.disk_short("/x", usage=self.usage(1000, 55)))
+        self.assertIsNone(run_bench.disk_short("/x", usage=self.usage(1000, 60)))
+
+    def test_a_path_that_does_not_exist_yet_is_checked_on_its_nearest_parent(self):
+        import run_bench
+        seen = []
+
+        def usage(path):
+            seen.append(path)
+            return self.usage(1000, 500)(path)
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(run_bench.disk_short(os.path.join(d, "out", "homes"), usage=usage))
+        self.assertEqual(seen, [d])
+
+
 class RepoOutsideClaudeHome(unittest.TestCase):
     """Claude Code loads every CLAUDE.md above the working directory, so a benchmark repo under a
     directory holding one (such as ~/.claude) feeds the operator's personal instructions to both arms."""
