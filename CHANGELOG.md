@@ -21,6 +21,16 @@ All notable changes to this project are documented here. The format follows
   - **Turning it off:** `laya-codex capture off` stops it at once, including for the running daemon.
     `LAYA_CODEX_CAPTURE=0` also turns it off, and `laya-codex capture status` shows the state.
 
+- **Each capture record says where the ranking's time went.** `stage_ms` splits a request into
+  lexical candidates, the model gate, each forward batch, related lists and render, and `cached`
+  counts probabilities served from the score cache. A follow-up served from the cache shows
+  `cached` equal to `scored` and no batches.
+- **The code that trained laya-code-r2.** `finetune/` initializes a ModernBERT-base student, trains
+  it on whole-chunk windows of variable length (distillation from r1 is an option that lost in the
+  gate), and `finetune/runs/r2.json` records the run, data and checkpoint that shipped.
+- **The benchmark reports lookup time and lookup calls** per session (hook, lookup round trips and
+  tool execution), paired against stock with 95% intervals. On v14: laya-codex 5.60 s against
+  stock's 9.05 s, −1.85 lookup calls.
 ### Changed
 - **laya-code-r2 is the default re-ranker.** It is a ModernBERT-base model trained on the same
   candidate lists as laya-code-r1, published on the `r2` branch of
@@ -34,6 +44,15 @@ All notable changes to this project are documented here. The format follows
     r1 install in `models/laya-code` keeps working unchanged. `install.sh --model-only` upgrades it
     and restarts the daemon. A first download is staged and moved into place only once every file
     checks out.
+- **The model runs faster on Apple GPUs, with identical output.** Four exact changes, chosen by
+  profiling: the head's last layer runs only at the two positions it scores; rotary embeddings use
+  a Metal kernel (candle's divided 64-bit integers per element, 12× slower); attention output is
+  written straight into row order; and bias adds use a contiguous kernel. laya-code-r2's 12
+  candidates take about 121 ms instead of 156 ms, so the hook runs at about 130 ms (p50) on an
+  idle M4 Pro, against 517 ms for v0.4.0. r1 goes from 503 to 449 ms. Every probability matched
+  bit for bit on 3,360 scored candidates, and parity against PyTorch passes on CPU and Metal. If
+  a kernel fails to build (bf16 needs macOS 14), candle's own op is used. candle is pinned to
+  `=0.11.0` because one change calls an internal candle function.
 - **The model directory says how to serve it.** A `serving` block in its `rl_agent_config.json`
   sets the window (`state_tokens`) and the candidates scored per prompt (`score_top`) and per
   `search` (`search_score_top`). A model without it is served as before: 128 tokens and 16
@@ -47,8 +66,9 @@ All notable changes to this project are documented here. The format follows
   file used to take 18 of the 24. In the offline replay of the 60 benchmark tasks, one more
   correct file was inlined (71 of 115, none lost) and three more were named (103), at the same
   hook latency.
-- **Cost leads every benchmark report.** The goal is now cost per session −50% against stock
-  Claude Code with no quality loss (docs/VISION.md). `bench/headline.py` and the savings chart put
+- **Cost leads every benchmark report.** The goals are cost per session −15% and wall-clock −20%
+  against stock Claude Code, with first-question recall up and no both-question loss
+  (docs/VISION.md; reset on 2026-09-30 from −50% cost, which is below the session's cost floor). `bench/headline.py` and the savings chart put
   cost first, with code tokens read plus injected beside it. They name the Claude model the run
   resolved to (`claude-sonnet-5` for v10) instead of the `sonnet` alias, which has since moved to
   Sonnet 5.5.
@@ -57,6 +77,20 @@ All notable changes to this project are documented here. The format follows
   "never" counted as last.
 
 ### Fixed
+- **Metal works on macOS before 15.** candle 0.11 creates a residency set with every Metal
+  device, and residency sets arrived in macOS 15: on macOS 14 and earlier, opening the device
+  panicked, and since v0.1.0 the daemon fell back to keyword-only ranking there. A vendored
+  `candle-metal-kernels` skips the residency set when the system lacks it
+  (`vendor/candle-metal-kernels/PATCHED.md`), and CI's macOS 14 runner now opens a Metal device.
+- **Builds on Rust 1.99.** The daemon's connection limit used `AtomicUsize::fetch_update`, which
+  Rust 1.99 deprecates; with warnings denied the build failed. It is now a compare-exchange loop.
+- **Follow-ups are measured as users run them.** The benchmark turned the score cache off so
+  arms could not share it, which made every follow-up re-score its first prompt's ranking: about
+  0.5 s per session that users never pay. Each session now salts the cache
+  (`LAYA_CODEX_MEMO_SALT`, sent with every query), so a follow-up reads only its own session's
+  scores and takes about 10 ms.
+- **Hook-log lines no longer interleave.** Each line is written with a single append, so two hooks
+  running at once cannot splice their lines.
 - **The benchmark runs each task as one live session.** Resuming the session for the second
   prompt (`claude -p --resume`) rebuilt the first message differently when prompt 1 was answered in
   one API call, so the follow-up rewrote the whole prompt cache: 31 of 60 laya-codex sessions and

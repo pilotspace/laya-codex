@@ -30,16 +30,17 @@ prompt / search ──► lexical candidates (BM25 ⊕ defining ⊕ path, top 24
 
 Measured against stock Claude Code on held-out tasks (`bench/tasks-heldout`: 3 repositories,
 60 tasks laya-codex was not tuned on; paired, 95% bootstrap intervals). Figures are from
-benchmark v14. Token figures were re-derived on 2026-10-07 at token rates measured from the
-billed cache writes; the 3.5 characters per token used before counted code 1.5–1.6× low
-([docs/RESULTS.md](RESULTS.md)).
+benchmark v15 (2026-10-09, v0.5.0 with laya-code-r2), with v14 (v0.4.0's model, r1) for
+comparison. Tokens are counted at the rates measured from billed cache writes (2026-10-07)
+([docs/RESULTS.md](RESULTS.md)). In v15 the score cache was off for every follow-up because of a
+full disk, which adds about 0.14 s of hook time per session.
 
 | target | definition | stock | laya-codex now | goal |
 |---|---|---|---|---|
-| **Cost −15%** | dollars per session: every token Claude is billed for, including the code laya-codex injects | $0.062 | $0.060 (−3.4% [−9.7, +3.6], n.s.), not met | ≤ $0.053 |
-| **Time −20%** | session wall-clock | 20.5 s | 18.0 s (−12.1% [−17.9, −5.3]), not met | ≤ 16.4 s |
-| **Quality** | answer recall of the gold files: first question up, both questions no loss | 0.729 / 0.901 | 0.828 / 0.904 (first +0.099 [+0.039, +0.160]; both +0.003, n.s.), first not met, both met | first ≥ +0.10; both not worse |
-| **Tokens** | code read plus injected | 2,998 | 4,522 (+50.9% [+30.9, +75.0]), not met | not significantly worse |
+| **Cost −15%** | dollars per session: every token Claude is billed for, including the code laya-codex injects | $0.066 | $0.062 (−6.6% [−11.6, −1.1]), not met; v14 −3.4% (n.s.) | ≤ $0.056 |
+| **Time −20%** | session wall-clock | 21.8 s | 18.5 s (−15.2% [−23.7, −1.6]), not met; −20.8% without one API outlier; v14 −12.1% | ≤ 17.4 s |
+| **Quality** | answer recall of the gold files: first question up, both questions no loss | 0.733 / 0.919 | 0.844 / 0.914 (first +0.111 [+0.043, +0.185]; both −0.006, n.s.), **first and both met**; v14 first +0.099 (not met) | first ≥ +0.10; both not worse |
+| **Tokens** | code read plus injected | 3,437 | 4,544 (+32.2% [+18.0, +49.0]), not met; v14 +50.9% | not significantly worse |
 
 A goal is met when the point estimate reaches it and the 95% interval excludes zero.
 
@@ -70,10 +71,9 @@ of reach of anything laya-codex controls:
 The new goals sit just ahead of v13 and are reachable with named levers: not injecting where stock
 Claude Code is already cheap (httpx: cost +1.3%, n.s.), and the small time levers (about −21%).
 
-The current figures are from benchmark v14 (2026-09-30, 60 held-out tasks, Claude Sonnet 5.5
-(`claude-sonnet-5-5`) at medium effort on Claude Code 2.1.284, laya-code-r1 on `main` 63d2587, both
-prompts in one live session, cost with cross-arm cache reads re-priced; see
-[docs/RESULTS.md](RESULTS.md)). The goals are relative, so their absolute values follow each
+The current figures are from benchmark v15 (2026-10-09, 60 held-out tasks, Claude Sonnet 5.5
+(`claude-sonnet-5-5`) at medium effort on Claude Code 2.1.292, laya-code-r2 on `main` 4f0d2fb, both
+prompts in one live session, a prompt-cache tag per arm; see [docs/RESULTS.md](RESULTS.md)). The goals are relative, so their absolute values follow each
 run's stock baseline.
 
 **Why cost replaced code tokens (2026-09-29).** A re-baseline on Claude Code 2.1.284 with Claude
@@ -166,3 +166,8 @@ Frozen (not developed unless this page changes):
 | 2026-09-30 | Targets reset to cost −15%, time −20%, first-question recall +0.10 with no both-question loss, and code read plus injected not significantly worse; met means the estimate reaches the goal and the 95% interval excludes zero. The −50% cost goal is below the session's cost floor ($0.068 with zero lookups and today's injection, `bench/cost_floor.py`), and −30% time needs Claude to stop looking things up: answers take about 12.4 s in both arms, and the follow-up completeness replay covered 41% of follow-ups against a 69% bar, so it is not built (`bench/followup_completeness.py`). Next: don't inject where stock is already cheap (httpx) and confirm on real sessions |
 | 2026-09-30 | Benchmark v14 on 60 held-out tasks. The low-confidence gate showed no effect and is not merged (PR #39 closed, branch kept). Three harness bugs are fixed: costs counted prompt 1 twice (v12–v14 re-derived: v13 cost −13.7% → −14.8%; the cost floor with today's injection is $0.045, −44%, so −50% stays out of reach); arms with the same system prompt shared Anthropic's prompt cache (each arm now gets its own tag); and one seed fixed the arm order (now balanced). On held-out tasks `main` vs stock: cost −3.4% (n.s.), time −12.1%, first-question recall +0.099, code read + injected +49.9%. The targets are unchanged; progress is judged on held-out tasks from now on (`bench/tasks-heldout`), and the tuned `tasks-v8` become a regression check |
 | 2026-10-07 | Token counts re-derived for v12–v14. The harness counted code at 3.5 characters per token; regressing billed cache writes on characters gives 0.42–0.46 tokens per character on Sonnet 5.5 (`bench/runs.py` keeps one rate per kind: Read, Grep, Glob, `search`, injected), so code read and injected were 1.5–1.6× low on both sides. v14 code read + injected +49.9% → +50.9% (stock 1,911 → 2,998, `main` 2,863 → 4,522 tokens); v13 +9.5% → +10.4% (n.s.). The cost floor with today's injection rises from $0.045 (−44%) to $0.053 (−34%), and without injection ($0.042, −49%) it is now above the −50% line too. Costs, time, turns and recall are unaffected; the targets are unchanged |
+| 2026-10-07 | Plan for fewer lookup round trips (docs/plans/2026-10-lookup.md): quality must improve, hook p50 ≤ 0.5 s, the cost target binds. Follow-up picks are parked: even an oracle covers 40% of held-out follow-up lookups against a 50% bar, because about a quarter are for names Claude first thinks of on the follow-up |
+| 2026-10-09 | laya-code-r2 becomes the default: ModernBERT-base with laya's decision head, trained by this project on laya-codex candidate lists (labels only), served at 128 tokens × 12 candidates. Offline it inlines 141 of 238 gold files against r1's 132; the hook takes about 130 ms (p50) instead of 517 ms with four exact Metal speed-ups (bit-identical output). "Laya" stays the name of the method: the candidate lists, the decision head and the blend; the docs say the encoder is ModernBERT-base. Longer windows (256, 384) cost time and inlined no more gold |
+| 2026-10-09 | The Apple Neural Engine path is parked: 1.6–1.7× faster than the optimized candle (2× only against the old one), with a 14–41 s first compile, about 315 MB more download, a CoreML bridge and ranking that is not bit-identical |
+| 2026-10-09 | Metal on macOS before 15 fixed: candle 0.11 panicked opening a device there, so every release since v0.1.0 ranked by keywords only on those Macs. A vendored `candle-metal-kernels` guards it |
+| 2026-10-09 | Benchmark v15 (held-out, stock / v0.4.0 / v0.5.0 candidate, $11.37): v0.5.0 is not worse than v0.4.0 (cost −1.2%, first-question recall +0.035, both n.s.; lookup time −16.7%, significant; wall +2.0%, n.s., from one API outlier). Against stock: cost −6.6%, time −15.2%, first-question recall +0.111 (met), both questions −0.006 (met), code read + injected +32.2%. The score cache was off by accident (disk 2% free; Moon stops writes under 5%); `run_bench` now refuses such a disk |

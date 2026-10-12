@@ -1,0 +1,8 @@
+{"version": "v15", "date": "2026-10-09", "binary": {"v040": "laya-codex v0.4.0 release asset (aarch64-apple-darwin, checksum verified)", "rc": "4f0d2fbf45e3ba9970be90ff26eb8dac57b5556d (main, the v0.5.0 release candidate)"},
+ "model": {"v040": "laya-code-r1 (HF tindang/laya-code r1, 25f97e5)", "rc": "laya-code-r2 (HF tindang/laya-code r2, 831fa83), 128 tokens x 12 candidates from its serving block"},
+ "claude_model": "claude-sonnet-5-5", "claude_code": "2.1.292", "effort": "medium", "turns": 2,
+ "tasks": "bench/tasks-heldout (60 tasks, none in bench/tasks-v8)",
+ "arms": {"baseline": "stock Claude Code", "v040": "laya-adaptive, laya-codex v0.4.0 as released", "rc": "laya-adaptive, main 4f0d2fb"},
+ "caps_usd": {"httpx": 6.0, "hono": 6.5, "moon": 12.5}, "spent_usd": 11.37,
+ "harness": "4f0d2fb: one live session per task, a cache tag per arm, balanced arm order, costs counted once, code tokens at the calibrated rates, follow-ups served from their own session's salted score cache (v0.4.0 ignores the salt and keeps its own cache per session as users have it)",
+ "notes": "Every laya-codex prompt (240) ranked in laya mode; no session exited non-zero or had a prompt over 300 s. One rc session (moon a622d64eee, prompt 2) took 81 s against 8 s for its v040 pair: 86 s of API time for 794 output tokens, and its last call missed the prompt cache (13,854 tokens rewritten). stats-*-without-a622d64eee.txt drop that task from every arm as a sensitivity check; the as-run files are the result. cost-cold.txt matches the as-run costs, since the cache tags kept arms from reading each other's cache."}

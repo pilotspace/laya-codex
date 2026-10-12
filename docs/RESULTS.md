@@ -1,4 +1,4 @@
-# laya-codex — results (updated 2026-10-07)
+# laya-codex — results (updated 2026-10-09)
 
 All numbers are reproducible from this repo; raw per-run rows are in `bench/results/`.
 Hardware: Apple M4 Pro, 24 GB. Agent: Claude Code (version per run), model `sonnet` alias at
@@ -44,6 +44,184 @@ cache write on the injected characters (241 sessions), gives Sonnet 5.5's tokens
   Pooled changes moved by about 1 point, per-repository ones by up to 2.1.
 - **Not re-derived:** runs before v12 and the 2026-09-29 pilots. Their token figures are at 3.5
   characters per token, and v1–v11 ran on earlier models, which the rates were not measured on.
+
+## Benchmark v15 (2026-10-09): v0.5.0 against v0.4.0, held-out tasks
+
+**Question:** does the v0.5.0 release candidate make sessions worse than v0.4.0? It is v0.4.0
+plus laya-code-r2, the exact Metal speed-ups, `search` scoring with r2, and the measurement fixes.
+
+**Answer: no.** Against v0.4.0 nothing got significantly worse, and lookup time fell. Most other
+differences between the two releases are within noise. Against stock Claude Code it still misses
+the cost and time goals.
+
+**Setup**
+- 60 held-out tasks (`bench/tasks-heldout`), 3 arms, one live session per task with two prompts.
+- Claude Sonnet 5.5 (`claude-sonnet-5-5`), medium effort, Claude Code 2.1.292.
+- Arms:
+  - `baseline`: stock Claude Code;
+  - `v040`: laya-codex v0.4.0, the release asset, with laya-code-r1;
+  - `rc`: main 4f0d2fb with laya-code-r2, served at 128 tokens and 12 candidates.
+- Billed $11.37 of a $25 cap. No session failed or stalled. All 240 laya-codex prompts ranked in
+  `laya` mode.
+- Raw rows: `bench/results/claude-v15/` (`meta.json`, per-repo `runs.jsonl`, `stats-*.txt`,
+  `cost-cold.txt`) and `bench/results/time-v15.json`.
+
+**The score cache was off in both laya-codex arms, by accident.**
+- The disk had 2% free. Moon stops taking writes under 5%, and its write stall engaged about 4 s
+  after each arm's Moon started. laya-codex fails open on a refused cache write.
+- So every follow-up was re-scored instead of served from its session's cache, as in v14:
+  - none of rc's 60 follow-ups hit the cache;
+  - v0.4.0's follow-up hooks took as long as its first prompts.
+- Ranking and the injected code were unaffected, because the index was written before the stall.
+- This adds hook time that users, whose cache works, don't pay:
+  - rc: about 0.14 s per session;
+  - v0.4.0: about 0.53 s per session.
+- `run_bench` now refuses to start on a disk with less than 6% free.
+
+| per session | stock | v0.4.0 | rc (v0.5.0) | rc vs v0.4.0 (95% CI) |
+|---|---|---|---|---|
+| Cost | $0.0658 | $0.0622 | $0.0615 | −1.2% [−6.2, +4.3] |
+| Wall-clock | 21.8 s | 18.1 s | 18.5 s | +2.0% [−7.7, +17.9] |
+| Lookup time (hook + lookup round trips + tools) | 10.55 s | 6.44 s | **5.36 s** | **−16.7% [−25.8, −6.7]** |
+| Lookup calls | 3.87 | 2.03 | 1.83 | −9.8% [−20.3, +2.4] |
+| Hook, per prompt (cache off) | – | 0.54 s | **0.15 s** | **−72%** |
+| Answer recall, first question | 0.733 | 0.810 | 0.844 | +0.035 [−0.007, +0.083] |
+| Answer recall, both questions | 0.919 | 0.892 | 0.914 | +0.022 [−0.013, +0.065] |
+| Code read + injected (tokens) | 3,437 | 4,670 | 4,544 | −2.7% [−10.4, +5.3] |
+| Turns | 7.5 | 4.6 | 4.5 | −2.5% [−9.4, +4.7] |
+| Tool calls (Grep / `search`) | 5.5 (4.0 / 0) | 2.6 (1.3 / 0.7) | 2.5 (1.4 / 0.7) | |
+
+Two laya-codex arms ran together, so the costs are from `bench/recost.py cold`. They match the
+as-run costs: since #40 each arm has its own prompt-cache tag.
+
+**Against the release gate** (docs/plans/2026-10-release-v0.5.0.md), rc vs v0.4.0:
+
+| gate | result | |
+|---|---|---|
+| Lookup calls fall | −0.20 per session (−9.8%) | lower, not significant |
+| First-question recall doesn't fall | +0.035 | met, n.s. |
+| Cost isn't worse | −1.2% | met |
+| Time falls | lookup time −1.07 s (−16.7%), significant; wall +2.0%, n.s. | see the outlier below |
+
+- **One session explains the wall-clock gap.** rc's moon task `a622d64eee`:
+  - its second prompt took 81 s against 8 s for v0.4.0's;
+  - the API reported 86 s of its own time for 794 output tokens;
+  - its last call missed the prompt cache, rewriting 13,854 tokens.
+
+  It is under the 300 s stall rule, so it stays in the result. Without that task in any arm (59
+  tasks, `stats-*-without-a622d64eee.txt`), rc vs v0.4.0: wall −4.9% [−8.6, −0.7], cost −2.7%
+  (n.s.). The median answer-time gap is 0.32 s.
+- **Some of the lookup-time gain is the cache accident.** With a working cache, both arms' second
+  hooks take about 10 ms, which removes about 0.39 s of the 1.07 s. This is an estimate, not a
+  measurement.
+- **Recall:** r2 inlines more gold offline (141 vs 132 of 238), and first-question recall moved
+  the same way in sessions (+0.035). 60 tasks can't separate an effect that size.
+
+**Against the goals** (rc vs stock, as run):
+
+| goal | v15 rc | v14 main (r1) | |
+|---|---|---|---|
+| Cost −15% | −6.6% [−11.6, −1.1] | −3.4% (n.s.) | not met |
+| Time −20% | −15.2% [−23.7, −1.6] | −12.1% | not met (−20.8% without the outlier task) |
+| First-question recall +0.10 | +0.111 [+0.043, +0.185] | +0.099 | **met** |
+| Both questions not worse | −0.006 [−0.042, +0.042] | +0.003 | **met** |
+| Code read + injected not significantly worse | +32.2% [+18.0, +49.0] | +50.9% | not met |
+
+- **Per repository, rc vs stock:**
+  - moon: cost −12.8%, time −9.8% (−25.4% without the outlier task);
+  - hono: cost −5.0% (n.s.), time −23.4%;
+  - httpx: cost +6.8% (n.s.), time −12.9%.
+
+  As in v14, the cost saving is moon's.
+- **Lookups halve:** 3.87 → 1.83 calls and 10.55 → 5.36 s per session. Grep falls from 4.0 to 1.4
+  per session.
+
+### The model: laya-code-r2
+
+laya-code-r2 is `answerdotai/ModernBERT-base` with laya's decision head, trained by this project
+on the same candidate lists as laya-code-r1 with gold labels only (`finetune/runs/r2.json`,
+`finetune/runs/r2-setup.md`). It runs about 2.45× faster per token than r1 on Metal. "Laya" is the
+ranking method, the candidate lists and the decision head; the encoder underneath is
+ModernBERT-base.
+
+Offline replay through the real hook, 120 first prompts (tasks-v8 and the held-out tasks), 238
+gold files, every prompt in `laya` mode:
+
+| ranker (window × candidates scored) | gold inlined of 238 | hook p50 |
+|---|---|---|
+| keywords only | 118 | — |
+| laya-code-r1, 128 × 16 (v0.4.0) | 132 | 517 ms |
+| r1, 64 × 16 (no retrain) | 136 | 333 ms |
+| **laya-code-r2, 128 × 12 (v0.5.0)** | **141** | **167 ms** (130 ms with the kernels below) |
+| r2, 128 × 16 | 142 | 217 ms |
+| r2, 128 × 24 | 145 | 321 ms |
+| r2, 256 × 16 / 384 × 12 | 142 / 142 | 362 / 391 ms |
+
+- **Longer windows did not help.** The plan bet on whole-chunk windows (up to 512 tokens). The
+  student was trained on windows drawn from 128, 256 and 384 tokens and scored best at 128: longer
+  windows cost time and inlined no more gold.
+- **12 candidates was the owner's latency choice** (2026-10-09): 24 inlines 4 more gold files for
+  about twice the hook time.
+- **Distillation is untested.** A second arm trained with r1's scores as soft targets had its
+  learning-rate schedule cut short by a 2.7 h machine sleep, so it was not chosen and says nothing
+  about distillation. r2 is the labels-only arm.
+- **`search` uses r2 too**, scoring 12 candidates within its 400 ms budget (r1 managed 8): 178 ms
+  per lookup instead of 279 ms.
+
+### Latency: exact speed-ups of the forward pass
+
+Profiling r2 at its serving shape (batches of 8 and 4, about 182 tokens) found four exact fixes;
+matrix multiplies, 60% of the time, already run at about 5.2 TFLOPS and were left alone.
+
+| change | why it was slow |
+|---|---|
+| the head's last layer runs only at the answer markers | its queries, projection and 4×-wide FFN ran at every token |
+| rotary embeddings on a 32-bit-indexed Metal kernel | candle's computes each position with 64-bit division, which the GPU emulates: 12× slower |
+| fused attention writes straight into token rows | each layer reassembled rows with b × h copies and a zero fill |
+| bias adds on a contiguous kernel | candle's strided broadcast computes each offset with 64-bit `%` |
+
+| | before | after |
+|---|---|---|
+| r2 model time, 12 candidates (idle M4 Pro) | 156 ms | **121 ms** |
+| r2 hook p50 (idle) | 163 ms | **130 ms** |
+| r2 hook p50 / p90 (another job using the CPU) | 183 / 193 ms | 141 / 162 ms |
+| r1 model time, 16 candidates | 503 ms | 449 ms |
+
+- **Exact:** every probability matched bit for bit on 3,360 scored candidates (r2 and r1), the
+  same files were inlined on all 240 replayed prompts, and parity against PyTorch passes on CPU
+  and Metal.
+- **Fallbacks:** if a kernel cannot build (bf16 needs macOS 14), candle's own op is used, so
+  older Macs keep the old speed. That path is proven by a test that forces the build to fail; no
+  older Mac was available.
+- **One dependency risk:** a change calls candle's internal `call_sdpa_full`, so candle is pinned
+  to `=0.11.0` and an upgrade needs a re-check.
+
+### Metal on macOS before 15
+
+candle 0.11 creates a Metal residency set with every device, and residency sets arrived in macOS
+15. On macOS 14 and earlier, opening the device panicked, so every release since v0.1.0 ranked by
+keywords only on those Macs (the daemon fails open). CI's `macos-14` runner caught it once a test
+opened a Metal device. v0.5.0 vendors `candle-metal-kernels` with a guard that skips the residency
+set when the system lacks it (`vendor/candle-metal-kernels/PATCHED.md`).
+
+### The Neural Engine: parked
+
+A spike converted r2 to CoreML (`spike/coreml-ane`, not merged) to test the 2× rule the MLX test
+used:
+
+| engine, 12 candidates | model time | vs the exact-kernel candle |
+|---|---|---|
+| candle before the kernels | 152 ms | — |
+| **candle with the kernels (shipped)** | **~121 ms** | 1.0× |
+| Neural Engine | 72–76 ms | ~1.6–1.7× |
+| Neural Engine + GPU splitting the batch | 62 ms | ~1.95× |
+
+- 5,906 of 5,910 operations (98.3% of compute) ran on the Neural Engine, with identical top-2
+  inlined files on all 120 prompts. Probabilities differ by up to 0.011, so it is not exact.
+- It clears 2× only against the old candle. Against the shipped one it would take the hook from
+  about 130 to about 85 ms (estimated), while adding a 14–41 s first compile per binary and model
+  (cache lost on upgrade, evictable by macOS), about 315 MB of download, a CoreML bridge, and a
+  ranking-level replay gate. Parked (owner, 2026-10-09); the branch and package are kept.
 
 ## Follow-up picks (2026-10-07): not built
 
